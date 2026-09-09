@@ -7,7 +7,9 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 
 from backend.config import Config
+from backend.database import Database
 from backend.http_server import create_server
+from backend.seed import seed_database
 
 
 RUNTIME_FILE = Config.LOG_PATH / "runtime.json"
@@ -57,6 +59,9 @@ def _append_runtime_log(event):
 
 def run_server(host, port, open_browser):
     Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
+    database = Database(Config.DATABASE_PATH)
+    database.migrate()
+    seed_database(database)
     server = create_server(host, port)
     server.shutdown_token = secrets.token_urlsafe(32)
     runtime = {

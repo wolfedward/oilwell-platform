@@ -9,7 +9,7 @@ from typing import Iterator, Sequence
 
 TIMESTAMP_TABLES = (
     "units", "well_groups", "wells", "devices", "device_channels", "device_heartbeats",
-    "telemetry", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
+    "telemetry", "production_daily", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
     "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
     "work_order_logs", "reports", "users", "roles", "audit_logs", "system_events",
@@ -50,7 +50,18 @@ class Database:
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as connection:
             connection.executescript(schema)
+            self._migrate_seed_columns(connection)
             self._normalize_legacy_timestamps(connection)
+
+    @staticmethod
+    def _migrate_seed_columns(connection: sqlite3.Connection) -> None:
+        """Add seed-era well metadata to databases created by earlier platform releases."""
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(wells)")}
+        if "is_low_output" not in columns:
+            connection.execute(
+                "ALTER TABLE wells ADD COLUMN is_low_output INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(is_low_output IN (0, 1))"
+            )
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
@@ -152,10 +163,11 @@ class Database:
                 yield connection
                 connection.execute(
                     """
-                    INSERT INTO audit_logs(actor_id, action, object_type, object_id)
-                    VALUES(?, ?, ?, ?)
+                    INSERT INTO audit_logs(actor_id, action, object_type, object_id, source_type)
+                    VALUES(?, ?, ?, ?, ?)
                     """,
-                    (actor_id, action, object_type, object_id),
+                    (actor_id, action, object_type, object_id,
+                     "simulator" if action.startswith("seed.") else "system"),
                 )
             finally:
                 self._transaction_connection.reset(token)

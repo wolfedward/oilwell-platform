@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS wells (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
+    is_low_output INTEGER NOT NULL DEFAULT 0 CHECK(is_low_output IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
@@ -84,6 +85,24 @@ CREATE TABLE IF NOT EXISTS telemetry (
     source_type TEXT NOT NULL DEFAULT 'device',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
+CREATE TABLE IF NOT EXISTS production_daily (
+    well_id TEXT NOT NULL REFERENCES wells(id),
+    day TEXT NOT NULL,
+    daily_oil REAL NOT NULL,
+    daily_fluid REAL NOT NULL,
+    power_kwh REAL NOT NULL,
+    pump_efficiency REAL NOT NULL,
+    stroke_m REAL NOT NULL,
+    frequency_hz REAL NOT NULL,
+    runtime_hours REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'valid',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    PRIMARY KEY(well_id, day)
 );
 
 CREATE TABLE IF NOT EXISTS raw_messages (
@@ -378,6 +397,13 @@ AFTER UPDATE ON telemetry
 FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
 BEGIN
     UPDATE telemetry SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS production_daily_set_updated_at
+AFTER UPDATE ON production_daily
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE production_daily SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE well_id = NEW.well_id AND day = NEW.day;
 END;
 
 CREATE TRIGGER IF NOT EXISTS raw_messages_set_updated_at
