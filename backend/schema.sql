@@ -105,6 +105,19 @@ CREATE TABLE IF NOT EXISTS production_daily (
     PRIMARY KEY(well_id, day)
 );
 
+CREATE TABLE IF NOT EXISTS seed_manifests (
+    dataset_name TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    seed INTEGER NOT NULL,
+    namespace TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'complete',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
 CREATE TABLE IF NOT EXISTS raw_messages (
     id INTEGER PRIMARY KEY,
     device_id TEXT REFERENCES devices(id),
@@ -404,6 +417,13 @@ AFTER UPDATE ON production_daily
 FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
 BEGIN
     UPDATE production_daily SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE well_id = NEW.well_id AND day = NEW.day;
+END;
+
+CREATE TRIGGER IF NOT EXISTS seed_manifests_set_updated_at
+AFTER UPDATE ON seed_manifests
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE seed_manifests SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE dataset_name = NEW.dataset_name;
 END;
 
 CREATE TRIGGER IF NOT EXISTS raw_messages_set_updated_at

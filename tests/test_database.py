@@ -295,6 +295,15 @@ class DatabaseTests(unittest.TestCase):
         audit = database.query_one("SELECT actor_id, action, object_type, object_id FROM audit_logs")
         self.assertEqual(tuple(audit), (7, "create", "unit", "U-1"))
 
+    def test_transaction_audit_provenance_defaults_to_system_even_for_seed_named_actions(self):
+        """An action name alone must not silently change audit provenance."""
+        database = self.create_database()
+
+        with database.transaction(None, "seed.generate", "unit", "U-1") as connection:
+            connection.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
+
+        self.assertEqual(database.scalar("SELECT source_type FROM audit_logs"), "system")
+
     def test_transaction_rolls_back_business_change_and_audit_entry_on_error(self):
         database = self.create_database()
 

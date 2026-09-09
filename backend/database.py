@@ -9,7 +9,7 @@ from typing import Iterator, Sequence
 
 TIMESTAMP_TABLES = (
     "units", "well_groups", "wells", "devices", "device_channels", "device_heartbeats",
-    "telemetry", "production_daily", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
+    "telemetry", "production_daily", "seed_manifests", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
     "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
     "work_order_logs", "reports", "users", "roles", "audit_logs", "system_events",
@@ -154,9 +154,12 @@ class Database:
 
     @contextmanager
     def transaction(
-        self, actor_id: int | None, action: str, object_type: str, object_id: str | None
+        self, actor_id: int | None, action: str, object_type: str, object_id: str | None,
+        *, source_type: str = "system",
     ) -> Iterator[sqlite3.Connection]:
         """Commit business changes and their audit entry as one transaction."""
+        if source_type not in {"system", "manual", "simulator", "device", "algorithm"}:
+            raise ValueError("unsupported audit source_type")
         with self.connection() as connection:
             token = self._transaction_connection.set(connection)
             try:
@@ -166,8 +169,7 @@ class Database:
                     INSERT INTO audit_logs(actor_id, action, object_type, object_id, source_type)
                     VALUES(?, ?, ?, ?, ?)
                     """,
-                    (actor_id, action, object_type, object_id,
-                     "simulator" if action.startswith("seed.") else "system"),
+                    (actor_id, action, object_type, object_id, source_type),
                 )
             finally:
                 self._transaction_connection.reset(token)

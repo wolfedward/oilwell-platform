@@ -54,6 +54,134 @@ class SeedDatabaseTests(unittest.TestCase):
             0,
         )
 
+    def test_partial_simulator_dataset_is_rejected_instead_of_reported_complete(self):
+        """Dropping a generated production day must make the next bootstrap visibly fail."""
+        seed_database(self.database)
+        with self.database.transaction(None, "test.remove_seed_row", "production_daily", None):
+            self.database.execute(
+                "DELETE FROM production_daily WHERE well_id = ? AND day = ?",
+                ("W-001", "2026-04-02"),
+            )
+            self.database.execute("DELETE FROM seed_manifests WHERE dataset_name = 'acceptance-history'")
+
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            seed_database(self.database)
+
+    def test_complete_legacy_simulator_history_is_adopted_with_a_versioned_manifest(self):
+        """A complete pre-manifest history must gain a manifest without replacing its records."""
+        seed_database(self.database)
+        with self.database.transaction(None, "test.remove_manifest", "seed_manifest", None):
+            self.database.execute("DELETE FROM seed_manifests WHERE dataset_name = 'acceptance-history'")
+
+        summary = seed_database(self.database)
+
+        self.assertEqual(summary, SeedSummary(4, 8, 48, 48, 48 * 30 * 24))
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM production_daily"), 48 * 90)
+        manifest = self.database.query_one(
+            "SELECT version, source_type FROM seed_manifests WHERE dataset_name = 'acceptance-history'"
+        )
+        self.assertEqual(tuple(manifest), (2, "simulator"))
+
+    def test_seed_explicitly_marks_its_atomic_audit_entry_as_simulator(self):
+        """Omitting seed's audit source argument must not be masked by its action name."""
+        seed_database(self.database)
+
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT source_type FROM audit_logs WHERE action = 'seed.generate'"
+            ),
+            "simulator",
+        )
+
+    def test_manual_identifier_collision_preserves_business_record_and_seeds_isolated_history(self):
+        """A manual U-01/CY-01 must not prevent the seed bootstrap from completing."""
+        with self.database.transaction(None, "create", "unit", "U-01"):
+            self.database.execute(
+                "INSERT INTO units(id, code, name, source_type) VALUES(?, ?, ?, 'manual')",
+                ("U-01", "CY-01", "现场人工单元"),
+            )
+
+        summary = seed_database(self.database)
+
+        self.assertEqual(summary.wells, 48)
+        self.assertEqual(
+            self.database.query_one("SELECT name FROM units WHERE id = 'U-01'")["name"],
+            "现场人工单元",
+        )
+        manifest = self.database.query_one(
+            "SELECT namespace FROM seed_manifests WHERE dataset_name = 'acceptance-history'"
+        )
+        self.assertTrue(manifest["namespace"])
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM wells WHERE source_type = 'simulator'"), 48)
+
+    def test_each_well_day_reconciles_hourly_power_with_daily_energy_and_runtime(self):
+        """Changing daily energy independently of hourly telemetry must be caught for every well-day."""
+        seed_database(self.database)
+
+        rows = self.database.query_all(
+            """
+            SELECT p.well_id, p.day, p.power_kwh, p.runtime_hours,
+                   COUNT(t.id) AS samples, SUM(t.value) AS telemetry_kwh,
+                   SUM(CASE WHEN t.value > 0 THEN 1 ELSE 0 END) AS running_hours
+            FROM production_daily AS p
+            JOIN telemetry AS t
+              ON t.well_id = p.well_id AND substr(t.measured_at, 1, 10) = p.day
+            GROUP BY p.well_id, p.day
+            ORDER BY p.well_id, p.day
+            """
+        )
+
+        self.assertEqual(len(rows), 48 * 30)
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT MIN(days), MAX(days) FROM (SELECT well_id, COUNT(*) AS days FROM production_daily GROUP BY well_id)"
+            ),
+            90,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT MIN(hours), MAX(hours) FROM (SELECT well_id, COUNT(*) AS hours FROM telemetry GROUP BY well_id)"
+            ),
+            720,
+        )
+        for row in rows:
+            self.assertEqual(row["samples"], 24)
+            self.assertAlmostEqual(row["telemetry_kwh"], row["power_kwh"], places=2)
+            self.assertEqual(row["running_hours"], row["runtime_hours"])
+
+    def test_low_output_workflows_cover_consistent_acceptance_states(self):
+        """Collapsing every low-output chain to one state loses required acceptance paths."""
+        seed_database(self.database)
+
+        status_sets = {
+            "alarms": {row[0] for row in self.database.query_all("SELECT DISTINCT status FROM alarms")},
+            "strategies": {row[0] for row in self.database.query_all("SELECT DISTINCT status FROM energy_strategies")},
+            "approvals": {row[0] for row in self.database.query_all("SELECT DISTINCT status FROM approvals")},
+            "commands": {row[0] for row in self.database.query_all("SELECT DISTINCT status FROM device_commands")},
+            "work_orders": {row[0] for row in self.database.query_all("SELECT DISTINCT status FROM work_orders")},
+        }
+        self.assertTrue({"new", "acknowledged", "dispatched", "closed"}.issubset(status_sets["alarms"]))
+        self.assertTrue({"draft", "pending", "active", "effective", "rollback"}.issubset(status_sets["strategies"]))
+        self.assertTrue({"pending", "approved", "rejected"}.issubset(status_sets["approvals"]))
+        self.assertTrue({"pending", "sent", "succeeded", "failed", "rolled_back"}.issubset(status_sets["commands"]))
+        self.assertTrue({"pending", "processing", "completed", "closed"}.issubset(status_sets["work_orders"]))
+        self.assertEqual(
+            self.database.scalar(
+                """
+                SELECT COUNT(DISTINCT wo.id)
+                FROM work_orders AS wo
+                JOIN alarms AS a ON a.id = wo.alarm_id AND a.well_id = wo.well_id
+                JOIN diagnoses AS d ON d.id = a.diagnosis_id AND d.well_id = wo.well_id
+                JOIN energy_strategies AS es ON es.well_id = wo.well_id
+                JOIN strategy_versions AS sv ON sv.strategy_id = es.id
+                JOIN device_commands AS c ON c.strategy_version_id = sv.id
+                JOIN approvals AS ap ON ap.object_type = 'energy_strategy' AND ap.object_id = es.id
+                """
+            ),
+            16,
+        )
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM pragma_foreign_key_check"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
