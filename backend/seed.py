@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import random
@@ -29,6 +30,15 @@ class SeedSummary:
 SUMMARY = SeedSummary(units=4, groups=8, wells=48, devices=48, telemetry=48 * 30 * 24)
 MANIFEST_NAME = "acceptance-history"
 MANIFEST_VERSION = 2
+WORKFLOW_SCENARIOS = (
+    ("draft", "pending", None, None, "new", "pending"),
+    ("pending", "rejected", None, None, "closed", "closed"),
+    ("active", "approved", "sent", "sent", "dispatched", "processing"),
+    ("effective", "approved", "succeeded", "succeeded", "closed", "completed"),
+    ("rollback", "approved", "rolled_back", "rolled_back", "closed", "closed"),
+    ("active", "approved", "failed", "failed", "acknowledged", "processing"),
+    ("active", "approved", "pending", "pending", "new", "pending"),
+)
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -101,6 +111,7 @@ def _validated_summary_from(connection, seed: int, namespace: str) -> SeedSummar
             raise SeedDataIntegrityError(f"seed dataset incomplete: {table_name} distribution")
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise SeedDataIntegrityError("seed dataset incomplete: foreign key violation")
+    _validate_auxiliary_distributions(connection, profiles)
     return SeedSummary(counts["units"], counts["groups"], counts["wells"], counts["devices"], counts["telemetry"])
 
 
@@ -112,19 +123,211 @@ def _count_seed_ids(connection, table_name: str, column_name: str, values: list[
     ).fetchone()[0]
 
 
-def _adopt_legacy_dataset(db: Database, seed: int, summary: SeedSummary) -> None:
+def _workflow_specs(profiles: list[dict]) -> list[dict]:
+    specs = []
+    for position, profile in enumerate(profile for profile in profiles if profile["low_output"]):
+        strategy, approval, command, attempt, alarm, work_order = WORKFLOW_SCENARIOS[position % len(WORKFLOW_SCENARIOS)]
+        namespace = profile["namespace"]
+        specs.append({
+            "profile": profile, "strategy": strategy, "approval": approval, "command": command,
+            "attempt": attempt, "alarm": alarm, "work_order": work_order,
+            "recovery_id": _identifier(namespace, f"RT-{profile['index']:03d}"),
+            "strategy_id": _identifier(namespace, f"ES-{profile['index']:03d}"),
+            "version_id": _identifier(namespace, f"SV-{profile['index']:03d}"),
+            "command_id": _identifier(namespace, f"CMD-{profile['index']:03d}"),
+            "alarm_id": _identifier(namespace, f"AL-{profile['index']:03d}"),
+            "approval_id": _identifier(namespace, f"AP-{profile['index']:03d}"),
+            "work_order_id": _identifier(namespace, f"WO-{profile['index']:03d}"),
+        })
+    return specs
+
+
+def _validate_auxiliary_distributions(connection, profiles: list[dict]) -> None:
+    well_ids = [profile["well_id"] for profile in profiles]
+    device_ids = [profile["device_id"] for profile in profiles]
+    dynagraph_ids = [profile["dynagraph_id"] for profile in profiles]
+    model_ids = [profile["model_run_id"] for profile in profiles]
+    diagnosis_ids = [profile["diagnosis_id"] for profile in profiles]
+    specs = _workflow_specs(profiles)
+    workflow_ids = {key: [spec[key] for spec in specs] for key in (
+        "recovery_id", "strategy_id", "version_id", "alarm_id", "approval_id", "work_order_id",
+    )}
+    expected = (
+        ("device_heartbeats", "device_id", device_ids, 48),
+        ("raw_messages", "device_id", device_ids, 48),
+        ("data_quality_events", "well_id", well_ids, 48),
+        ("dynagraphs", "id", dynagraph_ids, 48),
+        ("dynagraph_features", "dynagraph_id", dynagraph_ids, 144),
+        ("model_runs", "id", model_ids, 48),
+        ("diagnoses", "id", diagnosis_ids, 48),
+        ("recovery_tests", "id", workflow_ids["recovery_id"], 16),
+        ("energy_strategies", "id", workflow_ids["strategy_id"], 16),
+        ("strategy_versions", "id", workflow_ids["version_id"], 16),
+        ("alarms", "id", workflow_ids["alarm_id"], 16),
+        ("approvals", "id", workflow_ids["approval_id"], 16),
+        ("work_orders", "id", workflow_ids["work_order_id"], 16),
+        ("work_order_logs", "work_order_id", workflow_ids["work_order_id"], 16),
+    )
+    for table_name, column_name, values, count in expected:
+        actual = _count_seed_ids(connection, table_name, column_name, values)
+        if actual != count:
+            raise SeedDataIntegrityError(f"seed dataset incomplete: {table_name}")
+    namespace = profiles[0]["namespace"]
+    role_codes = [_identifier(namespace, code) for code in (
+        "administrator", "production_engineer", "algorithm_engineer", "maintenance_engineer", "reviewer",
+    )]
+    role_count = _count_seed_ids(connection, "roles", "code", role_codes)
+    user_count = _count_seed_ids(connection, "users", "username", role_codes)
+    report_count = _count_seed_ids(connection, "reports", "id", [_identifier(namespace, "RPT-SEED-001")])
+    event_count = connection.execute(
+        "SELECT COUNT(*) FROM system_events WHERE event_type = 'device_telemetry_cycle' "
+        "AND source_type = ? AND json_extract(detail, '$.well_id') IN (" + ", ".join("?" for _ in well_ids) + ")",
+        [SIMULATOR, *well_ids],
+    ).fetchone()[0]
+    command_count = _count_seed_ids(connection, "device_commands", "strategy_version_id", workflow_ids["version_id"])
+    attempt_count = connection.execute(
+        "SELECT COUNT(*) FROM command_attempts WHERE command_id IN "
+        "(SELECT id FROM device_commands WHERE strategy_version_id IN (" +
+        ", ".join("?" for _ in workflow_ids["version_id"]) + ") AND source_type = ?)",
+        [*workflow_ids["version_id"], SIMULATOR],
+    ).fetchone()[0]
+    if (role_count, user_count, report_count, event_count) != (5, 5, 1, 48) or command_count not in {10, 16} or attempt_count != command_count:
+        raise SeedDataIntegrityError(
+            "seed dataset incomplete: supporting records "
+            f"roles={role_count} users={user_count} reports={report_count} events={event_count} "
+            f"commands={command_count} attempts={attempt_count}"
+        )
+
+
+def _content_hash(db: Database, seed: int, namespace: str) -> str:
+    with db.connection() as connection:
+        return _content_hash_from(connection, seed, namespace)
+
+
+def _content_hash_from(connection, seed: int, namespace: str) -> str:
+    profiles = _well_profiles(seed, namespace)
+    specs = _workflow_specs(profiles)
+    well_ids = [profile["well_id"] for profile in profiles]
+    device_ids = [profile["device_id"] for profile in profiles]
+    channel_ids = [profile["channel_id"] for profile in profiles]
+    dynagraph_ids = [profile["dynagraph_id"] for profile in profiles]
+    model_ids = [profile["model_run_id"] for profile in profiles]
+    diagnosis_ids = [profile["diagnosis_id"] for profile in profiles]
+    unit_ids = [_identifier(namespace, f"U-{index:02d}") for index in range(1, 5)]
+    group_ids = [_identifier(namespace, f"G-{index:02d}") for index in range(1, 9)]
+    digest = hashlib.sha256()
+    digest.update(f"{MANIFEST_NAME}|{MANIFEST_VERSION}|{seed}|{namespace}\n".encode())
+
+    def append_rows(label: str, select_sql: str, parameters: list) -> None:
+        row = connection.execute(
+            "SELECT group_concat(payload, char(10)) FROM (" + select_sql + ")", parameters
+        ).fetchone()
+        digest.update(label.encode())
+        digest.update(b"\n")
+        digest.update((row[0] or "").encode("utf-8"))
+        digest.update(b"\n")
+
+    def rows_for_ids(label: str, table: str, identifier: str, values: list[str], fields: str,
+                     order_by: str | None = None) -> None:
+        append_rows(
+            label,
+            f"SELECT json_object({fields}) AS payload FROM {table} WHERE {identifier} IN (" +
+            ", ".join("?" for _ in values) + f") AND source_type = ? ORDER BY {order_by or identifier + ', rowid'}",
+            [*values, SIMULATOR],
+        )
+
+    rows_for_ids("units", "units", "id", unit_ids, "'id',id,'code',code,'name',name,'status',status,'source',source_type")
+    rows_for_ids("groups", "well_groups", "id", group_ids, "'id',id,'unit',unit_id,'code',code,'name',name,'status',status,'source',source_type")
+    rows_for_ids("wells", "wells", "id", well_ids, "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type")
+    rows_for_ids("devices", "devices", "id", device_ids, "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type")
+    rows_for_ids("channels", "device_channels", "id", channel_ids, "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type")
+    rows_for_ids("heartbeats", "device_heartbeats", "device_id", device_ids, "'device',device_id,'reported',reported_at,'status',status,'source',source_type")
+    rows_for_ids("telemetry", "telemetry", "well_id", well_ids, "'well',well_id,'device',device_id,'channel',channel_id,'at',measured_at,'metric',metric_code,'value',value,'unit',unit,'status',status,'source',source_type", "well_id, measured_at, metric_code")
+    rows_for_ids("production", "production_daily", "well_id", well_ids, "'well',well_id,'day',day,'oil',daily_oil,'fluid',daily_fluid,'energy',power_kwh,'efficiency',pump_efficiency,'stroke',stroke_m,'frequency',frequency_hz,'runtime',runtime_hours,'status',status,'source',source_type", "well_id, day")
+    rows_for_ids("raw", "raw_messages", "device_id", device_ids, "'device',device_id,'received',received_at,'payload',payload,'status',status,'source',source_type")
+    rows_for_ids("quality", "data_quality_events", "well_id", well_ids, "'telemetry',telemetry_id,'well',well_id,'event',event_type,'detail',detail,'status',status,'source',source_type")
+    rows_for_ids("dynagraphs", "dynagraphs", "id", dynagraph_ids, "'id',id,'well',well_id,'at',captured_at,'sample',sample_data,'status',status,'source',source_type")
+    rows_for_ids("features", "dynagraph_features", "dynagraph_id", dynagraph_ids, "'dynagraph',dynagraph_id,'name',feature_name,'value',feature_value,'status',status,'source',source_type")
+    rows_for_ids("models", "model_runs", "id", model_ids, "'id',id,'name',model_name,'version',model_version,'input_type',input_object_type,'input',input_object_id,'status',status,'source',source_type")
+    rows_for_ids("diagnoses", "diagnoses", "id", diagnosis_ids, "'id',id,'well',well_id,'dynagraph',dynagraph_id,'model',model_run_id,'type',diagnosis_type,'confidence',confidence,'evidence',evidence,'status',status,'source',source_type")
+    for label, table, identifier, key, fields in (
+        ("recovery", "recovery_tests", "id", "recovery_id", "'id',id,'well',well_id,'at',tested_at,'result',result_data,'status',status,'source',source_type"),
+        ("strategies", "energy_strategies", "id", "strategy_id", "'id',id,'well',well_id,'name',name,'status',status,'source',source_type"),
+        ("versions", "strategy_versions", "id", "version_id", "'id',id,'strategy',strategy_id,'version',version_number,'configuration',configuration,'status',status,'source',source_type"),
+        ("alarms", "alarms", "id", "alarm_id", "'id',id,'well',well_id,'diagnosis',diagnosis_id,'type',alarm_type,'severity',severity,'status',status,'source',source_type"),
+        ("approvals", "approvals", "id", "approval_id", "'id',id,'object_type',object_type,'object',object_id,'decision',decision,'status',status,'source',source_type"),
+        ("orders", "work_orders", "id", "work_order_id", "'id',id,'well',well_id,'alarm',alarm_id,'title',title,'status',status,'source',source_type"),
+        ("logs", "work_order_logs", "work_order_id", "work_order_id", "'order',work_order_id,'message',message,'status',status,'source',source_type"),
+    ):
+        rows_for_ids(label, table, identifier, [spec[key] for spec in specs], fields)
+    version_ids = [spec["version_id"] for spec in specs]
+    rows_for_ids("commands", "device_commands", "strategy_version_id", version_ids, "'id',id,'device',device_id,'version',strategy_version_id,'type',command_type,'payload',payload,'status',status,'source',source_type")
+    append_rows(
+        "attempts",
+        "SELECT json_object('command',command_id,'at',attempted_at,'detail',result_detail,'status',status,'source',source_type) AS payload "
+        "FROM command_attempts WHERE command_id IN (SELECT id FROM device_commands WHERE strategy_version_id IN (" +
+        ", ".join("?" for _ in version_ids) + ") AND source_type = ?) AND source_type = ? ORDER BY command_id, rowid",
+        [*version_ids, SIMULATOR, SIMULATOR],
+    )
+    role_codes = [_identifier(namespace, code) for code in ("administrator", "production_engineer", "algorithm_engineer", "maintenance_engineer", "reviewer")]
+    rows_for_ids("roles", "roles", "code", role_codes, "'code',code,'name',name,'status',status,'source',source_type")
+    rows_for_ids("users", "users", "username", role_codes, "'role',role_id,'username',username,'name',display_name,'status',status,'source',source_type")
+    rows_for_ids("reports", "reports", "id", [_identifier(namespace, "RPT-SEED-001")], "'id',id,'type',report_type,'start',period_start,'end',period_end,'payload',payload,'status',status,'source',source_type")
+    append_rows(
+        "events",
+        "SELECT json_object('type',event_type,'detail',detail,'status',status,'source',source_type) AS payload "
+        "FROM system_events WHERE event_type = 'device_telemetry_cycle' AND source_type = ? "
+        "AND json_extract(detail, '$.well_id') IN (" + ", ".join("?" for _ in well_ids) + ") ORDER BY id",
+        [SIMULATOR, *well_ids],
+    )
+    return digest.hexdigest()
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _adopt_legacy_dataset(db: Database, seed: int, namespace: str, summary: SeedSummary) -> None:
+    content_hash = _content_hash(db, seed, namespace)
     with db.transaction(
         None, "seed.adopt_manifest", "database", "platform", source_type=SIMULATOR
     ) as connection:
         connection.execute(
             """
-            INSERT INTO seed_manifests(dataset_name, version, seed, namespace, summary_json, status,
-                                       source_type, created_at, updated_at)
-            VALUES(?, ?, ?, '', ?, 'complete', ?, ?, ?)
+            INSERT INTO seed_manifests(dataset_name, version, seed, namespace, summary_json, content_hash,
+                                       status, source_type, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, 'complete', ?, ?, ?)
+            ON CONFLICT(dataset_name) DO UPDATE SET
+                version = excluded.version, seed = excluded.seed, namespace = excluded.namespace,
+                summary_json = excluded.summary_json, content_hash = excluded.content_hash,
+                status = excluded.status, source_type = excluded.source_type
             """,
-            (MANIFEST_NAME, MANIFEST_VERSION, seed, json.dumps(summary.__dict__, sort_keys=True),
+            (MANIFEST_NAME, MANIFEST_VERSION, seed, namespace, _canonical_json(summary.__dict__), content_hash,
              SIMULATOR, GENERATED_AT, GENERATED_AT),
         )
+
+
+def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSummary:
+    if (
+        manifest["dataset_name"] != MANIFEST_NAME
+        or manifest["version"] != MANIFEST_VERSION
+        or manifest["seed"] != requested_seed
+        or manifest["status"] != "complete"
+        or manifest["source_type"] != SIMULATOR
+        or not isinstance(manifest["namespace"], str)
+    ):
+        raise SeedDataIntegrityError("seed dataset incomplete: manifest contract")
+    summary = _validated_summary(db, requested_seed, manifest["namespace"])
+    expected_summary = _canonical_json(summary.__dict__)
+    try:
+        declared_summary = json.loads(manifest["summary_json"])
+    except (TypeError, json.JSONDecodeError):
+        raise SeedDataIntegrityError("seed dataset incomplete: manifest summary") from None
+    if not isinstance(declared_summary, dict) or _canonical_json(declared_summary) != expected_summary:
+        raise SeedDataIntegrityError("seed dataset incomplete: manifest summary")
+    if manifest["content_hash"] != _content_hash(db, requested_seed, manifest["namespace"]):
+        raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
+    return summary
 
 
 def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
@@ -134,18 +337,36 @@ def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
     features, diagnosis, and (where appropriate) its energy-control workflow.
     """
     manifest = db.query_one(
-        "SELECT version, seed, namespace FROM seed_manifests WHERE dataset_name = ?",
+        "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
+        "FROM seed_manifests WHERE dataset_name = ?",
         (MANIFEST_NAME,),
     )
     if manifest:
-        if manifest["version"] != MANIFEST_VERSION:
-            raise SeedDataIntegrityError("seed dataset incomplete: unsupported manifest version")
-        return _validated_summary(db, int(manifest["seed"]), manifest["namespace"])
+        if manifest["content_hash"] is None:
+            if (
+                manifest["dataset_name"] != MANIFEST_NAME or manifest["version"] != MANIFEST_VERSION
+                or manifest["seed"] != seed or manifest["status"] != "complete"
+                or manifest["source_type"] != SIMULATOR
+            ):
+                raise SeedDataIntegrityError("seed dataset incomplete: legacy manifest contract")
+            summary = _validated_summary(db, seed, manifest["namespace"])
+            _adopt_legacy_dataset(db, seed, manifest["namespace"], summary)
+            return _validate_manifest(db, db.query_one(
+                "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
+                "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
+            ), seed)
+        return _validate_manifest(db, manifest, seed)
+
+    if db.scalar("SELECT 1 FROM seed_manifests LIMIT 1"):
+        raise SeedDataIntegrityError("seed dataset incomplete: manifest dataset name")
 
     if db.scalar("SELECT 1 FROM units WHERE source_type = ? LIMIT 1", (SIMULATOR,)):
         summary = _validated_summary(db, seed, "")
-        _adopt_legacy_dataset(db, seed, summary)
-        return summary
+        _adopt_legacy_dataset(db, seed, "", summary)
+        return _validate_manifest(db, db.query_one(
+            "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
+            "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
+        ), seed)
 
     namespace = _new_namespace(db, seed)
     profiles = _well_profiles(seed, namespace)
@@ -241,16 +462,20 @@ def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
         )
         _insert_analysis_and_operations(connection, profiles, seed)
         summary = _validated_summary_from(connection, seed, namespace)
+        content_hash = _content_hash_from(connection, seed, namespace)
         connection.execute(
             """
-            INSERT INTO seed_manifests(dataset_name, version, seed, namespace, summary_json, status,
-                                       source_type, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, 'complete', ?, ?, ?)
+            INSERT INTO seed_manifests(dataset_name, version, seed, namespace, summary_json, content_hash,
+                                       status, source_type, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, 'complete', ?, ?, ?)
             """,
-            (MANIFEST_NAME, MANIFEST_VERSION, seed, namespace, json.dumps(summary.__dict__, sort_keys=True),
+            (MANIFEST_NAME, MANIFEST_VERSION, seed, namespace, _canonical_json(summary.__dict__), content_hash,
              SIMULATOR, GENERATED_AT, GENERATED_AT),
         )
-    return _validated_summary(db, seed, namespace)
+    return _validate_manifest(db, db.query_one(
+        "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
+        "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
+    ), seed)
 
 
 def _well_profiles(seed: int, namespace: str = "") -> list[dict]:
@@ -445,37 +670,17 @@ def _insert_analysis_and_operations(connection, profiles: list[dict], seed: int)
 
 
 def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
-    states = (
-        ("draft", "pending", "pending", "pending", "new", "pending"),
-        ("pending", "rejected", "pending", "pending", "acknowledged", "pending"),
-        ("active", "approved", "sent", "sent", "dispatched", "processing"),
-        ("effective", "approved", "succeeded", "succeeded", "closed", "completed"),
-        ("rollback", "approved", "rolled_back", "rolled_back", "closed", "closed"),
-        ("active", "approved", "failed", "failed", "acknowledged", "processing"),
-    )
-    for position, profile in enumerate(low_profiles):
-        strategy_status, approval_status, command_status, attempt_status, alarm_status, work_order_status = states[position % len(states)]
-        profile["workflow"] = {
-            "strategy": strategy_status, "approval": approval_status, "command": command_status,
-            "attempt": attempt_status, "alarm": alarm_status, "work_order": work_order_status,
-        }
-        namespace = profile["namespace"]
-        profile["strategy_id"] = _identifier(namespace, f"ES-{profile['index']:03d}")
-        profile["strategy_version_id"] = _identifier(namespace, f"SV-{profile['index']:03d}")
-        profile["command_id"] = _identifier(namespace, f"CMD-{profile['index']:03d}")
-        profile["alarm_id"] = _identifier(namespace, f"AL-{profile['index']:03d}")
-        profile["approval_id"] = _identifier(namespace, f"AP-{profile['index']:03d}")
-        profile["work_order_id"] = _identifier(namespace, f"WO-{profile['index']:03d}")
+    specs = _workflow_specs(low_profiles)
     connection.executemany(
         """
         INSERT INTO recovery_tests(id, well_id, tested_at, result_data, status, source_type, created_at, updated_at)
         VALUES(?, ?, ?, ?, 'completed', ?, ?, ?)
         """,
         [
-            (_identifier(profile["namespace"], f"RT-{profile['index']:03d}"), profile["well_id"], GENERATED_AT,
-             json.dumps({"recovery_hours": 8, "fluid_target": round(profile["fluid_target"], 3)}, sort_keys=True),
+            (spec["recovery_id"], spec["profile"]["well_id"], GENERATED_AT,
+             json.dumps({"recovery_hours": 8, "fluid_target": round(spec["profile"]["fluid_target"], 3)}, sort_keys=True),
              SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -484,9 +689,9 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            (profile["strategy_id"], profile["well_id"], f"{profile['name']} 间抽节能策略",
-             profile["workflow"]["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["strategy_id"], spec["profile"]["well_id"], f"{spec['profile']['name']} 间抽节能策略",
+             spec["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -496,11 +701,11 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, 1, ?, ?, ?, ?, ?)
         """,
         [
-            (profile["strategy_version_id"], profile["strategy_id"],
-             json.dumps({"run_hours": round(profile["runtime_hours"], 2), "stop_hours": 8,
-                          "minimum_daily_fluid": round(profile["fluid_target"] * 0.95, 3)}, sort_keys=True),
-             profile["workflow"]["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["version_id"], spec["strategy_id"],
+             json.dumps({"run_hours": round(spec["profile"]["runtime_hours"], 2), "stop_hours": 8,
+                          "minimum_daily_fluid": round(spec["profile"]["fluid_target"] * 0.95, 3)}, sort_keys=True),
+             spec["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -510,10 +715,10 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, ?, 'set_intermittent_cycle', ?, ?, ?, ?, ?)
         """,
         [
-            (profile["command_id"], profile["device_id"], profile["strategy_version_id"],
-             json.dumps({"frequency_hz": round(profile["frequency_hz"], 3)}, sort_keys=True),
-             profile["workflow"]["command"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["command_id"], spec["profile"]["device_id"], spec["version_id"],
+             json.dumps({"frequency_hz": round(spec["profile"]["frequency_hz"], 3)}, sort_keys=True),
+             spec["command"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs if spec["command"]
         ],
     )
     connection.executemany(
@@ -523,8 +728,8 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, 'virtual controller processed command', ?, ?, ?, ?)
         """,
         [
-            (profile["command_id"], GENERATED_AT, profile["workflow"]["attempt"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["command_id"], GENERATED_AT, spec["attempt"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs if spec["command"]
         ],
     )
     connection.executemany(
@@ -533,9 +738,9 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, ?, 'supply_shortage', 'warning', ?, ?, ?, ?)
         """,
         [
-            (profile["alarm_id"], profile["well_id"], profile["diagnosis_id"],
-             profile["workflow"]["alarm"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["alarm_id"], spec["profile"]["well_id"], spec["profile"]["diagnosis_id"],
+             spec["alarm"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -544,9 +749,9 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, 'energy_strategy', ?, ?, ?, ?, ?, ?)
         """,
         [
-            (profile["approval_id"], profile["strategy_id"], profile["workflow"]["approval"],
-             profile["workflow"]["approval"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["approval_id"], spec["strategy_id"], spec["approval"], spec["approval"],
+             SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -555,10 +760,10 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            (profile["work_order_id"], profile["well_id"], profile["alarm_id"],
-             f"{profile['name']} 供液不足处置", profile["workflow"]["work_order"],
+            (spec["work_order_id"], spec["profile"]["well_id"], spec["alarm_id"],
+             f"{spec['profile']['name']} 供液不足处置", spec["work_order"],
              SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            for spec in specs
         ],
     )
     connection.executemany(
@@ -567,8 +772,8 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         VALUES(?, '间抽策略处置记录', ?, ?, ?, ?)
         """,
         [
-            (profile["work_order_id"], profile["workflow"]["work_order"], SIMULATOR, GENERATED_AT, GENERATED_AT)
-            for profile in low_profiles
+            (spec["work_order_id"], spec["work_order"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            for spec in specs
         ],
     )
 

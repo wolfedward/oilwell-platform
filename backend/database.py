@@ -62,6 +62,9 @@ class Database:
                 "ALTER TABLE wells ADD COLUMN is_low_output INTEGER NOT NULL DEFAULT 0 "
                 "CHECK(is_low_output IN (0, 1))"
             )
+        manifest_columns = {row[1] for row in connection.execute("PRAGMA table_info(seed_manifests)")}
+        if "content_hash" not in manifest_columns:
+            connection.execute("ALTER TABLE seed_manifests ADD COLUMN content_hash TEXT")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:

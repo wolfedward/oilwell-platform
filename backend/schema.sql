@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS seed_manifests (
     seed INTEGER NOT NULL,
     namespace TEXT NOT NULL,
     summary_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'complete',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',

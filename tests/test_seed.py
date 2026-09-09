@@ -78,9 +78,10 @@ class SeedDatabaseTests(unittest.TestCase):
         self.assertEqual(summary, SeedSummary(4, 8, 48, 48, 48 * 30 * 24))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM production_daily"), 48 * 90)
         manifest = self.database.query_one(
-            "SELECT version, source_type FROM seed_manifests WHERE dataset_name = 'acceptance-history'"
+            "SELECT version, source_type, content_hash FROM seed_manifests WHERE dataset_name = 'acceptance-history'"
         )
-        self.assertEqual(tuple(manifest), (2, "simulator"))
+        self.assertEqual(tuple(manifest)[:2], (2, "simulator"))
+        self.assertRegex(manifest["content_hash"], r"^[0-9a-f]{64}$")
 
     def test_seed_explicitly_marks_its_atomic_audit_entry_as_simulator(self):
         """Omitting seed's audit source argument must not be masked by its action name."""
@@ -92,6 +93,41 @@ class SeedDatabaseTests(unittest.TestCase):
             ),
             "simulator",
         )
+
+    def test_manifest_tampering_is_rejected_before_reusing_seeded_history(self):
+        """Changing manifest contract fields must never return a cached-looking summary."""
+        for column, value in (
+            ("dataset_name", "tampered-history"), ("seed", 1), ("summary_json", '{"devices":999}'), ("status", "tampered"),
+            ("source_type", "manual"), ("content_hash", "0" * 64),
+        ):
+            with self.subTest(column=column):
+                database = Database(Path(self.temporary_directory.name) / f"manifest-{column}.db")
+                database.migrate()
+                seed_database(database)
+                with database.transaction(None, "test.tamper_manifest", "seed_manifest", None):
+                    database.execute(
+                        f"UPDATE seed_manifests SET {column} = ? WHERE dataset_name = 'acceptance-history'",
+                        (value,),
+                    )
+
+                with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                    seed_database(database)
+
+    def test_auxiliary_row_deletion_and_key_value_change_break_content_fingerprint(self):
+        """Removing a raw message or altering a daily value must invalidate the manifest fingerprint."""
+        for statement, parameters in (
+            ("DELETE FROM raw_messages WHERE id = (SELECT MIN(id) FROM raw_messages)", ()),
+            ("UPDATE production_daily SET power_kwh = power_kwh + 1 WHERE well_id = ? AND day = ?", ("W-001", "2026-04-02")),
+        ):
+            with self.subTest(statement=statement):
+                self.database = Database(Path(self.temporary_directory.name) / f"tamper-{len(parameters)}.db")
+                self.database.migrate()
+                seed_database(self.database)
+                with self.database.transaction(None, "test.tamper_seed", "seed_data", None):
+                    self.database.execute(statement, parameters)
+
+                with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                    seed_database(self.database)
 
     def test_manual_identifier_collision_preserves_business_record_and_seeds_isolated_history(self):
         """A manual U-01/CY-01 must not prevent the seed bootstrap from completing."""
@@ -174,11 +210,36 @@ class SeedDatabaseTests(unittest.TestCase):
                 JOIN diagnoses AS d ON d.id = a.diagnosis_id AND d.well_id = wo.well_id
                 JOIN energy_strategies AS es ON es.well_id = wo.well_id
                 JOIN strategy_versions AS sv ON sv.strategy_id = es.id
-                JOIN device_commands AS c ON c.strategy_version_id = sv.id
                 JOIN approvals AS ap ON ap.object_type = 'energy_strategy' AND ap.object_id = es.id
                 """
             ),
             16,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                """
+                SELECT COUNT(*)
+                FROM approvals AS ap
+                JOIN energy_strategies AS es ON es.id = ap.object_id
+                LEFT JOIN strategy_versions AS sv ON sv.strategy_id = es.id
+                LEFT JOIN device_commands AS c ON c.strategy_version_id = sv.id
+                WHERE ap.status IN ('pending', 'rejected') AND c.id IS NOT NULL
+                """
+            ),
+            0,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                """
+                SELECT COUNT(*)
+                FROM approvals AS ap
+                JOIN energy_strategies AS es ON es.id = ap.object_id
+                LEFT JOIN strategy_versions AS sv ON sv.strategy_id = es.id
+                LEFT JOIN device_commands AS c ON c.strategy_version_id = sv.id
+                WHERE ap.status = 'approved' AND c.id IS NULL
+                """
+            ),
+            0,
         )
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM pragma_foreign_key_check"), 0)
 
