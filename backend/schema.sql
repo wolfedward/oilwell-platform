@@ -5,8 +5,8 @@ CREATE TABLE IF NOT EXISTS units (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS well_groups (
@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS well_groups (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS wells (
@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS wells (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS devices (
     status TEXT NOT NULL DEFAULT 'offline',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS device_channels (
@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS device_channels (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     UNIQUE(device_id, channel_code)
 );
 
@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS device_heartbeats (
     status TEXT NOT NULL,
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS telemetry (
@@ -82,8 +82,8 @@ CREATE TABLE IF NOT EXISTS telemetry (
     status TEXT NOT NULL DEFAULT 'valid',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS raw_messages (
@@ -94,8 +94,8 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     status TEXT NOT NULL DEFAULT 'received',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS data_quality_events (
@@ -107,10 +107,9 @@ CREATE TABLE IF NOT EXISTS data_quality_events (
     status TEXT NOT NULL DEFAULT 'open',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
-
 CREATE TABLE IF NOT EXISTS dynagraphs (
     id TEXT PRIMARY KEY,
     well_id TEXT NOT NULL REFERENCES wells(id),
@@ -119,8 +118,8 @@ CREATE TABLE IF NOT EXISTS dynagraphs (
     status TEXT NOT NULL DEFAULT 'available',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS dynagraph_features (
@@ -131,8 +130,8 @@ CREATE TABLE IF NOT EXISTS dynagraph_features (
     status TEXT NOT NULL DEFAULT 'valid',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     UNIQUE(dynagraph_id, feature_name)
 );
 
@@ -145,8 +144,8 @@ CREATE TABLE IF NOT EXISTS model_runs (
     status TEXT NOT NULL DEFAULT 'completed',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS diagnoses (
@@ -160,8 +159,8 @@ CREATE TABLE IF NOT EXISTS diagnoses (
     status TEXT NOT NULL DEFAULT 'new',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS recovery_tests (
@@ -172,8 +171,8 @@ CREATE TABLE IF NOT EXISTS recovery_tests (
     status TEXT NOT NULL DEFAULT 'completed',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS energy_strategies (
@@ -183,8 +182,8 @@ CREATE TABLE IF NOT EXISTS energy_strategies (
     status TEXT NOT NULL DEFAULT 'draft',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS strategy_versions (
@@ -195,8 +194,8 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
     status TEXT NOT NULL DEFAULT 'draft',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     UNIQUE(strategy_id, version_number)
 );
 
@@ -209,8 +208,8 @@ CREATE TABLE IF NOT EXISTS device_commands (
     status TEXT NOT NULL DEFAULT 'pending',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS command_attempts (
@@ -221,8 +220,8 @@ CREATE TABLE IF NOT EXISTS command_attempts (
     status TEXT NOT NULL,
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS alarms (
@@ -234,8 +233,8 @@ CREATE TABLE IF NOT EXISTS alarms (
     status TEXT NOT NULL DEFAULT 'new',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS roles (
@@ -245,8 +244,8 @@ CREATE TABLE IF NOT EXISTS roles (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -257,8 +256,8 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -269,8 +268,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     status TEXT NOT NULL DEFAULT 'pending',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS work_orders (
@@ -281,8 +280,8 @@ CREATE TABLE IF NOT EXISTS work_orders (
     status TEXT NOT NULL DEFAULT 'pending',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS work_order_logs (
@@ -292,8 +291,8 @@ CREATE TABLE IF NOT EXISTS work_order_logs (
     status TEXT NOT NULL,
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS reports (
@@ -305,8 +304,8 @@ CREATE TABLE IF NOT EXISTS reports (
     status TEXT NOT NULL DEFAULT 'generated',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -317,8 +316,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     object_id TEXT,
     status TEXT NOT NULL DEFAULT 'recorded',
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS system_events (
@@ -328,6 +327,195 @@ CREATE TABLE IF NOT EXISTS system_events (
     status TEXT NOT NULL DEFAULT 'recorded',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
+
+CREATE TRIGGER IF NOT EXISTS units_set_updated_at
+AFTER UPDATE ON units
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE units SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS well_groups_set_updated_at
+AFTER UPDATE ON well_groups
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE well_groups SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS wells_set_updated_at
+AFTER UPDATE ON wells
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE wells SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS devices_set_updated_at
+AFTER UPDATE ON devices
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE devices SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_channels_set_updated_at
+AFTER UPDATE ON device_channels
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE device_channels SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_heartbeats_set_updated_at
+AFTER UPDATE ON device_heartbeats
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE device_heartbeats SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS telemetry_set_updated_at
+AFTER UPDATE ON telemetry
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE telemetry SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS raw_messages_set_updated_at
+AFTER UPDATE ON raw_messages
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE raw_messages SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS data_quality_events_set_updated_at
+AFTER UPDATE ON data_quality_events
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE data_quality_events SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS dynagraphs_set_updated_at
+AFTER UPDATE ON dynagraphs
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE dynagraphs SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS dynagraph_features_set_updated_at
+AFTER UPDATE ON dynagraph_features
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE dynagraph_features SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS diagnoses_set_updated_at
+AFTER UPDATE ON diagnoses
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE diagnoses SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS model_runs_set_updated_at
+AFTER UPDATE ON model_runs
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE model_runs SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS recovery_tests_set_updated_at
+AFTER UPDATE ON recovery_tests
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE recovery_tests SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS energy_strategies_set_updated_at
+AFTER UPDATE ON energy_strategies
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE energy_strategies SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS strategy_versions_set_updated_at
+AFTER UPDATE ON strategy_versions
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE strategy_versions SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_commands_set_updated_at
+AFTER UPDATE ON device_commands
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE device_commands SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS command_attempts_set_updated_at
+AFTER UPDATE ON command_attempts
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE command_attempts SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS alarms_set_updated_at
+AFTER UPDATE ON alarms
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE alarms SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS approvals_set_updated_at
+AFTER UPDATE ON approvals
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE approvals SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS work_orders_set_updated_at
+AFTER UPDATE ON work_orders
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE work_orders SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS work_order_logs_set_updated_at
+AFTER UPDATE ON work_order_logs
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE work_order_logs SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS reports_set_updated_at
+AFTER UPDATE ON reports
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE reports SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS users_set_updated_at
+AFTER UPDATE ON users
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE users SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS roles_set_updated_at
+AFTER UPDATE ON roles
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE roles SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_logs_set_updated_at
+AFTER UPDATE ON audit_logs
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE audit_logs SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS system_events_set_updated_at
+AFTER UPDATE ON system_events
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE system_events SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;

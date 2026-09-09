@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -53,11 +54,13 @@ class DatabaseTests(unittest.TestCase):
         return database
 
     def add_well_parent_records(self, database):
-        database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
-        database.execute(
-            "INSERT INTO well_groups(id, unit_id, name) VALUES(?, ?, ?)",
-            ("G-1", "U-1", "Group 1"),
-        )
+        with database.transaction(None, "seed", "unit", "U-1"):
+            database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
+        with database.transaction(None, "seed", "well_group", "G-1"):
+            database.execute(
+                "INSERT INTO well_groups(id, unit_id, name) VALUES(?, ?, ?)",
+                ("G-1", "U-1", "Group 1"),
+            )
 
     def test_migrate_creates_all_core_tables_and_is_idempotent(self):
         database = Database(self.path)
@@ -71,10 +74,11 @@ class DatabaseTests(unittest.TestCase):
         database = self.create_database()
 
         with self.assertRaises(sqlite3.IntegrityError):
-            database.execute(
-                "INSERT INTO wells(id, group_id, name) VALUES(?, ?, ?)",
-                ("W-X", "missing", "invalid"),
-            )
+            with database.transaction(None, "seed", "well", "W-X"):
+                database.execute(
+                    "INSERT INTO wells(id, group_id, name) VALUES(?, ?, ?)",
+                    ("W-X", "missing", "invalid"),
+                )
 
     def test_core_tables_include_traceability_metadata(self):
         database = self.create_database()
@@ -94,12 +98,40 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
 
+    def test_timestamps_use_shanghai_iso_format_and_update_without_recursion(self):
+        database = self.create_database()
+
+        with database.transaction(None, "seed", "unit", "U-1"):
+            database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
+        inserted = database.query_one("SELECT created_at, updated_at FROM units WHERE id = ?", ("U-1",))
+        time.sleep(0.01)
+        with database.transaction(None, "rename", "unit", "U-1"):
+            database.execute("UPDATE units SET name = ? WHERE id = ?", ("Renamed", "U-1"))
+        updated = database.query_one("SELECT created_at, updated_at FROM units WHERE id = ?", ("U-1",))
+
+        self.assertRegex(inserted["created_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$")
+        self.assertEqual(inserted["created_at"], inserted["updated_at"])
+        self.assertEqual(updated["created_at"], inserted["created_at"])
+        self.assertGreater(updated["updated_at"], inserted["updated_at"])
+
+    def test_every_core_table_has_updated_at_maintenance_trigger(self):
+        database = self.create_database()
+
+        trigger_names = set(
+            database.column("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+        )
+
+        self.assertTrue(
+            {f"{table_name}_set_updated_at" for table_name in CORE_TABLES}.issubset(trigger_names)
+        )
+
     def test_query_and_execute_helpers_use_real_database_records(self):
         database = self.create_database()
-        database.executemany(
-            "INSERT INTO units(id, name) VALUES(?, ?)",
-            [("U-1", "Unit 1"), ("U-2", "Unit 2")],
-        )
+        with database.transaction(None, "seed", "unit", None):
+            database.executemany(
+                "INSERT INTO units(id, name) VALUES(?, ?)",
+                [("U-1", "Unit 1"), ("U-2", "Unit 2")],
+            )
 
         row = database.query_one("SELECT id, name FROM units WHERE id = ?", ("U-1",))
 
@@ -107,6 +139,49 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in database.query_all("SELECT id FROM units ORDER BY id")], ["U-1", "U-2"])
         self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 2)
         self.assertEqual(database.column("SELECT name FROM units ORDER BY id"), ["Unit 1", "Unit 2"])
+
+    def test_execute_rejects_insert_outside_audited_transaction(self):
+        database = self.create_database()
+
+        with self.assertRaisesRegex(RuntimeError, "DML requires Database.transaction"):
+            database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
+
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_execute_rejects_comment_prefixed_insert_outside_audited_transaction(self):
+        database = self.create_database()
+
+        with self.assertRaisesRegex(RuntimeError, "DML requires Database.transaction"):
+            database.execute(
+                "-- preserve the SQL audit boundary\nINSERT INTO units(id, name) VALUES(?, ?)",
+                ("U-1", "Unit 1"),
+            )
+
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_executemany_rejects_mutations_outside_audited_transaction(self):
+        database = self.create_database()
+
+        with self.assertRaisesRegex(RuntimeError, "DML requires Database.transaction"):
+            database.executemany(
+                "INSERT INTO units(id, name) VALUES(?, ?)",
+                [("U-1", "Unit 1"), ("U-2", "Unit 2")],
+            )
+
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_mutating_helpers_commit_and_audit_inside_transaction(self):
+        database = self.create_database()
+
+        with database.transaction(None, "seed", "unit", None):
+            database.executemany(
+                "INSERT INTO units(id, name) VALUES(?, ?)",
+                [("U-1", "Unit 1"), ("U-2", "Unit 2")],
+            )
+            database.execute("UPDATE units SET name = ? WHERE id = ?", ("Renamed", "U-1"))
+
+        self.assertEqual(database.column("SELECT name FROM units ORDER BY id"), ["Renamed", "Unit 2"])
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM audit_logs"), 1)
 
     def test_transaction_commits_business_change_and_audit_entry(self):
         database = self.create_database()
@@ -123,7 +198,7 @@ class DatabaseTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "stop"):
             with database.transaction(7, "create", "unit", "U-1") as connection:
-                connection.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
+                database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-1", "Unit 1"))
                 raise RuntimeError("stop")
 
         self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
@@ -148,6 +223,27 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["data"]["database"], "ok")
         self.assertIn("audit_logs", server.database.table_names())
+
+    def test_health_returns_json_when_database_becomes_unavailable(self):
+        server = create_server("127.0.0.1", 0, database_path=self.path)
+        server.database.path = Path(self.temporary_directory.name)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+        try:
+            connection.request("GET", "/api/health")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 503)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "database_unavailable")
 
 
 if __name__ == "__main__":

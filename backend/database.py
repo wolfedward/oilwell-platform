@@ -1,6 +1,7 @@
 """SQLite persistence boundary for the offline platform."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 import sqlite3
 from typing import Iterator, Sequence
@@ -11,6 +12,9 @@ class Database:
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._transaction_connection: ContextVar[sqlite3.Connection | None] = ContextVar(
+            "transaction_connection", default=None
+        )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -43,10 +47,16 @@ class Database:
         )
 
     def query_one(self, statement: str, parameters: Sequence = ()) -> sqlite3.Row | None:
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return active_connection.execute(statement, parameters).fetchone()
         with self.connection() as connection:
             return connection.execute(statement, parameters).fetchone()
 
     def query_all(self, statement: str, parameters: Sequence = ()) -> list[sqlite3.Row]:
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return active_connection.execute(statement, parameters).fetchall()
         with self.connection() as connection:
             return connection.execute(statement, parameters).fetchall()
 
@@ -58,12 +68,34 @@ class Database:
         return [row[0] for row in self.query_all(statement, parameters)]
 
     def execute(self, statement: str, parameters: Sequence = ()) -> int:
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return active_connection.execute(statement, parameters).rowcount
+        self._require_transaction_for_mutation(statement)
         with self.connection() as connection:
             return connection.execute(statement, parameters).rowcount
 
     def executemany(self, statement: str, parameter_sets: Sequence[Sequence]) -> int:
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return active_connection.executemany(statement, parameter_sets).rowcount
+        self._require_transaction_for_mutation(statement)
         with self.connection() as connection:
             return connection.executemany(statement, parameter_sets).rowcount
+
+    @staticmethod
+    def _require_transaction_for_mutation(statement: str) -> None:
+        sql = statement.lstrip()
+        while sql.startswith(("--", "/*")):
+            if sql.startswith("--"):
+                newline = sql.find("\n")
+                sql = "" if newline == -1 else sql[newline + 1 :].lstrip()
+            else:
+                comment_end = sql.find("*/", 2)
+                sql = "" if comment_end == -1 else sql[comment_end + 2 :].lstrip()
+        operation = sql.split(None, 1)[0].upper() if sql else ""
+        if operation in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+            raise RuntimeError("DML requires Database.transaction")
 
     @contextmanager
     def transaction(
@@ -71,11 +103,15 @@ class Database:
     ) -> Iterator[sqlite3.Connection]:
         """Commit business changes and their audit entry as one transaction."""
         with self.connection() as connection:
-            yield connection
-            connection.execute(
-                """
-                INSERT INTO audit_logs(actor_id, action, object_type, object_id)
-                VALUES(?, ?, ?, ?)
-                """,
-                (actor_id, action, object_type, object_id),
-            )
+            token = self._transaction_connection.set(connection)
+            try:
+                yield connection
+                connection.execute(
+                    """
+                    INSERT INTO audit_logs(actor_id, action, object_type, object_id)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (actor_id, action, object_type, object_id),
+                )
+            finally:
+                self._transaction_connection.reset(token)

@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import secrets
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -22,7 +23,20 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/api/health":
-            database_status = "ok" if self.server.database.scalar("SELECT 1") == 1 else "unavailable"
+            try:
+                database_status = "ok" if self.server.database.scalar("SELECT 1") == 1 else "unavailable"
+            except sqlite3.Error:
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "database_unavailable",
+                            "message": "Database is unavailable",
+                        },
+                    },
+                )
+                return
             self._send_json(
                 HTTPStatus.OK,
                 {
