@@ -40,6 +40,24 @@ WORKFLOW_SCENARIOS = (
     ("active", "approved", "pending", "pending", "new", "pending"),
 )
 
+# Explicit local demonstration accounts.  Password material is added after the
+# Task 3 content fingerprint is validated, so security enrichment never alters
+# the deterministic history contract.
+LOCAL_ACCOUNTS = (
+    ("administrator", "管理员", "administrator", "Admin@2026"),
+    ("production_engineer", "生产工程师", "production_engineer", "Production@2026"),
+    ("algorithm_engineer", "算法工程师", "algorithm_engineer", "Algorithm@2026"),
+    ("maintenance_engineer", "设备运维", "maintenance_engineer", "Maintenance@2026"),
+    ("reviewer", "只读评审", "reviewer", "Review@2026"),
+)
+ROLE_PERMISSIONS = {
+    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve"),
+    "production_engineer": ("wells.read", "alarms.ack", "strategy.create", "strategy.submit", "reports.read"),
+    "algorithm_engineer": ("wells.read", "diagnosis.run", "diagnosis.review", "reports.read"),
+    "maintenance_engineer": ("wells.read", "devices.read", "devices.control", "maintenance.manage"),
+    "reviewer": ("wells.read", "reports.read", "audit.read"),
+}
+
 
 class SeedDataIntegrityError(RuntimeError):
     """Raised when a persisted seed dataset cannot truthfully be reused."""
@@ -330,6 +348,80 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     return summary
 
 
+def bootstrap_local_auth(db: Database) -> None:
+    """Idempotently add password material and explicit least-privilege grants.
+
+    This intentionally does not touch Task 3's manifest-covered role/user
+    identity fields.  Existing business records are preserved; missing local
+    accounts only appear when an earlier manual namespace prevented their seed
+    identities from using the conventional names.
+    """
+    from backend.auth import password_material
+
+    permission_codes = sorted({permission for values in ROLE_PERMISSIONS.values() for permission in values})
+    current_permissions = set(db.column("SELECT code FROM permissions"))
+    roles = {row["code"]: row for row in db.query_all("SELECT id, code FROM roles")}
+    users = {row["username"]: row for row in db.query_all("SELECT id, username, password_hash FROM users")}
+    current_grants = {
+        (row["role_id"], row["code"])
+        for row in db.query_all(
+            "SELECT rp.role_id, p.code FROM role_permissions AS rp JOIN permissions AS p ON p.id = rp.permission_id"
+        )
+    }
+    needs_change = bool(set(permission_codes) - current_permissions)
+    for role_code, _role_name, username, _password in LOCAL_ACCOUNTS:
+        role = roles.get(role_code)
+        user = users.get(username)
+        if role is None or user is None or not user["password_hash"]:
+            needs_change = True
+        if role is not None and any((role["id"], permission) not in current_grants for permission in ROLE_PERMISSIONS[role_code]):
+            needs_change = True
+    if not needs_change:
+        return
+
+    with db.transaction(
+        None, "auth.bootstrap", "database", "platform", source_type="system",
+        details_json='{"after":{"authentication":"enriched"},"before":{}}',
+    ) as connection:
+        for permission in permission_codes:
+            connection.execute(
+                "INSERT OR IGNORE INTO permissions(code, name, source_type) VALUES(?, ?, 'system')",
+                (permission, permission),
+            )
+        for role_code, role_name, username, password in LOCAL_ACCOUNTS:
+            connection.execute(
+                "INSERT OR IGNORE INTO roles(code, name, status, source_type) VALUES(?, ?, 'active', 'system')",
+                (role_code, role_name),
+            )
+            role_id = connection.execute("SELECT id FROM roles WHERE code = ?", (role_code,)).fetchone()[0]
+            connection.execute(
+                "INSERT OR IGNORE INTO users(role_id, username, display_name, status, source_type) VALUES(?, ?, ?, 'active', 'system')",
+                (role_id, username, role_name),
+            )
+            user = connection.execute(
+                "SELECT id, password_hash FROM users WHERE username = ?", (username,)
+            ).fetchone()
+            if not user["password_hash"]:
+                salt, digest, iterations = password_material(password)
+                connection.execute(
+                    "UPDATE users SET password_salt = ?, password_hash = ?, password_iterations = ? WHERE id = ?",
+                    (salt, digest, iterations, user["id"]),
+                )
+            for permission in ROLE_PERMISSIONS[role_code]:
+                permission_id = connection.execute(
+                    "SELECT id FROM permissions WHERE code = ?", (permission,)
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT OR IGNORE INTO role_permissions(role_id, permission_id, source_type) VALUES(?, ?, 'system')",
+                    (role_id, permission_id),
+                )
+
+
+def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:
+    bootstrap_local_auth(db)
+    return summary
+
+
 def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
     """Populate an empty platform database once, using one audited transaction.
 
@@ -351,11 +443,11 @@ def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
                 raise SeedDataIntegrityError("seed dataset incomplete: legacy manifest contract")
             summary = _validated_summary(db, seed, manifest["namespace"])
             _adopt_legacy_dataset(db, seed, manifest["namespace"], summary)
-            return _validate_manifest(db, db.query_one(
+            return _with_auth_bootstrap(db, _validate_manifest(db, db.query_one(
                 "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
                 "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
-            ), seed)
-        return _validate_manifest(db, manifest, seed)
+            ), seed))
+        return _with_auth_bootstrap(db, _validate_manifest(db, manifest, seed))
 
     if db.scalar("SELECT 1 FROM seed_manifests LIMIT 1"):
         raise SeedDataIntegrityError("seed dataset incomplete: manifest dataset name")
@@ -363,10 +455,10 @@ def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
     if db.scalar("SELECT 1 FROM units WHERE source_type = ? LIMIT 1", (SIMULATOR,)):
         summary = _validated_summary(db, seed, "")
         _adopt_legacy_dataset(db, seed, "", summary)
-        return _validate_manifest(db, db.query_one(
+        return _with_auth_bootstrap(db, _validate_manifest(db, db.query_one(
             "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
             "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
-        ), seed)
+        ), seed))
 
     namespace = _new_namespace(db, seed)
     profiles = _well_profiles(seed, namespace)
@@ -472,10 +564,10 @@ def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
             (MANIFEST_NAME, MANIFEST_VERSION, seed, namespace, _canonical_json(summary.__dict__), content_hash,
              SIMULATOR, GENERATED_AT, GENERATED_AT),
         )
-    return _validate_manifest(db, db.query_one(
+    return _with_auth_bootstrap(db, _validate_manifest(db, db.query_one(
         "SELECT dataset_name, version, seed, namespace, summary_json, content_hash, status, source_type "
         "FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
-    ), seed)
+    ), seed))
 
 
 def _well_profiles(seed: int, namespace: str = "") -> list[dict]:

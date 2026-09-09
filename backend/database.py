@@ -12,7 +12,8 @@ TIMESTAMP_TABLES = (
     "telemetry", "production_daily", "seed_manifests", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
     "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
-    "work_order_logs", "reports", "users", "roles", "audit_logs", "system_events",
+    "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions",
+    "audit_logs", "system_events",
 )
 SHANGHAI_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')"
 
@@ -51,6 +52,7 @@ class Database:
         with self.connection() as connection:
             connection.executescript(schema)
             self._migrate_seed_columns(connection)
+            self._migrate_auth_columns(connection)
             self._normalize_legacy_timestamps(connection)
 
     @staticmethod
@@ -65,6 +67,24 @@ class Database:
         manifest_columns = {row[1] for row in connection.execute("PRAGMA table_info(seed_manifests)")}
         if "content_hash" not in manifest_columns:
             connection.execute("ALTER TABLE seed_manifests ADD COLUMN content_hash TEXT")
+
+    @staticmethod
+    def _migrate_auth_columns(connection: sqlite3.Connection) -> None:
+        """Add authentication fields without rebuilding a populated Task 3 database."""
+        required = {
+            "users": (
+                ("password_hash", "TEXT"), ("password_salt", "TEXT"),
+                ("password_iterations", "INTEGER NOT NULL DEFAULT 300000"),
+                ("last_login_at", "TEXT"), ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+            "roles": (("version", "INTEGER NOT NULL DEFAULT 1"),),
+            "audit_logs": (("details_json", "TEXT NOT NULL DEFAULT '{}'"),),
+        }
+        for table_name, columns_to_add in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in columns_to_add:
+                if column_name not in columns:
+                    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
@@ -158,7 +178,7 @@ class Database:
     @contextmanager
     def transaction(
         self, actor_id: int | None, action: str, object_type: str, object_id: str | None,
-        *, source_type: str = "system",
+        *, source_type: str = "system", details_json: str = '{"after":{},"before":{}}', auto_audit: bool = True,
     ) -> Iterator[sqlite3.Connection]:
         """Commit business changes and their audit entry as one transaction."""
         if source_type not in {"system", "manual", "simulator", "device", "algorithm"}:
@@ -167,12 +187,13 @@ class Database:
             token = self._transaction_connection.set(connection)
             try:
                 yield connection
-                connection.execute(
-                    """
-                    INSERT INTO audit_logs(actor_id, action, object_type, object_id, source_type)
-                    VALUES(?, ?, ?, ?, ?)
-                    """,
-                    (actor_id, action, object_type, object_id, source_type),
-                )
+                if auto_audit:
+                    connection.execute(
+                        """
+                        INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type)
+                        VALUES(?, ?, ?, ?, ?, ?)
+                        """,
+                        (actor_id, action, object_type, object_id, details_json, source_type),
+                    )
             finally:
                 self._transaction_connection.reset(token)
