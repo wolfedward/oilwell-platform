@@ -7,6 +7,16 @@ import sqlite3
 from typing import Iterator, Sequence
 
 
+TIMESTAMP_TABLES = (
+    "units", "well_groups", "wells", "devices", "device_channels", "device_heartbeats",
+    "telemetry", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
+    "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
+    "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
+    "work_order_logs", "reports", "users", "roles", "audit_logs", "system_events",
+)
+SHANGHAI_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')"
+
+
 class Database:
     """Open short-lived SQLite connections with consistent platform settings."""
 
@@ -40,6 +50,30 @@ class Database:
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as connection:
             connection.executescript(schema)
+            self._normalize_legacy_timestamps(connection)
+
+    @staticmethod
+    def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
+        for table_name in TIMESTAMP_TABLES:
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")
+            }
+            if not {"created_at", "updated_at"}.issubset(columns):
+                continue
+            connection.execute(
+                f"""
+                UPDATE {table_name}
+                SET created_at = CASE
+                        WHEN created_at GLOB '*+08:00' THEN created_at
+                        ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', created_at, '+8 hours')
+                    END,
+                    updated_at = CASE
+                        WHEN updated_at GLOB '*+08:00' THEN updated_at
+                        ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', updated_at, '+8 hours')
+                    END
+                WHERE created_at NOT GLOB '*+08:00' OR updated_at NOT GLOB '*+08:00'
+                """
+            )
 
     def table_names(self) -> set[str]:
         return set(
@@ -50,14 +84,14 @@ class Database:
         active_connection = self._transaction_connection.get()
         if active_connection is not None:
             return active_connection.execute(statement, parameters).fetchone()
-        with self.connection() as connection:
+        with self._guarded_connection() as connection:
             return connection.execute(statement, parameters).fetchone()
 
     def query_all(self, statement: str, parameters: Sequence = ()) -> list[sqlite3.Row]:
         active_connection = self._transaction_connection.get()
         if active_connection is not None:
             return active_connection.execute(statement, parameters).fetchall()
-        with self.connection() as connection:
+        with self._guarded_connection() as connection:
             return connection.execute(statement, parameters).fetchall()
 
     def scalar(self, statement: str, parameters: Sequence = ()):
@@ -71,31 +105,41 @@ class Database:
         active_connection = self._transaction_connection.get()
         if active_connection is not None:
             return active_connection.execute(statement, parameters).rowcount
-        self._require_transaction_for_mutation(statement)
-        with self.connection() as connection:
+        with self._guarded_connection() as connection:
             return connection.execute(statement, parameters).rowcount
 
     def executemany(self, statement: str, parameter_sets: Sequence[Sequence]) -> int:
         active_connection = self._transaction_connection.get()
         if active_connection is not None:
             return active_connection.executemany(statement, parameter_sets).rowcount
-        self._require_transaction_for_mutation(statement)
-        with self.connection() as connection:
+        with self._guarded_connection() as connection:
             return connection.executemany(statement, parameter_sets).rowcount
 
+    @contextmanager
+    def _guarded_connection(self) -> Iterator[sqlite3.Connection]:
+        with self.connection() as connection:
+            connection.set_authorizer(self._deny_mutations)
+            try:
+                yield connection
+            except sqlite3.DatabaseError as error:
+                if "not authorized" in str(error).lower():
+                    raise RuntimeError("DML requires Database.transaction") from None
+                raise
+            finally:
+                connection.set_authorizer(None)
+
     @staticmethod
-    def _require_transaction_for_mutation(statement: str) -> None:
-        sql = statement.lstrip()
-        while sql.startswith(("--", "/*")):
-            if sql.startswith("--"):
-                newline = sql.find("\n")
-                sql = "" if newline == -1 else sql[newline + 1 :].lstrip()
-            else:
-                comment_end = sql.find("*/", 2)
-                sql = "" if comment_end == -1 else sql[comment_end + 2 :].lstrip()
-        operation = sql.split(None, 1)[0].upper() if sql else ""
-        if operation in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
-            raise RuntimeError("DML requires Database.transaction")
+    def _deny_mutations(
+        action_code: int, table_name: str | None, _column_name: str | None,
+        _database_name: str | None, _source: str | None,
+    ) -> int:
+        if table_name != "sqlite_master" and action_code in {
+            sqlite3.SQLITE_INSERT,
+            sqlite3.SQLITE_UPDATE,
+            sqlite3.SQLITE_DELETE,
+        }:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
 
     @contextmanager
     def transaction(

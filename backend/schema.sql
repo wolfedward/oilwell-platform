@@ -519,3 +519,275 @@ FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
 BEGIN
     UPDATE system_events SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
 END;
+
+-- Legacy databases may retain CURRENT_TIMESTAMP column defaults after migration.
+-- Normalize values supplied by those defaults without rebuilding the tables.
+CREATE TRIGGER IF NOT EXISTS units_normalize_inserted_timestamps
+AFTER INSERT ON units
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE units SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS well_groups_normalize_inserted_timestamps
+AFTER INSERT ON well_groups
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE well_groups SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS wells_normalize_inserted_timestamps
+AFTER INSERT ON wells
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE wells SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS devices_normalize_inserted_timestamps
+AFTER INSERT ON devices
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE devices SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_channels_normalize_inserted_timestamps
+AFTER INSERT ON device_channels
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE device_channels SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_heartbeats_normalize_inserted_timestamps
+AFTER INSERT ON device_heartbeats
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE device_heartbeats SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS telemetry_normalize_inserted_timestamps
+AFTER INSERT ON telemetry
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE telemetry SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS raw_messages_normalize_inserted_timestamps
+AFTER INSERT ON raw_messages
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE raw_messages SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS data_quality_events_normalize_inserted_timestamps
+AFTER INSERT ON data_quality_events
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE data_quality_events SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS dynagraphs_normalize_inserted_timestamps
+AFTER INSERT ON dynagraphs
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE dynagraphs SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS dynagraph_features_normalize_inserted_timestamps
+AFTER INSERT ON dynagraph_features
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE dynagraph_features SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS diagnoses_normalize_inserted_timestamps
+AFTER INSERT ON diagnoses
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE diagnoses SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS model_runs_normalize_inserted_timestamps
+AFTER INSERT ON model_runs
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE model_runs SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS recovery_tests_normalize_inserted_timestamps
+AFTER INSERT ON recovery_tests
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE recovery_tests SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS energy_strategies_normalize_inserted_timestamps
+AFTER INSERT ON energy_strategies
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE energy_strategies SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS strategy_versions_normalize_inserted_timestamps
+AFTER INSERT ON strategy_versions
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE strategy_versions SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_commands_normalize_inserted_timestamps
+AFTER INSERT ON device_commands
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE device_commands SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS command_attempts_normalize_inserted_timestamps
+AFTER INSERT ON command_attempts
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE command_attempts SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS alarms_normalize_inserted_timestamps
+AFTER INSERT ON alarms
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE alarms SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS approvals_normalize_inserted_timestamps
+AFTER INSERT ON approvals
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE approvals SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS work_orders_normalize_inserted_timestamps
+AFTER INSERT ON work_orders
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE work_orders SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS work_order_logs_normalize_inserted_timestamps
+AFTER INSERT ON work_order_logs
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE work_order_logs SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS reports_normalize_inserted_timestamps
+AFTER INSERT ON reports
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE reports SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS users_normalize_inserted_timestamps
+AFTER INSERT ON users
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE users SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS roles_normalize_inserted_timestamps
+AFTER INSERT ON roles
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE roles SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_logs_normalize_inserted_timestamps
+AFTER INSERT ON audit_logs
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE audit_logs SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS system_events_normalize_inserted_timestamps
+AFTER INSERT ON system_events
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE system_events SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;

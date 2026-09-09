@@ -125,6 +125,64 @@ class DatabaseTests(unittest.TestCase):
             {f"{table_name}_set_updated_at" for table_name in CORE_TABLES}.issubset(trigger_names)
         )
 
+    def test_migrate_normalizes_legacy_table_timestamps_without_rebuilding(self):
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE units (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    actor_id INTEGER,
+                    source_type TEXT NOT NULL DEFAULT 'manual',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE audit_logs (
+                    id INTEGER PRIMARY KEY,
+                    actor_id INTEGER,
+                    action TEXT NOT NULL,
+                    object_type TEXT NOT NULL,
+                    object_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'recorded',
+                    source_type TEXT NOT NULL DEFAULT 'system',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO units(id, name) VALUES('U-OLD', 'Legacy unit');
+                """
+            )
+        finally:
+            connection.close()
+        database = Database(self.path)
+
+        database.migrate()
+        legacy = database.query_one("SELECT created_at, updated_at FROM units WHERE id = 'U-OLD'")
+        with database.transaction(None, "seed", "unit", "U-NEW"):
+            database.execute("INSERT INTO units(id, name) VALUES(?, ?)", ("U-NEW", "New unit"))
+        inserted = database.query_one("SELECT created_at, updated_at FROM units WHERE id = 'U-NEW'")
+        time.sleep(0.01)
+        with database.transaction(None, "rename", "unit", "U-NEW"):
+            database.execute("UPDATE units SET name = ? WHERE id = ?", ("Renamed", "U-NEW"))
+        updated = database.query_one("SELECT created_at, updated_at FROM units WHERE id = 'U-NEW'")
+
+        for timestamp in (*legacy, *inserted, *updated):
+            self.assertRegex(timestamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$")
+        self.assertEqual(updated["created_at"], inserted["created_at"])
+        self.assertGreater(updated["updated_at"], inserted["updated_at"])
+
+    def test_every_core_table_has_insert_timestamp_normalization_trigger(self):
+        database = self.create_database()
+
+        trigger_names = set(database.column("SELECT name FROM sqlite_master WHERE type = 'trigger'"))
+
+        self.assertTrue(
+            {f"{table_name}_normalize_inserted_timestamps" for table_name in CORE_TABLES}.issubset(
+                trigger_names
+            )
+        )
+
     def test_query_and_execute_helpers_use_real_database_records(self):
         database = self.create_database()
         with database.transaction(None, "seed", "unit", None):
@@ -158,6 +216,50 @@ class DatabaseTests(unittest.TestCase):
             )
 
         self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_read_helpers_reject_insert_returning_outside_audited_transaction(self):
+        database = self.create_database()
+
+        for index, helper in enumerate(
+            (database.query_one, database.query_all, database.scalar, database.column), start=1
+        ):
+            with self.subTest(helper=helper.__name__):
+                with self.assertRaisesRegex(RuntimeError, "DML requires Database.transaction"):
+                    helper(
+                        f"INSERT INTO units(id, name) VALUES('U-{index}', 'Unit {index}') RETURNING id"
+                    )
+
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_execute_rejects_with_and_semicolon_prefixed_inserts_outside_transaction(self):
+        database = self.create_database()
+
+        for statement in (
+            "WITH input(id, name) AS (VALUES('U-1', 'Unit 1')) "
+            "INSERT INTO units(id, name) SELECT id, name FROM input",
+            "; INSERT INTO units(id, name) VALUES('U-2', 'Unit 2')",
+        ):
+            with self.subTest(statement=statement):
+                with self.assertRaisesRegex(RuntimeError, "DML requires Database.transaction"):
+                    database.execute(statement)
+
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM units"), 0)
+
+    def test_query_one_insert_returning_commits_with_its_audit_entry_inside_transaction(self):
+        database = self.create_database()
+
+        with database.transaction(None, "seed", "unit", "U-1"):
+            row = database.query_one("INSERT INTO units(id, name) VALUES('U-1', 'Unit 1') RETURNING id")
+
+        self.assertEqual(row["id"], "U-1")
+        self.assertEqual(database.scalar("SELECT COUNT(*) FROM audit_logs"), 1)
+
+    def test_execute_allows_ddl_outside_transaction(self):
+        database = self.create_database()
+
+        database.execute("CREATE TABLE temporary_read_model(id INTEGER PRIMARY KEY)")
+
+        self.assertIn("temporary_read_model", database.table_names())
 
     def test_executemany_rejects_mutations_outside_audited_transaction(self):
         database = self.create_database()
@@ -227,6 +329,29 @@ class DatabaseTests(unittest.TestCase):
     def test_health_returns_json_when_database_becomes_unavailable(self):
         server = create_server("127.0.0.1", 0, database_path=self.path)
         server.database.path = Path(self.temporary_directory.name)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+        try:
+            connection.request("GET", "/api/health")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 503)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "database_unavailable")
+
+    def test_health_returns_json_when_database_parent_is_a_file(self):
+        server = create_server("127.0.0.1", 0, database_path=self.path)
+        blocked_parent = Path(self.temporary_directory.name) / "not-a-directory"
+        blocked_parent.write_text("file", encoding="utf-8")
+        server.database.path = blocked_parent / "platform.db"
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)

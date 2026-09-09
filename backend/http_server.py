@@ -25,7 +25,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             try:
                 database_status = "ok" if self.server.database.scalar("SELECT 1") == 1 else "unavailable"
-            except sqlite3.Error:
+            except (sqlite3.Error, OSError):
                 self._send_json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {
