@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.config import Config
+from backend.database import Database
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -21,13 +22,14 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/api/health":
+            database_status = "ok" if self.server.database.scalar("SELECT 1") == 1 else "unavailable"
             self._send_json(
                 HTTPStatus.OK,
                 {
                     "ok": True,
                     "data": {
                         "service": "ok",
-                        "database": "pending",
+                        "database": database_status,
                         "simulator": "pending",
                         "version": Config.VERSION,
                         "time": datetime.now(SHANGHAI_TIMEZONE).isoformat(),
@@ -117,6 +119,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         return
 
 
-def create_server(host: str, port: int) -> ThreadingHTTPServer:
+def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServer:
     """Create a threaded HTTP server without starting its event loop."""
-    return ThreadingHTTPServer((host, port), PlatformRequestHandler)
+    database = Database(database_path or Config.DATABASE_PATH)
+    database.migrate()
+    server = ThreadingHTTPServer((host, port), PlatformRequestHandler)
+    server.database = database
+    return server
