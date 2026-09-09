@@ -15,4 +15,3 @@ Thumbs.db
 # Existing user-owned artifacts are not platform source files.
 output/
 reports/
-scripts/

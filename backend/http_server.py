@@ -1,5 +1,7 @@
 import json
 import mimetypes
+import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +19,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/api/health":
+        path = urlsplit(self.path).path
+        if path == "/api/health":
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -32,7 +35,27 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        self._serve_static(urlsplit(self.path).path)
+        if path.startswith("/api/"):
+            self._send_api_not_found()
+            return
+        self._serve_static(path)
+
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        if path.startswith("/api/"):
+            self._send_api_not_found()
+            return
+        if path != "/internal/shutdown":
+            self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
+            return
+        if not self._has_shutdown_token():
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"ok": False, "error": {"code": "forbidden", "message": "Invalid shutdown token"}},
+            )
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, "data": {"stopping": True}})
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def _send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -42,14 +65,35 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_api_not_found(self):
+        self._send_json(
+            HTTPStatus.NOT_FOUND,
+            {"ok": False, "error": {"code": "not_found", "message": "API route not found"}},
+        )
+
+    def _has_shutdown_token(self):
+        if self.client_address[0] not in {"127.0.0.1", "::1"}:
+            return False
+        expected = getattr(self.server, "shutdown_token", None)
+        received = self.headers.get("X-Platform-Shutdown-Token")
+        return bool(expected and received and secrets.compare_digest(expected, received))
+
     def _serve_static(self, request_path):
         relative_path = unquote(request_path).lstrip("/") or "index.html"
+        if not self._is_allowed_static_path(relative_path):
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
         root = Config.PROJECT_ROOT.resolve()
         candidate = (root / relative_path).resolve()
+        allowed_root = root
+        if relative_path.startswith("assets/"):
+            allowed_root = (root / "assets").resolve()
+        elif relative_path.startswith("frontend/"):
+            allowed_root = (root / "frontend").resolve()
         try:
-            candidate.relative_to(root)
+            candidate.relative_to(allowed_root)
         except ValueError:
-            self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return
         if not candidate.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
@@ -62,6 +106,12 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    @staticmethod
+    def _is_allowed_static_path(relative_path):
+        return relative_path in {"index.html", "app.js", "styles.css"} or relative_path.startswith(
+            ("assets/", "frontend/")
+        )
 
     def log_message(self, format, *args):
         return
