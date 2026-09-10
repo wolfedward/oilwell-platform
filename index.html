@@ -3,43 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>合能油井智能化抽油测控平台</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta name="color-scheme" content="light" />
+    <title>合能油井数字智能化管理平台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css?v=20260911" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="brand">
+    <a class="skip-link" href="#workspace">跳转到工作区</a>
+    <div id="app" class="app-root" aria-busy="true">
+      <nav class="visually-hidden" aria-label="一级功能导航"></nav>
+      <main id="workspace" class="boot-screen" tabindex="-1">
+        <div role="status" aria-live="polite">
           <img src="./assets/heneng-logo.png" alt="合能科技" />
-          <strong>油井智能化抽油测控平台</strong>
+          <span>正在连接本机服务…</span>
         </div>
-        <button class="icon-button" id="collapseButton" type="button" aria-label="折叠菜单">
-          <span></span>
-          <span></span>
-          <span></span>
-        </button>
-        <nav class="topnav" id="topNav" aria-label="一级功能导航"></nav>
-        <div class="userbar">
-          <span class="notice-dot">0</span>
-          <span>消息</span>
-          <span>帮助</span>
-          <span class="avatar">HN</span>
-          <strong>合能科技演示账号</strong>
-        </div>
-      </header>
-
-      <div class="tabbar">
-        <button class="tab-scroll" type="button" aria-label="向左">‹</button>
-        <div class="tabs" id="tabs"></div>
-        <button class="tab-scroll" type="button" aria-label="向右">›</button>
-      </div>
-
-      <div class="main-layout">
-        <aside class="sidebar" id="sidebar" aria-label="二级功能菜单"></aside>
-        <main class="workspace" id="workspace" tabindex="-1"></main>
-      </div>
+      </main>
     </div>
-
-    <script src="./app.js"></script>
+    <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="./app.js?v=20260911"></script>
   </body>
 </html>

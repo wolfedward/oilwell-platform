@@ -336,7 +336,12 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         try: candidate.relative_to(allowed)
         except ValueError: self.send_error(HTTPStatus.NOT_FOUND, "File not found"); return
         if not candidate.is_file(): self.send_error(HTTPStatus.NOT_FOUND, "File not found"); return
-        body = candidate.read_bytes(); self.send_response(HTTPStatus.OK); self.send_header("Content-Type", mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        body = candidate.read_bytes(); self.send_response(HTTPStatus.OK); self.send_header("Content-Type", mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"); self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.end_headers(); self.wfile.write(body)
     @staticmethod
     def _is_allowed_static_path(relative): return relative in {"index.html", "app.js", "styles.css"} or relative.startswith(("assets/", "frontend/"))
     def log_message(self, format, *args): return

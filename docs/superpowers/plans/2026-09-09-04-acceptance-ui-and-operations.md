@@ -42,7 +42,7 @@
 - Produces: router.register(pageId, loader), router.open(pageId, params), router.restore()
 - Produces: components table, pagination, modal, toast, formField, statusTag, skeleton, errorPanel
 
-- [ ] **Step 1: Write failing asset and route tests**
+- [x] **Step 1: Write failing asset and route tests**
 
     def test_index_uses_module_entry_and_has_accessible_regions(self):
         html = Path("index.html").read_text(encoding="utf-8")
@@ -54,17 +54,17 @@
         response = self.client.get("/../backend/database.py")
         self.assertEqual(response.status, 404)
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_static_assets -v
 
 Expected: module entry or static security assertion fails.
 
-- [ ] **Step 3: Implement shell and shared frontend modules**
+- [x] **Step 3: Implement shell and shared frontend modules**
 
 Create login/session restoration, nine top modules, nested side navigation, closable tabs, route state, breadcrumb, global error boundary, 401 redirect, 403 panel, 409 conflict refresh prompt, toast queue, and modal focus return. API requests use same-origin cookies and abort after fifteen seconds.
 
-- [ ] **Step 4: Run tests and JavaScript syntax checks**
+- [x] **Step 4: Run tests and JavaScript syntax checks**
 
     python -m unittest tests.test_static_assets -v
     node --check app.js
@@ -72,7 +72,7 @@ Create login/session restoration, nine top modules, nested side navigation, clos
 
 Expected: all commands exit zero.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add index.html app.js styles.css frontend tests/test_static_assets.py
     git commit -m "feat: build authenticated platform shell"
