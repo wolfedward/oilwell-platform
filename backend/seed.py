@@ -15,6 +15,10 @@ SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 GENERATED_AT = "2026-06-30T23:00:00.000+08:00"
 PRODUCTION_START = date(2026, 4, 2)
 TELEMETRY_START = datetime(2026, 6, 1, tzinfo=SHANGHAI_TIMEZONE)
+EFFECT_START = datetime(2026, 7, 1, tzinfo=SHANGHAI_TIMEZONE)
+EFFECT_DAYS = 15
+EFFECT_SOURCE = "measurement_import"
+EFFECT_HISTORY_VERSION = 2
 UNIT_NAMES = ("东部采油一区", "东部采油二区", "西部采油一区", "西部采油二区")
 
 
@@ -700,7 +704,227 @@ def bootstrap_local_auth(db: Database) -> None:
 
 def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:
     bootstrap_local_auth(db)
+    _ensure_effect_history(db)
     return summary
+
+
+def _ensure_effect_history(db: Database) -> None:
+    """Install one deterministic post-strategy measurement run.
+
+    These are source rows, not cached report totals: hourly active power and
+    daily production remain independently queryable and reconcilable.
+    """
+    manifest = db.query_one(
+        "SELECT seed,namespace FROM seed_manifests WHERE dataset_name=?",
+        (MANIFEST_NAME,),
+    )
+    if manifest is None:
+        return
+    marker = db.query_one(
+        """SELECT id,detail FROM system_events
+           WHERE event_type='strategy_effect_history_import' AND source_type='system'
+           ORDER BY id LIMIT 1"""
+    )
+    if marker is not None:
+        try:
+            old_detail = json.loads(marker["detail"])
+            marker_version = old_detail["version"]
+        except (TypeError, KeyError, json.JSONDecodeError):
+            raise SeedDataIntegrityError("strategy effect history manifest is invalid") from None
+        if marker_version == EFFECT_HISTORY_VERSION:
+            _validate_effect_history(db, marker["detail"])
+            return
+        if marker_version != 1:
+            raise SeedDataIntegrityError("strategy effect history version is unsupported")
+        try:
+            old_well_ids = old_detail["well_ids"]
+            old_start = datetime.fromisoformat(old_detail["start"])
+            old_days = int(old_detail["days"])
+        except (TypeError, KeyError, ValueError):
+            raise SeedDataIntegrityError("strategy effect history manifest is invalid") from None
+        if (
+            not isinstance(old_well_ids, list) or not old_well_ids
+            or any(not isinstance(well_id, str) for well_id in old_well_ids)
+            or old_start.tzinfo is None or old_days < 1
+        ):
+            raise SeedDataIntegrityError("strategy effect history manifest is invalid")
+        old_end = old_start + timedelta(days=old_days)
+        old_placeholders = ",".join("?" for _ in old_well_ids)
+        with db.transaction(
+            None, "strategy_effect_history.upgrade", "seed_dataset", MANIFEST_NAME,
+            source_type="system", immediate=True,
+        ) as connection:
+            connection.execute(
+                f"""DELETE FROM telemetry WHERE source_type=?
+                    AND well_id IN ({old_placeholders})
+                    AND datetime(measured_at)>=datetime(?) AND datetime(measured_at)<=datetime(?)""",
+                (EFFECT_SOURCE, *old_well_ids, old_start.isoformat(), old_end.isoformat()),
+            )
+            connection.execute(
+                f"""DELETE FROM production_daily WHERE source_type=?
+                    AND well_id IN ({old_placeholders}) AND day>=? AND day<?""",
+                (
+                    EFFECT_SOURCE, *old_well_ids, old_start.date().isoformat(),
+                    old_end.date().isoformat(),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM system_events WHERE id=?", (marker["id"],)
+            )
+    profiles = {
+        profile["well_id"]: profile
+        for profile in _well_profiles(manifest["seed"], manifest["namespace"])
+    }
+    strategy_rows = db.query_all(
+        """SELECT id,well_id FROM energy_strategies
+           WHERE source_type=? AND status IN ('active','effective','rollback')
+           ORDER BY id""",
+        (SIMULATOR,),
+    )
+    selected = [row for row in strategy_rows if row["well_id"] in profiles]
+    if not selected:
+        return
+    well_ids = [row["well_id"] for row in selected]
+    with db.transaction(
+        None, "strategy_effect_history.import", "seed_dataset", MANIFEST_NAME,
+        source_type="system", immediate=True,
+    ) as connection:
+        if connection.execute(
+            """SELECT 1 FROM system_events
+               WHERE event_type='strategy_effect_history_import' AND source_type='system'
+               LIMIT 1"""
+        ).fetchone() is not None:
+            return
+        production_rows = []
+        telemetry_rows = []
+        for strategy in selected:
+            profile = profiles[strategy["well_id"]]
+            baseline_energy = connection.execute(
+                """SELECT SUM(value) FROM telemetry
+                   WHERE well_id=? AND metric_code='power_kw' AND status='valid'
+                     AND datetime(measured_at)>=datetime('2026-06-16T00:00:00+08:00')
+                     AND datetime(measured_at)<datetime('2026-07-01T00:00:00+08:00')""",
+                (profile["well_id"],),
+            ).fetchone()[0]
+            baseline_fluid = connection.execute(
+                """SELECT SUM(daily_fluid) FROM production_daily
+                   WHERE well_id=? AND status='valid'
+                     AND day BETWEEN '2026-06-16' AND '2026-06-30'""",
+                (profile["well_id"],),
+            ).fetchone()[0]
+            if not baseline_energy or not baseline_fluid:
+                raise SeedDataIntegrityError(
+                    f"strategy effect baseline is unavailable for {profile['well_id']}"
+                )
+            energy_factors = [1.0 + 0.012 * math.cos(offset / 4.0) for offset in range(EFFECT_DAYS)]
+            fluid_factors = [
+                1.0 + 0.008 * math.sin((offset + profile["index"]) / 4.0)
+                for offset in range(EFFECT_DAYS)
+            ]
+            connection.execute(
+                "UPDATE energy_strategies SET effective_at=? WHERE id=?",
+                (EFFECT_START.isoformat(timespec="milliseconds"), strategy["id"]),
+            )
+            for offset in range(EFFECT_DAYS):
+                daily = _effect_daily_profile(
+                    profile,
+                    offset,
+                    float(baseline_energy) * 0.72 * energy_factors[offset] / sum(energy_factors),
+                    float(baseline_fluid) * 0.99 * fluid_factors[offset] / sum(fluid_factors),
+                )
+                day = (EFFECT_START + timedelta(days=offset)).date()
+                production_rows.append((
+                    profile["well_id"], day.isoformat(), daily["daily_oil"],
+                    daily["daily_fluid"], daily["power_kwh"],
+                    round(profile["pump_efficiency"], 4), round(profile["stroke_m"], 3),
+                    round(profile["frequency_hz"], 3), daily["runtime_hours"],
+                    EFFECT_SOURCE, f"{day.isoformat()}T23:00:00.000+08:00",
+                    f"{day.isoformat()}T23:00:00.000+08:00",
+                ))
+                running_hours = int(daily["runtime_hours"])
+                weights = [
+                    1.0 + 0.03 * math.sin((hour + profile["index"] + offset) / 3.0)
+                    for hour in range(running_hours)
+                ]
+                total_weight = sum(weights)
+                values = [round(daily["power_kwh"] * weight / total_weight, 3) for weight in weights]
+                values[-1] = round(daily["power_kwh"] - sum(values[:-1]), 3)
+                start_hour = (profile["index"] + offset * 5) % 24
+                active = {(start_hour + hour) % 24: values[hour] for hour in range(running_hours)}
+                for hour in range(24):
+                    measured = EFFECT_START + timedelta(days=offset, hours=hour)
+                    timestamp = measured.isoformat(timespec="milliseconds")
+                    telemetry_rows.append((
+                        profile["well_id"], profile["device_id"], profile["channel_id"],
+                        timestamp, active.get(hour, 0.0), EFFECT_SOURCE, timestamp, timestamp,
+                    ))
+            endpoint = (EFFECT_START + timedelta(days=EFFECT_DAYS)).isoformat(timespec="milliseconds")
+            telemetry_rows.append((
+                profile["well_id"], profile["device_id"], profile["channel_id"],
+                endpoint, 0.0, EFFECT_SOURCE, endpoint, endpoint,
+            ))
+        connection.executemany(
+            """INSERT INTO production_daily(
+                   well_id,day,daily_oil,daily_fluid,power_kwh,pump_efficiency,stroke_m,
+                   frequency_hz,runtime_hours,status,source_type,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,'valid',?,?,?)""",
+            production_rows,
+        )
+        connection.executemany(
+            """INSERT INTO telemetry(
+                   well_id,device_id,channel_id,measured_at,metric_code,value,unit,status,
+                   source_type,created_at,updated_at
+               ) VALUES(?,?,?,?,'power_kw',?,'kW','valid',?,?,?)""",
+            telemetry_rows,
+        )
+        detail = _canonical_json({
+            "version": EFFECT_HISTORY_VERSION, "well_ids": well_ids, "days": EFFECT_DAYS,
+            "start": EFFECT_START.isoformat(timespec="milliseconds"),
+            "production_rows": len(production_rows), "telemetry_rows": len(telemetry_rows),
+        })
+        connection.execute(
+            """INSERT INTO system_events(event_type,detail,status,source_type)
+               VALUES('strategy_effect_history_import',?,'recorded','system')""",
+            (detail,),
+        )
+
+
+def _validate_effect_history(db: Database, raw_detail: str) -> None:
+    try:
+        detail = json.loads(raw_detail)
+        well_ids = detail["well_ids"]
+        expected_production = int(detail["production_rows"])
+        expected_telemetry = int(detail["telemetry_rows"])
+        start = datetime.fromisoformat(detail["start"])
+        days = int(detail["days"])
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        raise SeedDataIntegrityError("strategy effect history manifest is invalid") from None
+    if not isinstance(well_ids, list) or not well_ids or any(
+        not isinstance(well_id, str) for well_id in well_ids
+    ) or start.tzinfo is None or days < 1:
+        raise SeedDataIntegrityError("strategy effect history manifest is invalid")
+    end = start + timedelta(days=days)
+    placeholders = ",".join("?" for _ in well_ids)
+    production = db.scalar(
+        f"""SELECT COUNT(*) FROM production_daily WHERE source_type=?
+            AND well_id IN ({placeholders}) AND day>=? AND day<?""",
+        (EFFECT_SOURCE, *well_ids, start.date().isoformat(), end.date().isoformat()),
+    )
+    telemetry = db.scalar(
+        f"""SELECT COUNT(*) FROM telemetry WHERE source_type=?
+            AND well_id IN ({placeholders})
+            AND datetime(measured_at)>=datetime(?) AND datetime(measured_at)<=datetime(?)""",
+        (EFFECT_SOURCE, *well_ids, start.isoformat(), end.isoformat()),
+    )
+    effective = db.scalar(
+        f"""SELECT COUNT(*) FROM energy_strategies
+            WHERE source_type=? AND well_id IN ({placeholders}) AND effective_at IS NOT NULL""",
+        (SIMULATOR, *well_ids),
+    )
+    if (production, telemetry, effective) != (
+        expected_production, expected_telemetry, len(well_ids),
+    ):
+        raise SeedDataIntegrityError("strategy effect history is incomplete")
 
 
 def seed_database(db: Database, seed: int = 202606) -> SeedSummary:
@@ -942,6 +1166,20 @@ def _daily_profile(profile: dict, offset: int) -> dict:
     }
 
 
+def _effect_daily_profile(
+    profile: dict, offset: int, power_kwh: float, daily_fluid: float,
+) -> dict:
+    """Post-effective measurements retain liquid while reducing runtime."""
+    runtime_hours = 9 + (offset + profile["index"]) % 2
+    daily_oil = daily_fluid * (0.61 + profile["pump_efficiency"] * 0.08)
+    return {
+        "daily_fluid": round(daily_fluid, 3),
+        "daily_oil": round(daily_oil, 3),
+        "runtime_hours": runtime_hours,
+        "power_kwh": round(power_kwh, 3),
+    }
+
+
 def _insert_analysis_and_operations(connection, profiles: list[dict], seed: int) -> None:
     connection.executemany(
         """
@@ -1067,11 +1305,14 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
     )
     connection.executemany(
         """
-        INSERT INTO energy_strategies(id, well_id, name, status, source_type, created_at, updated_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO energy_strategies(
+            id, well_id, name, effective_at, status, source_type, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (spec["strategy_id"], spec["profile"]["well_id"], f"{spec['profile']['name']} 间抽节能策略",
+             "2026-06-16T00:00:00.000+08:00"
+             if spec["strategy"] in {"active", "effective", "rollback"} else None,
              spec["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],

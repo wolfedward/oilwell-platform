@@ -66,6 +66,7 @@ class Database:
                 self._migrate_analysis_columns(connection)
                 self._migrate_strategy_columns(connection)
                 self._migrate_command_columns(connection)
+                self._backfill_strategy_effective_at(connection)
                 self._migrate_workflow_columns(connection)
                 self._normalize_legacy_timestamps(connection)
                 violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -153,6 +154,10 @@ class Database:
         connection.execute("CREATE INDEX IF NOT EXISTS raw_messages_device_sequence_idx ON raw_messages(device_id, sequence_text, status)")
         connection.execute("CREATE INDEX IF NOT EXISTS data_quality_live_status_idx ON data_quality_events(source_type, device_id, kind, status, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS telemetry_raw_message_idx ON telemetry(raw_message_id)")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS telemetry_report_power_idx "
+            "ON telemetry(well_id,metric_code,status,datetime(measured_at),id)"
+        )
         connection.execute("CREATE INDEX IF NOT EXISTS device_heartbeats_raw_message_idx ON device_heartbeats(raw_message_id)")
 
     @staticmethod
@@ -408,7 +413,7 @@ class Database:
                 ("version", "INTEGER NOT NULL DEFAULT 1"), ("created_by", "INTEGER"),
                 ("submitted_by", "INTEGER"), ("decision_by", "INTEGER"),
                 ("submitted_at", "TEXT"), ("decision_at", "TEXT"),
-                ("approval_comment", "TEXT"),
+                ("effective_at", "TEXT"), ("approval_comment", "TEXT"),
             ),
             "strategy_versions": (
                 ("created_by", "INTEGER"), ("submitted_at", "TEXT"),
@@ -455,12 +460,35 @@ class Database:
             "ON energy_strategies(well_id,status,updated_at DESC,id DESC)"
         )
         connection.execute(
+            "CREATE INDEX IF NOT EXISTS energy_strategies_effect_period_idx "
+            "ON energy_strategies(well_id,datetime(effective_at),id)"
+        )
+        connection.execute(
             "CREATE INDEX IF NOT EXISTS approvals_object_idx "
             "ON approvals(object_type,object_id,created_at DESC,id DESC)"
         )
         Database._create_strategy_timestamp_trigger(connection)
         Database._create_strategy_version_triggers(connection)
         Database._create_strategy_integrity_triggers(connection)
+
+    @staticmethod
+    def _backfill_strategy_effective_at(connection: sqlite3.Connection) -> None:
+        """Run only after command columns exist on every legacy database."""
+        connection.execute(
+            """UPDATE energy_strategies AS strategy SET effective_at=COALESCE(
+                   (SELECT MIN(command.completed_at) FROM device_commands AS command
+                    WHERE command.strategy_id=strategy.id AND command.status='success'
+                      AND command.command_type<>'rollback_cycle'
+                      AND command.completed_at IS NOT NULL),
+                   CASE WHEN strategy.source_type='simulator' THEN (
+                       SELECT strftime('%Y-%m-%dT%H:%M:%f+08:00',
+                                       MIN(telemetry.measured_at),'+8 hours','+15 days')
+                       FROM telemetry WHERE telemetry.well_id=strategy.well_id
+                   ) ELSE strategy.updated_at END
+               )
+               WHERE effective_at IS NULL
+                 AND status IN ('active','effective','paused','rollback','rolled_back')"""
+        )
 
     @staticmethod
     def _rebuild_energy_strategies(connection: sqlite3.Connection) -> None:
@@ -481,6 +509,7 @@ class Database:
                    decision_by INTEGER REFERENCES users(id),
                    submitted_at TEXT,
                    decision_at TEXT,
+                   effective_at TEXT,
                    approval_comment TEXT,
                    status TEXT NOT NULL DEFAULT 'draft',
                    actor_id INTEGER,
@@ -493,10 +522,10 @@ class Database:
             """INSERT INTO energy_strategies(
                    id,well_id,parent_strategy_id,current_version_id,name,version,
                    created_by,submitted_by,decision_by,submitted_at,decision_at,
-                   approval_comment,status,actor_id,source_type,created_at,updated_at
+                   effective_at,approval_comment,status,actor_id,source_type,created_at,updated_at
                ) SELECT id,well_id,parent_strategy_id,current_version_id,name,version,
                         created_by,submitted_by,decision_by,submitted_at,decision_at,
-                        approval_comment,status,actor_id,source_type,created_at,updated_at
+                        effective_at,approval_comment,status,actor_id,source_type,created_at,updated_at
                    FROM energy_strategies_workflow_legacy"""
         )
         connection.execute("DROP TABLE energy_strategies_workflow_legacy")
@@ -721,6 +750,10 @@ class Database:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS device_commands_process_idx "
             "ON device_commands(status,next_attempt_at,expires_at,created_at,id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS device_commands_strategy_period_idx "
+            "ON device_commands(strategy_id,status,command_type,datetime(completed_at),id)"
         )
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS command_attempts_stage_unique "

@@ -21,6 +21,7 @@ from backend.services.workflows import (
     WorkflowNotFound, WorkflowService, WorkflowValidationError,
     WorkflowVersionConflict,
 )
+from backend.services.reports import ReportNotFound, ReportService, ReportValidationError
 from backend.state_machine import InvalidState
 
 
@@ -715,6 +716,62 @@ class WorkflowApi:
         if (result["page"] - 1) * result["page_size"] > WellApi.SQLITE_MAX_INTEGER:
             raise WorkflowValidationError("page offset is out of range")
         return result
+
+
+class ReportApi:
+    """Computed JSON reports and spreadsheet-safe UTF-8 CSV downloads."""
+
+    REPORT_PATTERN = re.compile(
+        r"/api/reports/(production|diagnosis|data-quality|strategy|energy|work-orders)(\.csv)?"
+    )
+    QUERY_KEYS = {
+        "unit_id", "well_id", "strategy_id", "from", "to", "status", "assignee_id",
+    }
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service = ReportService(handler.server.database)
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        match = self.REPORT_PATTERN.fullmatch(parsed.path)
+        if match is None:
+            return False
+        if self.handler._require("reports.read") is None:
+            return True
+        try:
+            filters = WellApi._query(parsed.query, self.QUERY_KEYS)
+            if match.group(2):
+                return self._csv(match.group(1), filters)
+            self.handler._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "data": self.service.report(match.group(1), filters)},
+            )
+        except ReportNotFound as error:
+            self.handler._send_json(
+                HTTPStatus.NOT_FOUND,
+                self.handler._error("not_found", str(error)),
+            )
+        except (ReportValidationError, WellValidationError, ValueError) as error:
+            self.handler._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self.handler._error("validation_error", str(error)),
+            )
+        return True
+
+    def _csv(self, report_type, filters):
+        body = self.service.csv(report_type, filters)
+        self.handler.send_response(HTTPStatus.OK)
+        self.handler.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.handler.send_header(
+            "Content-Disposition", f'attachment; filename="{report_type}-report.csv"'
+        )
+        self.handler.send_header("Cache-Control", "no-store")
+        self.handler.send_header("X-Content-Type-Options", "nosniff")
+        self.handler.send_header("Content-Length", str(len(body)))
+        self.handler.end_headers()
+        self.handler.wfile.write(body)
+        return True
 
 
 class StrategyApi:

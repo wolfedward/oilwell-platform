@@ -94,7 +94,11 @@ class CommandServiceTests(unittest.TestCase):
         self.assertEqual(summary, {"processed": 1, "succeeded": 1, "deferred": 0, "failed": 0})
         completed = self.commands.get(command["id"])
         self.assertEqual(completed["state"], "success")
-        self.assertEqual(self.strategies.detail(strategy["id"])["status"], "effective")
+        effective = self.strategies.detail(strategy["id"])
+        self.assertEqual(effective["status"], "effective")
+        self.assertEqual(
+            datetime.fromisoformat(effective["effective_at"]), NOW,
+        )
         self.assertEqual(
             self.database.column(
                 "SELECT state FROM command_attempts WHERE command_id=? ORDER BY id",

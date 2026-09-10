@@ -428,9 +428,12 @@ class CommandService:
                 (attempt_number, now.isoformat(), row["id"]),
             )
             if connection.execute(
-                """UPDATE energy_strategies SET status=?,version=version+1,actor_id=?
+                """UPDATE energy_strategies SET status=?,version=version+1,actor_id=?,
+                       effective_at=CASE WHEN ?='effective'
+                           THEN COALESCE(effective_at,?) ELSE effective_at END
                    WHERE id=? AND status=?""",
-                (target_status, row["actor_id"], row["strategy_id"], expected_status),
+                (target_status, row["actor_id"], target_status, now.isoformat(),
+                 row["strategy_id"], expected_status),
             ).rowcount != 1:
                 raise CommandValidationError("strategy is no longer ready for this command")
             self.audit.record(

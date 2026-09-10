@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS energy_strategies (
     decision_by INTEGER REFERENCES users(id),
     submitted_at TEXT,
     decision_at TEXT,
+    effective_at TEXT,
     approval_comment TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     actor_id INTEGER,

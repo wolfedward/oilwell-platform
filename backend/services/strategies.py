@@ -436,7 +436,7 @@ class StrategyService:
             "id", "well_id", "well_name", "parent_strategy_id", "current_version_id",
             "name", "version", "configuration_version", "created_by", "submitted_by",
             "decision_by", "submitted_at", "decision_at", "approval_comment", "status",
-            "source_type", "created_at", "updated_at",
+            "effective_at", "source_type", "created_at", "updated_at",
         )
         result = {key: row[key] for key in keys}
         result["configuration"] = StrategyService._configuration(row["configuration"])

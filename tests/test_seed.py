@@ -22,12 +22,35 @@ class SeedDatabaseTests(unittest.TestCase):
 
         self.assertEqual(summary, SeedSummary(4, 8, 48, 48, 48 * 30 * 24))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM wells WHERE is_low_output = 1"), 16)
-        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM production_daily"), 48 * 90)
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT COUNT(*) FROM production_daily WHERE source_type='simulator'"
+            ),
+            48 * 90,
+        )
         self.assertGreaterEqual(self.database.scalar("SELECT COUNT(*) FROM telemetry"), 48 * 30 * 24)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM alarms"), 16)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM work_orders"), 16)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM energy_strategies"), 16)
-        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM system_events"), 48)
+        self.assertEqual(
+            self.database.scalar(
+                """SELECT COUNT(*) FROM energy_strategies
+                   WHERE status IN ('active','effective','rollback') AND effective_at IS NULL"""
+            ),
+            0,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT COUNT(*) FROM system_events WHERE event_type='device_telemetry_cycle'"
+            ),
+            48,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT COUNT(*) FROM system_events WHERE event_type='strategy_effect_history_import'"
+            ),
+            1,
+        )
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM pragma_foreign_key_check"), 0)
 
     def test_seed_is_idempotent_deterministic_and_traceable(self):
@@ -43,9 +66,9 @@ class SeedDatabaseTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(round(first_daily["daily_fluid"], 3), 2.846)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM production_daily"), first_rows)
-        self.assertEqual(
+        self.assertGreater(
             self.database.scalar(
-                "SELECT COUNT(*) FROM telemetry WHERE source_type <> 'simulator'"
+                "SELECT COUNT(*) FROM telemetry WHERE source_type='measurement_import'"
             ),
             0,
         )
@@ -55,6 +78,59 @@ class SeedDatabaseTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_effect_history_upgrade_preserves_later_business_imports_and_restart(self):
+        seed_database(self.database)
+        marker = self.database.query_one(
+            """SELECT id,detail FROM system_events
+               WHERE event_type='strategy_effect_history_import'"""
+        )
+        detail = json.loads(marker["detail"])
+        well_id = detail["well_ids"][0]
+        device = self.database.query_one(
+            "SELECT id FROM devices WHERE well_id=? ORDER BY id LIMIT 1", (well_id,)
+        )
+        detail["version"] = 1
+        with self.database.transaction(
+            None, "test.effect_upgrade_scope", "seed_dataset", "acceptance-history"
+        ) as connection:
+            connection.execute(
+                "UPDATE system_events SET detail=? WHERE id=?",
+                (json.dumps(detail, sort_keys=True), marker["id"]),
+            )
+            connection.execute(
+                """INSERT INTO telemetry(
+                       well_id,device_id,measured_at,metric_code,value,unit,status,source_type
+                   ) VALUES(?,?,?,'power_kw',3.2,'kW','valid','measurement_import')""",
+                (well_id, device["id"], "2026-08-01T00:00:00+08:00"),
+            )
+            connection.execute(
+                """INSERT INTO production_daily(
+                       well_id,day,daily_oil,daily_fluid,power_kwh,pump_efficiency,
+                       stroke_m,frequency_hz,runtime_hours,status,source_type
+                   ) VALUES(?,'2026-08-01',2.1,3.3,32.0,.61,2.0,32.0,10.0,
+                            'valid','measurement_import')""",
+                (well_id,),
+            )
+
+        seed_database(self.database)
+        seed_database(self.database)
+
+        self.assertEqual(self.database.scalar(
+            """SELECT COUNT(*) FROM telemetry WHERE well_id=?
+               AND measured_at='2026-08-01T00:00:00+08:00'
+               AND source_type='measurement_import'""",
+            (well_id,),
+        ), 1)
+        self.assertEqual(self.database.scalar(
+            """SELECT COUNT(*) FROM production_daily WHERE well_id=? AND day='2026-08-01'
+               AND source_type='measurement_import'""",
+            (well_id,),
+        ), 1)
+        self.assertEqual(self.database.scalar(
+            """SELECT json_extract(detail,'$.version') FROM system_events
+               WHERE event_type='strategy_effect_history_import'"""
+        ), 2)
 
     def test_partial_simulator_dataset_is_rejected_instead_of_reported_complete(self):
         """Dropping a generated production day must make the next bootstrap visibly fail."""
@@ -78,7 +154,12 @@ class SeedDatabaseTests(unittest.TestCase):
         summary = seed_database(self.database)
 
         self.assertEqual(summary, SeedSummary(4, 8, 48, 48, 48 * 30 * 24))
-        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM production_daily"), 48 * 90)
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT COUNT(*) FROM production_daily WHERE source_type='simulator'"
+            ),
+            48 * 90,
+        )
         manifest = self.database.query_one(
             "SELECT version, source_type, content_hash FROM seed_manifests WHERE dataset_name = 'acceptance-history'"
         )
@@ -164,6 +245,7 @@ class SeedDatabaseTests(unittest.TestCase):
             FROM production_daily AS p
             JOIN telemetry AS t
               ON t.well_id = p.well_id AND substr(t.measured_at, 1, 10) = p.day
+            WHERE p.source_type='simulator' AND t.source_type='simulator'
             GROUP BY p.well_id, p.day
             ORDER BY p.well_id, p.day
             """
@@ -172,13 +254,19 @@ class SeedDatabaseTests(unittest.TestCase):
         self.assertEqual(len(rows), 48 * 30)
         self.assertEqual(
             self.database.scalar(
-                "SELECT MIN(days), MAX(days) FROM (SELECT well_id, COUNT(*) AS days FROM production_daily GROUP BY well_id)"
+                """SELECT MIN(days), MAX(days) FROM (
+                       SELECT well_id, COUNT(*) AS days FROM production_daily
+                       WHERE source_type='simulator' GROUP BY well_id
+                   )"""
             ),
             90,
         )
         self.assertEqual(
             self.database.scalar(
-                "SELECT MIN(hours), MAX(hours) FROM (SELECT well_id, COUNT(*) AS hours FROM telemetry GROUP BY well_id)"
+                """SELECT MIN(hours), MAX(hours) FROM (
+                       SELECT well_id, COUNT(*) AS hours FROM telemetry
+                       WHERE source_type='simulator' GROUP BY well_id
+                   )"""
             ),
             720,
         )

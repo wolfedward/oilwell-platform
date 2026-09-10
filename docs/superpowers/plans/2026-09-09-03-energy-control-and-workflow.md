@@ -241,7 +241,7 @@ Expected: all linked-flow tests pass.
 - Produces: GET /api/reports/production, /api/reports/diagnosis, /api/reports/data-quality, /api/reports/strategy, /api/reports/energy, /api/reports/work-orders
 - Produces: GET /api/reports/{type}.csv
 
-- [ ] **Step 1: Write failing report reconciliation tests**
+- [x] **Step 1: Write failing report reconciliation tests**
 
     def test_energy_report_reconciles_with_telemetry(self):
         report = service.energy_effect(strategy_id, start, end)
@@ -257,23 +257,23 @@ Expected: all linked-flow tests pass.
         self.assertTrue(content.startswith(b"\\xef\\xbb\\xbf"))
         self.assertIn("U-01", content.decode("utf-8-sig"))
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_reports -v
 
 Expected: missing report service.
 
-- [ ] **Step 3: Implement computed reports and CSV export**
+- [x] **Step 3: Implement computed reports and CSV export**
 
 Compute all totals from source tables, include filter metadata and generated_at, and use csv.writer with UTF-8 BOM. Energy evaluation compares a configurable pre-strategy baseline window with the post-effective window and returns energy, runtime, liquid, start count, and savings. Do not store independent totals that can diverge from detail rows.
 
-- [ ] **Step 4: Run the full backend suite**
+- [x] **Step 4: Run the full backend suite**
 
     python -m unittest discover -s tests -v
 
 Expected: all backend tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add backend/services/reports.py backend/api.py backend/http_server.py tests/test_reports.py
     git commit -m "feat: report measured energy effects"
