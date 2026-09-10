@@ -51,11 +51,11 @@ LOCAL_ACCOUNTS = (
     ("reviewer", "只读评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
-    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve"),
-    "production_engineer": ("wells.read", "alarms.ack", "strategy.create", "strategy.submit", "reports.read"),
-    "algorithm_engineer": ("wells.read", "diagnosis.run", "diagnosis.review", "reports.read"),
-    "maintenance_engineer": ("wells.read", "devices.read", "devices.control", "maintenance.manage"),
-    "reviewer": ("wells.read", "reports.read", "audit.read"),
+    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update"),
+    "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read"),
+    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "diagnosis.review", "reports.read"),
+    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "maintenance.manage"),
+    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "reports.read", "audit.read"),
 }
 AUTH_BOOTSTRAP_VERSION = 1
 
@@ -223,7 +223,7 @@ def _content_hash(db: Database, seed: int, namespace: str) -> str:
         return _content_hash_from(connection, seed, namespace)
 
 
-def _content_hash_from(connection, seed: int, namespace: str, *, legacy_auth_projection: bool = False) -> str:
+def _content_hash_from(connection, seed: int, namespace: str, *, projection: str = "well-lifecycle-v3") -> str:
     profiles = _well_profiles(seed, namespace)
     specs = _workflow_specs(profiles)
     well_ids = [profile["well_id"] for profile in profiles]
@@ -235,8 +235,10 @@ def _content_hash_from(connection, seed: int, namespace: str, *, legacy_auth_pro
     unit_ids = [_identifier(namespace, f"U-{index:02d}") for index in range(1, 5)]
     group_ids = [_identifier(namespace, f"G-{index:02d}") for index in range(1, 9)]
     digest = hashlib.sha256()
-    projection = "" if legacy_auth_projection else "|auth-projection-v2"
-    digest.update(f"{MANIFEST_NAME}|{MANIFEST_VERSION}|{seed}|{namespace}{projection}\n".encode())
+    projection_markers = {"legacy-auth-v1": "", "auth-v2": "|auth-projection-v2", "well-lifecycle-v3": "|well-lifecycle-projection-v3"}
+    if projection not in projection_markers:
+        raise ValueError("unsupported seed hash projection")
+    digest.update(f"{MANIFEST_NAME}|{MANIFEST_VERSION}|{seed}|{namespace}{projection_markers[projection]}\n".encode())
 
     def append_rows(label: str, select_sql: str, parameters: list) -> None:
         row = connection.execute(
@@ -258,7 +260,8 @@ def _content_hash_from(connection, seed: int, namespace: str, *, legacy_auth_pro
 
     rows_for_ids("units", "units", "id", unit_ids, "'id',id,'code',code,'name',name,'status',status,'source',source_type")
     rows_for_ids("groups", "well_groups", "id", group_ids, "'id',id,'unit',unit_id,'code',code,'name',name,'status',status,'source',source_type")
-    rows_for_ids("wells", "wells", "id", well_ids, "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type")
+    well_fields = "'id',id,'group',group_id,'code',code,'name',name,'low',is_low_output,'source',source_type" if projection == "well-lifecycle-v3" else "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type"
+    rows_for_ids("wells", "wells", "id", well_ids, well_fields)
     rows_for_ids("devices", "devices", "id", device_ids, "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type")
     rows_for_ids("channels", "device_channels", "id", channel_ids, "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type")
     rows_for_ids("heartbeats", "device_heartbeats", "device_id", device_ids, "'device',device_id,'reported',reported_at,'status',status,'source',source_type")
@@ -290,7 +293,7 @@ def _content_hash_from(connection, seed: int, namespace: str, *, legacy_auth_pro
         [*version_ids, SIMULATOR, SIMULATOR],
     )
     role_codes = [_identifier(namespace, code) for code in ("administrator", "production_engineer", "algorithm_engineer", "maintenance_engineer", "reviewer")]
-    if legacy_auth_projection:
+    if projection == "legacy-auth-v1":
         rows_for_ids("roles", "roles", "code", role_codes, "'code',code,'name',name,'status',status,'source',source_type")
         rows_for_ids("users", "users", "username", role_codes, "'role',role_id,'username',username,'name',display_name,'status',status,'source',source_type")
     else:
@@ -310,7 +313,13 @@ def _content_hash_from(connection, seed: int, namespace: str, *, legacy_auth_pro
 
 def _legacy_content_hash(db: Database, seed: int, namespace: str) -> str:
     with db.connection() as connection:
-        return _content_hash_from(connection, seed, namespace, legacy_auth_projection=True)
+        return _content_hash_from(connection, seed, namespace, projection="legacy-auth-v1")
+
+
+def _previous_content_hash(db: Database, seed: int, namespace: str) -> str:
+    """Exact Task 4 projection: auth configuration excluded, lifecycle included."""
+    with db.connection() as connection:
+        return _content_hash_from(connection, seed, namespace, projection="auth-v2")
 
 
 def _canonical_json(value) -> str:
@@ -361,16 +370,17 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     # Existing Task 3/Task 4 databases used the original projection.  Upgrade
     # only after proving that exact old projection still matches; otherwise a
     # damaged immutable seed record remains fail-closed.
+    previous_hash = _previous_content_hash(db, requested_seed, manifest["namespace"])
     legacy_hash = _legacy_content_hash(db, requested_seed, manifest["namespace"])
-    if manifest["content_hash"] != legacy_hash:
+    if manifest["content_hash"] not in {previous_hash, legacy_hash}:
         raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
     with db.transaction(
         None, "seed.upgrade_manifest_hash", "seed_manifest", MANIFEST_NAME, source_type=SIMULATOR,
-        details_json='{"after":{"projection":"auth-v2"},"before":{"projection":"legacy"}}',
+        details_json='{"after":{"projection":"well-lifecycle-v3"},"before":{"projection":"verified-legacy"}}',
     ) as connection:
         if connection.execute(
             "UPDATE seed_manifests SET content_hash = ? WHERE dataset_name = ? AND content_hash = ?",
-            (projected_hash, MANIFEST_NAME, legacy_hash),
+            (projected_hash, MANIFEST_NAME, manifest["content_hash"]),
         ).rowcount != 1:
             raise SeedDataIntegrityError("seed dataset incomplete: manifest update")
     return summary
@@ -401,6 +411,7 @@ def bootstrap_local_auth(db: Database) -> None:
                 "INSERT OR IGNORE INTO permissions(code, name, source_type) VALUES(?, ?, 'system')",
                 (permission, permission),
             )
+        new_permission_codes = set(permission_codes) - current_permissions
         if marker is None:
             # Default grants are a one-time bootstrap/migration action.  Later
             # restarts may add permission definitions but must honor revocations.
@@ -435,6 +446,20 @@ def bootstrap_local_auth(db: Database) -> None:
                 "INSERT INTO auth_bootstrap_state(id, bootstrap_version, source_type) VALUES(1, ?, 'system')",
                 (AUTH_BOOTSTRAP_VERSION,),
             )
+        else:
+            # A later release may introduce a new named capability.  Grant
+            # only those newly-created capabilities; never restore a revoked
+            # pre-existing permission on restart.
+            for role_code, permissions in ROLE_PERMISSIONS.items():
+                role = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()
+                if role is None:
+                    continue
+                for permission in set(permissions) & new_permission_codes:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO role_permissions(role_id, permission_id, source_type) "
+                        "SELECT ?, id, 'system' FROM permissions WHERE code=?",
+                        (role["id"], permission),
+                    )
 
 
 def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:

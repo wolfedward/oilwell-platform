@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
+from backend.api import WellApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
 from backend.config import Config
 from backend.database import Database
@@ -32,6 +33,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if WellApi(self).get(self.path): return
         path = urlsplit(self.path).path
         if path == "/api/health": return self._health()
         if path == "/api/auth/me": return self._auth_me()
@@ -55,6 +57,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if WellApi(self).patch(self.path): return
         path = urlsplit(self.path).path
         if path.startswith("/api/users/"): return self._users_patch(path)
         if path.startswith("/api/roles/"): return self._roles_patch(path)

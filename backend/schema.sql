@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS wells (
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
     is_low_output INTEGER NOT NULL DEFAULT 0 CHECK(is_low_output IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
