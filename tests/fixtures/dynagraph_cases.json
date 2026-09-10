@@ -1,0 +1,20 @@
+{
+  "mechanism": {
+    "stroke_m": 2.8,
+    "strokes_per_minute": 4.2,
+    "motor_efficiency": 0.91,
+    "gear_ratio": 30.0,
+    "transmission_efficiency": 0.86,
+    "balance_torque_nm": 180.0,
+    "balance_phase_deg": 8.0,
+    "torque_factor_m": 0.42,
+    "static_rod_load_kn": 36.0
+  },
+  "cases": {
+    "normal": [5.0, 5.7, 6.3, 6.7, 6.4, 5.8, 4.6, 4.0, 3.8, 4.1, 4.5, 4.8],
+    "supply_shortage": [4.6, 5.0, 5.3, 4.8, 4.2, 3.9, 3.7, 3.6, 3.6, 3.8, 4.0, 4.3],
+    "pump_leak": [5.8, 6.2, 5.0, 4.3, 4.1, 4.0, 3.9, 3.8, 3.8, 3.9, 4.0, 4.5],
+    "empty_pump": [3.2, 3.3, 3.4, 3.5, 3.4, 3.3, 3.2, 3.1, 3.1, 3.1, 3.15, 3.2],
+    "noisy_normal": [5.08, 5.58, 6.39, 6.55, 6.51, 5.69, 4.72, 3.91, 3.86, 4.19, 4.41, 4.86]
+  }
+}
