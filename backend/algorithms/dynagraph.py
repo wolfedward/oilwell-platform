@@ -39,6 +39,7 @@ class MechanismParams:
     balance_phase_deg: float
     torque_factor_m: float
     static_rod_load_kn: float
+    full_load_span_kn: float = 25.0
     dead_center_exclusion_deg: float = 10.0
 
 
@@ -181,6 +182,7 @@ def _validate_params(params: MechanismParams) -> None:
     _number(params.balance_phase_deg, "balance_phase_deg", -360.0, 360.0)
     _number(params.torque_factor_m, "torque_factor_m", .02, 10.0)
     _number(params.static_rod_load_kn, "static_rod_load_kn", 0.0, 500.0)
+    _number(params.full_load_span_kn, "full_load_span_kn", 1.0, 500.0)
     _number(params.dead_center_exclusion_deg, "dead_center_exclusion_deg", 1.0, 20.0)
     expected_factor = params.stroke_m / 2.0
     if not math.isclose(params.torque_factor_m, expected_factor, rel_tol=.02, abs_tol=.002):
@@ -307,7 +309,7 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
     if min(powers) < 0:
         warnings.append("negative active power indicates regenerative motor operation")
     point_tuple = tuple(points)
-    features = extract_features(point_tuple)
+    features = extract_features(point_tuple, params.full_load_span_kn)
     electrical_power = sum(powers) / len(powers)
     available_power = electrical_power * params.motor_efficiency * params.transmission_efficiency
     card_power = features.area_kn_m * params.strokes_per_minute / 60.0
@@ -345,10 +347,16 @@ def _linear_slope(points: list[LoadDisplacementPoint]) -> float:
     ) / denominator
 
 
-def extract_features(points: list[LoadDisplacementPoint] | tuple[LoadDisplacementPoint, ...]) -> DynagraphFeatures:
+def extract_features(
+    points: list[LoadDisplacementPoint] | tuple[LoadDisplacementPoint, ...],
+    full_load_span_kn: float = 25.0,
+) -> DynagraphFeatures:
     """Extract orientation-independent geometric and stroke-load features."""
     if not isinstance(points, (list, tuple)) or len(points) < 8:
         raise DynagraphValidationError("at least eight dynagraph points are required")
+    reference_load_span = _number(
+        full_load_span_kn, "full_load_span_kn", 1.0, 500.0,
+    )
     for point in points:
         if not isinstance(point, LoadDisplacementPoint):
             raise DynagraphValidationError("points must be LoadDisplacementPoint values")
@@ -368,10 +376,10 @@ def extract_features(points: list[LoadDisplacementPoint] | tuple[LoadDisplacemen
         current.displacement_m * following.load_kn - following.displacement_m * current.load_kn
         for current, following in zip(points, [*points[1:], points[0]])
     )) * .5
-    # Normalized card-area occupancy is invariant to the chosen load zero.  It
-    # is a geometric fillage proxy; field pump-fillage calibration is applied
-    # separately by the production model.
-    fillage_reference = stroke_span * load_span
+    # The well-specific full-card load span is a visible calibration parameter.
+    # Normalizing work area against it preserves load-zero invariance while
+    # retaining the amplitude loss that accompanies incomplete pump filling.
+    fillage_reference = stroke_span * reference_load_span
     fillage = max(0.0, min(1.0, area / fillage_reference))
     upstroke = [point for point in points if 0.0 <= point.phase_deg < 180.0]
     downstroke = [point for point in points if 180.0 <= point.phase_deg < 360.0]

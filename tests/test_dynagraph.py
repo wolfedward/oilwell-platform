@@ -59,6 +59,17 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         self.assertGreater(result.features.min_load_kn, 0.0)
         self.assertLess(result.features.max_load_kn, 120.0)
         self.assertGreater(result.features.area_kn_m, 10.0)
+        stroke_span = (
+            max(point.displacement_m for point in result.points)
+            - min(point.displacement_m for point in result.points)
+        )
+        self.assertAlmostEqual(
+            result.features.fillage,
+            result.features.area_kn_m / (
+                stroke_span * result.parameters.full_load_span_kn
+            ),
+            places=8,
+        )
         self.assertGreater(result.features.max_load_kn, result.features.min_load_kn)
         self.assertEqual(result.model_version, "dynagraph-2.0")
         self.assertLessEqual(sum(point.load_inferred for point in result.intermediate), 16)
@@ -99,6 +110,7 @@ class DynagraphAlgorithmTests(unittest.TestCase):
             vectors.append((round(value.area_kn_m, 3), round(value.fillage, 3), round(value.load_difference_kn, 3)))
         self.assertEqual(len(set(vectors)), 3)
         self.assertLess(values["pump_leak"].fillage, values["normal"].fillage)
+        self.assertLess(values["empty_pump"].fillage, values["pump_leak"].fillage)
 
     def test_noisy_normal_remains_near_normal_after_smoothing(self):
         normal = self.analyze("normal").features

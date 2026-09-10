@@ -8,6 +8,7 @@
     "balance_torque_nm": 180.0,
     "balance_phase_deg": 8.0,
     "torque_factor_m": 1.4,
+    "full_load_span_kn": 25.0,
     "dead_center_exclusion_deg": 10.0,
     "static_rod_load_kn": 36.0
   },
