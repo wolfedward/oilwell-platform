@@ -165,7 +165,10 @@ class DeviceApi:
         actor = self.handler._require("devices.control")
         if actor is None: return True
         try:
-            body = self.handler._json_body(); result = self.service.apply_scenario(actor.id, segments[0], body.get("name"), body.get("duration_minutes"))
+            body = self.handler._json_body()
+            if not isinstance(body, dict) or set(body) != {"name", "duration_minutes"}:
+                raise DeviceValidationError("scenario body must contain exactly name and duration_minutes")
+            result = self.service.apply_scenario(actor.id, segments[0], body["name"], body["duration_minutes"])
             self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": result})
         except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device not found"))
         except (DeviceValidationError, ValueError) as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error)))

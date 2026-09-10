@@ -13,6 +13,7 @@ PROTOCOL_VERSION = 1
 MAX_DEVICE_ID_BYTES = 128
 MAX_TIMESTAMP_BYTES = 40
 MAX_PAYLOAD_BYTES = 65_535
+MAX_JSON_NESTING = 64
 CHECKSUM_BYTES = 32
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 _HEADER = struct.Struct("!4sBBQBH")
@@ -59,6 +60,47 @@ def _device_id(value: str) -> bytes:
     return encoded
 
 
+def _bounded_json_nesting(payload: bytes) -> None:
+    """Reject pathological JSON depth before invoking the recursive parser."""
+    depth, quoted, escaped = 0, False, False
+    for byte in payload:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == ord('"'):
+                quoted = False
+            continue
+        if byte == ord('"'):
+            quoted = True
+        elif byte in (ord("{"), ord("[")):
+            depth += 1
+            if depth > MAX_JSON_NESTING:
+                raise FrameFormatError("payload nesting is too deep")
+        elif byte in (ord("}"), ord("]")):
+            depth -= 1
+            if depth < 0:
+                raise FrameFormatError("invalid payload nesting")
+    if quoted or escaped or depth:
+        raise FrameFormatError("invalid payload nesting")
+
+
+def _canonical_payload(payload: dict) -> bytes:
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        raise FrameFormatError("payload must be canonical JSON") from None
+    if len(encoded) > MAX_PAYLOAD_BYTES:
+        raise FrameFormatError("payload is too large")
+    _bounded_json_nesting(encoded)
+    return encoded
+
+
+def _reject_json_constant(_value: str):
+    raise ValueError("non-finite JSON number")
+
+
 def encode_frame(device_id: str, sequence: int, payload: dict, *, timestamp: datetime | None = None) -> bytes:
     """Encode canonical UTF-8 object JSON with a SHA-256 digest over all body bytes."""
     device = _device_id(device_id)
@@ -66,12 +108,7 @@ def encode_frame(device_id: str, sequence: int, payload: dict, *, timestamp: dat
         raise FrameFormatError("sequence must be an unsigned 64-bit integer")
     if not isinstance(payload, dict):
         raise FrameFormatError("payload must be an object")
-    try:
-        payload_bytes = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError):
-        raise FrameFormatError("payload must be canonical JSON") from None
-    if len(payload_bytes) > MAX_PAYLOAD_BYTES:
-        raise FrameFormatError("payload is too large")
+    payload_bytes = _canonical_payload(payload)
     stamp = _timestamp(timestamp).isoformat(timespec="microseconds").encode("ascii")
     if len(stamp) > MAX_TIMESTAMP_BYTES:
         raise FrameFormatError("timestamp is too long")
@@ -103,14 +140,16 @@ def decode_frame(frame: bytes) -> DeviceFrame:
     try:
         device_id = body[offset:offset + device_length].decode("ascii")
         timestamp = datetime.fromisoformat(body[offset + device_length:offset + device_length + stamp_length].decode("ascii"))
-        payload = json.loads(body[offset + device_length + stamp_length:].decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        payload_bytes = body[offset + device_length + stamp_length:]
+        _bounded_json_nesting(payload_bytes)
+        payload = json.loads(payload_bytes.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, RecursionError):
         raise FrameFormatError("invalid encoded field") from None
     _device_id(device_id)
     _timestamp(timestamp)
     if not isinstance(payload, dict):
         raise FrameFormatError("payload must be a JSON object")
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if canonical != body[offset + device_length + stamp_length:]:
+    canonical = _canonical_payload(payload)
+    if canonical != payload_bytes:
         raise FrameFormatError("payload JSON is not canonical")
     return DeviceFrame(magic, version, device_id, sequence, timestamp, payload_length, payload, checksum)

@@ -43,7 +43,7 @@ class DevicesService:
         self._row(device_id)
         terminal = self.registry.get(device_id)
         if terminal is None: raise DeviceNotFound()
-        now = datetime.now(SHANGHAI_TIMEZONE)
+        now = self.registry.now()
         with self.registry.scenario_lock:
             # Capture before and build a pure plan before changing terminal memory.
             before = self._scenario(device_id)
@@ -53,7 +53,7 @@ class DevicesService:
             after = {"name": planned.name, "duration_minutes": planned.duration_minutes, "expires_at": planned.expires_at.isoformat() if planned.expires_at else None}
             with self.database.transaction(actor_id, "device.scenario", "device", device_id, source_type="manual", auto_audit=False) as conn:
                 conn.execute("UPDATE devices SET status=?, actor_id=? WHERE id=?", (planned.terminal_state, actor_id, device_id))
-                conn.execute("INSERT INTO device_scenarios(device_id, name, expires_at, actor_id, source_type) VALUES(?, ?, ?, ?, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, expires_at=excluded.expires_at, actor_id=excluded.actor_id, source_type='virtual_device'", (device_id, planned.name, after["expires_at"], actor_id))
+                conn.execute("INSERT INTO device_scenarios(device_id, name, duration_minutes, expires_at, actor_id, source_type) VALUES(?, ?, ?, ?, ?, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, duration_minutes=excluded.duration_minutes, expires_at=excluded.expires_at, actor_id=excluded.actor_id, source_type='virtual_device'", (device_id, planned.name, planned.duration_minutes, after["expires_at"], actor_id))
                 conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, actor_id, source_type) VALUES(?, 'scenario_applied', ?, 'recorded', ?, 'virtual_device')", (device_id, json.dumps({"before": before, "after": after}, sort_keys=True), actor_id))
                 self.audit.record(actor_id, "device.scenario", "device", device_id, {"before": before, "after": after, "reason": "operator scenario request"}, conn, source_type="manual")
             # The commit path only assigns this prevalidated plan; no new
@@ -99,9 +99,9 @@ class DevicesService:
         terminal = self.registry.get(device_id)
         if terminal is not None:
             state = terminal.scenario
-            return {"name": state.name, "expires_at": state.expires_at.isoformat() if state.expires_at else None}
-        row = self.database.query_one("SELECT name, expires_at FROM device_scenarios WHERE device_id=?", (device_id,))
-        return {"name": row["name"], "expires_at": row["expires_at"]} if row else {"name": "normal", "expires_at": None}
+            return {"name": state.name, "duration_minutes": state.duration_minutes, "expires_at": state.expires_at.isoformat() if state.expires_at else None}
+        row = self.database.query_one("SELECT name, duration_minutes, expires_at FROM device_scenarios WHERE device_id=?", (device_id,))
+        return {"name": row["name"], "duration_minutes": row["duration_minutes"], "expires_at": row["expires_at"]} if row else {"name": "normal", "duration_minutes": 0, "expires_at": None}
     @staticmethod
     def _device(row): return {"id": row["id"], "well_id": row["well_id"], "well_code": row["well_code"], "well_name": row["well_name"], "unit_id": row["unit_id"], "serial_number": row["serial_number"], "device_type": row["device_type"], "firmware_version": row["firmware_version"], "status": row["status"], "connection_mode": "virtual", "hardware_connected": False}
     @staticmethod

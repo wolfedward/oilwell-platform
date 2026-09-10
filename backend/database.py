@@ -95,6 +95,9 @@ class Database:
         for name, declaration in (("enabled", "INTEGER NOT NULL DEFAULT 1"), ("sample_interval_ms", "INTEGER NOT NULL DEFAULT 60000"), ("scale", "REAL NOT NULL DEFAULT 1.0"), ("offset", "REAL NOT NULL DEFAULT 0.0"), ("version", "INTEGER NOT NULL DEFAULT 1")):
             if name not in columns:
                 connection.execute(f"ALTER TABLE device_channels ADD COLUMN {name} {declaration}")
+        scenario_columns = {row[1] for row in connection.execute("PRAGMA table_info(device_scenarios)")}
+        if "duration_minutes" not in scenario_columns:
+            connection.execute("ALTER TABLE device_scenarios ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:

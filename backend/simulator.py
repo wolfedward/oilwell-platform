@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import math
 import threading
 import time
@@ -84,6 +85,19 @@ class VirtualTerminal:
             self.state = planned.terminal_state
             return planned
 
+    def restore_scenario(self, planned: ScenarioState) -> ScenarioState:
+        """Restore a database-validated plan without recalculating its expiry."""
+        return self.commit_planned_scenario(planned)
+
+    def plan_expiration(self, now: datetime) -> ScenarioState | None:
+        """Return the terminal state after expiry without mutating memory."""
+        now = self._aware(now)
+        with self._lock:
+            if self.scenario.expires_at is None or now < self.scenario.expires_at:
+                return None
+            terminal_state = "online" if self.state == "offline" else self.state
+            return ScenarioState("normal", 0, None, terminal_state)
+
     def apply_scenario(self, name: str, duration_minutes: int, *, now: datetime | None = None) -> ScenarioState:
         return self.commit_planned_scenario(self.preview_scenario(name, duration_minutes, now=now))
 
@@ -132,17 +146,54 @@ class VirtualTerminal:
 
 
 class SimulatorRegistry:
-    """Bounded hand-off queue for Task 2; it does not persist live frames itself."""
-    def __init__(self, database, *, cadence_seconds: float = 60.0, queue_size: int = 512):
-        self.database, self.cadence_seconds, self.frames = database, cadence_seconds, deque(maxlen=queue_size)
-        rows = database.query_all("SELECT id, well_id, serial_number, device_type, firmware_version FROM devices ORDER BY id")
+    """Own terminal state, durable scenario transitions, and bounded live-frame hand-off."""
+    def __init__(self, database, *, cadence_seconds: float = 60.0, queue_size: int = 512, clock=None):
+        if not isinstance(queue_size, int) or isinstance(queue_size, bool) or queue_size < 1:
+            raise ValueError("queue_size must be a positive integer")
+        self.database, self.cadence_seconds = database, cadence_seconds
+        self._clock = clock or (lambda: datetime.now(SHANGHAI_TIMEZONE))
+        self._queue, self._queue_size, self._queue_lock, self._frame_sink = deque(), queue_size, threading.RLock(), None
+        self._delivered, self._dropped = 0, 0
+        rows = database.query_all("SELECT id, well_id, serial_number, device_type, firmware_version, status FROM devices ORDER BY id")
         self.terminals = {row["id"]: VirtualTerminal(profile_for(row["id"], row)) for row in rows}
         self.latest_registers, self._stop, self._thread, self._lock = {}, threading.Event(), None, threading.RLock()
+        self._restore_persisted_scenarios(rows)
     @property
     def scenario_lock(self):
         """Shared mutation lock used by service requests and the runner."""
         return self._lock
+    def now(self): return VirtualTerminal._aware(self._clock())
     def get(self, device_id: str) -> VirtualTerminal | None: return self.terminals.get(device_id)
+    def set_frame_sink(self, sink):
+        if sink is not None and not callable(sink): raise ValueError("frame sink must be callable or None")
+        with self._queue_lock: self._frame_sink = sink
+    def drain_frames(self, max_items=None):
+        if max_items is not None and (not isinstance(max_items, int) or isinstance(max_items, bool) or max_items < 0):
+            raise ValueError("max_items must be a non-negative integer or None")
+        with self._queue_lock:
+            count = len(self._queue) if max_items is None else min(max_items, len(self._queue))
+            drained = [self._queue.popleft() for _ in range(count)]
+            self._delivered += len(drained)
+            return drained
+    def frame_stats(self):
+        with self._queue_lock: return {"queued": len(self._queue), "delivered": self._delivered, "dropped": self._dropped}
+    def _publish_frames(self, packets):
+        batch = list(packets)
+        if not batch: return
+        with self._queue_lock: sink = self._frame_sink
+        if sink is not None:
+            try:
+                sink(batch)
+            except Exception:
+                pass
+            else:
+                with self._queue_lock: self._delivered += len(batch)
+                return
+        with self._queue_lock:
+            for packet in batch:
+                if len(self._queue) == self._queue_size:
+                    self._queue.popleft(); self._dropped += 1
+                self._queue.append(packet)
     def start(self):
         with self._lock:
             if self._thread and self._thread.is_alive(): return
@@ -151,15 +202,72 @@ class SimulatorRegistry:
         with self._lock:
             self._stop.set(); thread = self._thread
         if thread and thread is not threading.current_thread(): thread.join(timeout=5)
+    def _scenario_from_row(self, row, now):
+        name, duration, expires = row["scenario_name"], row["duration_minutes"], row["expires_at"]
+        state = row["status"] if row["status"] in STATES else "online"
+        if name is None:
+            return ScenarioState("normal", 0, None, state), False
+        if name == "normal" and duration == 0 and expires is None:
+            return ScenarioState("normal", 0, None, state), False
+        try:
+            expiry = datetime.fromisoformat(expires) if isinstance(expires, str) else None
+            expiry = VirtualTerminal._aware(expiry) if expiry is not None else None
+        except (TypeError, ValueError):
+            expiry = None
+        valid = name in SCENARIOS and name != "normal" and isinstance(duration, int) and not isinstance(duration, bool) and 1 <= duration <= 1440 and expiry is not None and expiry > now and (name != "offline" or state == "offline")
+        if valid: return ScenarioState(name, duration, expiry, state), False
+        return ScenarioState("normal", 0, None, "online" if state == "offline" else state), True
+    def _restore_persisted_scenarios(self, rows):
+        now = self.now()
+        scenario_rows = {row["device_id"]: row for row in self.database.query_all("SELECT device_id, name AS scenario_name, duration_minutes, expires_at FROM device_scenarios")}
+        for device in rows:
+            combined = {key: device[key] for key in device.keys()}
+            scenario = scenario_rows.get(device["id"])
+            if scenario is not None: combined.update({key: scenario[key] for key in scenario.keys()})
+            else: combined.update({"scenario_name": None, "duration_minutes": None, "expires_at": None})
+            planned, normalize = self._scenario_from_row(combined, now)
+            terminal = self.terminals[device["id"]]
+            if normalize:
+                try:
+                    expires_at = datetime.fromisoformat(combined["expires_at"]) if isinstance(combined["expires_at"], str) else None
+                    expires_at = VirtualTerminal._aware(expires_at) if expires_at is not None else None
+                except (TypeError, ValueError):
+                    expires_at = None
+                before = ScenarioState(
+                    combined["scenario_name"] if isinstance(combined["scenario_name"], str) else "normal",
+                    combined["duration_minutes"] if isinstance(combined["duration_minutes"], int) and not isinstance(combined["duration_minutes"], bool) else 0,
+                    expires_at,
+                    combined["status"] if combined["status"] in STATES else "online",
+                )
+                self._persist_expiration(device["id"], before, planned)
+            terminal.restore_scenario(planned)
+    def _persist_expiration(self, device_id, before, after):
+        before_data = {"name": before.name, "duration_minutes": before.duration_minutes, "expires_at": before.expires_at.isoformat() if before.expires_at else None}
+        after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": None}
+        with self.database.transaction(None, "simulator.scenario_expired", "device", device_id, source_type="system", auto_audit=False) as conn:
+            conn.execute("UPDATE devices SET status=? WHERE id=?", (after.terminal_state, device_id))
+            conn.execute("INSERT INTO device_scenarios(device_id, name, duration_minutes, expires_at, source_type) VALUES(?, 'normal', 0, NULL, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name='normal', duration_minutes=0, expires_at=NULL, source_type='virtual_device'", (device_id,))
+            conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, source_type) VALUES(?, 'scenario_expired', ?, 'recorded', 'virtual_device')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
+            conn.execute("INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type) VALUES(NULL, 'simulator.scenario_expired', 'device', ?, ?, 'system')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
+    def run_once(self, now=None):
+        now = self.now() if now is None else VirtualTerminal._aware(now)
+        batch = []
+        with self._lock:
+            for device_id, terminal in self.terminals.items():
+                expiration = terminal.plan_expiration(now)
+                if expiration is not None:
+                    try: self._persist_expiration(device_id, terminal.scenario, expiration)
+                    except Exception: continue
+                    terminal.commit_planned_scenario(expiration)
+                packets = terminal.tick(now)
+                batch.extend(packets)
+                if packets: self.latest_registers[device_id] = terminal._registers(now)
+        self._publish_frames(batch)
     def _run(self):
         while not self._stop.is_set():
-            now = datetime.now(SHANGHAI_TIMEZONE).replace(second=0, microsecond=0)
+            now = self.now().replace(second=0, microsecond=0)
             try:
-                with self._lock:
-                    for device_id, terminal in self.terminals.items():
-                        packets = terminal.tick(now)
-                        self.frames.extend(packets)
-                        if packets: self.latest_registers[device_id] = terminal._registers(now)
+                self.run_once(now)
             except Exception as error:
                 try:
                     with self.database.transaction(None, "simulator.runner_error", "simulator", None, source_type="system") as conn:

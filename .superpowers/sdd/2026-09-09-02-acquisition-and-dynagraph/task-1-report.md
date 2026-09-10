@@ -112,3 +112,28 @@ task threads. At the end of all verification commands, no `python` or
   health modules passed. Final `python -m unittest discover -s tests -v` ran
   98 tests successfully in 233.068 seconds; `py_compile` and `git diff --check`
   also succeeded.
+
+## Fix round 2
+
+- Frame JSON now has one bounded canonicalization boundary: encode and decode
+  turn non-finite numbers, lone surrogates, recursive values, and over-deep
+  valid JSON into `FrameError` subclasses. Decoder constant parsing rejects
+  `NaN`/`Infinity` before canonical comparison; nesting is limited to 64 while
+  respecting quoted/escaped bytes.
+- Scenario persistence now records `duration_minutes`, restores active terminal
+  plans from the database with an injectable clock, and normalizes stale or
+  invalid plans transactionally. Runtime expiry persists normal state, event,
+  and audit before committing terminal memory; a database failure leaves that
+  terminal unchanged and skips its tick.
+- The live queue is private and independently locked. `drain_frames`, a single
+  sink, and `frame_stats` provide atomic consumption, success delivery, failure
+  fallback, and accurate bounded-overflow accounting. Sink callbacks happen
+  outside the registry/scenario lock.
+- RED evidence: malicious signed JSON leaked `ValueError` and
+  `UnicodeEncodeError`; deep objects were accepted; registry construction
+  rejected `clock`; non-object scenario POST raised `AttributeError`; and the
+  startup-expiry audit captured `normal` rather than the persisted `offline`
+  before-image. Each focused regression passed after the corresponding minimal
+  repair. Real HTTP tests confirm missing/unknown scenario fields return 422
+  without state change. Final discovery ran 107 tests successfully in 256.484
+  seconds.

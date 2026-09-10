@@ -1,14 +1,18 @@
 """Protocol, virtual-terminal, and server-owned simulator regression tests."""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import struct
 import unittest
 
 from backend.protocol import (
     FrameChecksumError,
+    FrameError,
     FrameFormatError,
     decode_frame,
     encode_frame,
 )
+from backend.protocol import MAGIC, PROTOCOL_VERSION
 from backend.simulator import VirtualTerminal, profile_for
 
 
@@ -23,7 +27,30 @@ def telemetry(frame_bytes: bytes) -> dict:
     return decode_frame(frame_bytes).payload["telemetry"]
 
 
+def signed_frame(payload: bytes) -> bytes:
+    device, stamp = b"D-001", b"2026-06-22T10:00:00+08:00"
+    body = struct.pack("!4sBBQBH", MAGIC, PROTOCOL_VERSION, len(device), 1, len(stamp), len(payload)) + device + stamp + payload
+    return body + hashlib.sha256(body).digest()
+
+
 class ProtocolTests(unittest.TestCase):
+    def test_json_attack_inputs_only_raise_frame_errors(self):
+        deep = {"leaf": 1}
+        for _ in range(65):
+            deep = {"nested": deep}
+        for payload in ({"value": float("nan")}, {"value": float("inf")}, {"value": "\ud800"}, deep):
+            with self.subTest(payload=repr(payload)[:40]):
+                with self.assertRaises(FrameError):
+                    encode_frame("D-001", 1, payload)
+        for payload in (b'{"value":NaN}', b'{"value":"\\ud800"}', b'{"nested":' + b'{"nested":' * 65 + b'1' + b'}' * 66):
+            with self.subTest(payload=payload[:24]):
+                with self.assertRaises(FrameError):
+                    decode_frame(signed_frame(payload))
+
+    def test_payload_over_limit_is_a_frame_error(self):
+        with self.assertRaises(FrameError):
+            encode_frame("D-001", 1, {"payload": "x" * 65_536})
+
     def test_frame_round_trip_exposes_strict_header_fields(self):
         stamp = at("2026-06-22T10:00:00+08:00")
         raw = encode_frame("D-001", 7, {"current": 18.4, "stroke": 3.2}, timestamp=stamp)

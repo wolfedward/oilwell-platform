@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS device_channels (
 CREATE TABLE IF NOT EXISTS device_scenarios (
     device_id TEXT PRIMARY KEY REFERENCES devices(id),
     name TEXT NOT NULL DEFAULT 'normal',
+    duration_minutes INTEGER NOT NULL DEFAULT 0,
     expires_at TEXT,
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'virtual_device',
