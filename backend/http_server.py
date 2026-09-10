@@ -327,7 +327,14 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
 
 
+class PlatformHTTPServer(ThreadingHTTPServer):
+    """Do not let a second platform process share a recently used address."""
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+
 def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServer:
     database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
-    server = ThreadingHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
+    server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
     return server

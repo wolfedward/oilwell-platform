@@ -374,16 +374,32 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     legacy_hash = _legacy_content_hash(db, requested_seed, manifest["namespace"])
     if manifest["content_hash"] not in {previous_hash, legacy_hash}:
         raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
+    _upgrade_manifest_hash(db, manifest["content_hash"], projected_hash)
+    return summary
+
+
+def _upgrade_manifest_hash(db: Database, expected_hash: str, projected_hash: str) -> None:
+    """CAS a legacy fingerprint, accepting a concurrent winner with this same hash."""
     with db.transaction(
         None, "seed.upgrade_manifest_hash", "seed_manifest", MANIFEST_NAME, source_type=SIMULATOR,
-        details_json='{"after":{"projection":"well-lifecycle-v3"},"before":{"projection":"verified-legacy"}}',
+        auto_audit=False,
     ) as connection:
-        if connection.execute(
+        updated = connection.execute(
             "UPDATE seed_manifests SET content_hash = ? WHERE dataset_name = ? AND content_hash = ?",
-            (projected_hash, MANIFEST_NAME, manifest["content_hash"]),
-        ).rowcount != 1:
+            (projected_hash, MANIFEST_NAME, expected_hash),
+        ).rowcount
+        if updated == 1:
+            connection.execute(
+                """INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type)
+                   VALUES(NULL, 'seed.upgrade_manifest_hash', 'seed_manifest', ?, ?, ?)""",
+                (MANIFEST_NAME, '{"after":{"projection":"well-lifecycle-v3"},"before":{"projection":"verified-legacy"}}', SIMULATOR),
+            )
+            return
+        current = connection.execute(
+            "SELECT content_hash FROM seed_manifests WHERE dataset_name = ?", (MANIFEST_NAME,)
+        ).fetchone()
+        if current is None or current["content_hash"] != projected_hash:
             raise SeedDataIntegrityError("seed dataset incomplete: manifest update")
-    return summary
 
 
 def bootstrap_local_auth(db: Database) -> None:

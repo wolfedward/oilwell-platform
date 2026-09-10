@@ -1,10 +1,11 @@
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.database import Database
-from backend.seed import SeedSummary, seed_database
+from backend.seed import SeedSummary, _content_hash, _previous_content_hash, _upgrade_manifest_hash, seed_database
 
 
 class SeedDatabaseTests(unittest.TestCase):
@@ -242,6 +243,28 @@ class SeedDatabaseTests(unittest.TestCase):
             0,
         )
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM pragma_foreign_key_check"), 0)
+
+    def test_concurrent_legacy_manifest_upgrade_accepts_the_winner_hash_once(self):
+        """A losing CAS must accept the exact hash another starter just installed."""
+        seed_database(self.database)
+        expected = _previous_content_hash(self.database, 202606, "")
+        replacement = _content_hash(self.database, 202606, "")
+        with self.database.transaction(None, "test.legacy_hash", "seed_manifest", "acceptance-history"):
+            self.database.execute(
+                "UPDATE seed_manifests SET content_hash=? WHERE dataset_name='acceptance-history'", (expected,)
+            )
+        before = self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='seed.upgrade_manifest_hash'")
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(
+                lambda _: _upgrade_manifest_hash(Database(self.database.path), expected, replacement), range(2)
+            ))
+        self.assertEqual(results, [None, None])
+        self.assertEqual(
+            self.database.scalar("SELECT content_hash FROM seed_manifests WHERE dataset_name='acceptance-history'"), replacement
+        )
+        self.assertEqual(
+            self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='seed.upgrade_manifest_hash'"), before + 1
+        )
 
 
 if __name__ == "__main__":
