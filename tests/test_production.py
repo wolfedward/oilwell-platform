@@ -45,6 +45,8 @@ class ProductionTests(unittest.TestCase):
         result = estimate_liquid(features(.72), pump(), 1.0)
         expected_area = math.pi * (.044 ** 2) / 4.0
         self.assertAlmostEqual(result.pump_area_m2, expected_area, places=12)
+        self.assertEqual(result.diameter_mm, 44.0)
+        self.assertEqual(result.fillage_reference_load_span_kn, 25.0)
         self.assertAlmostEqual(result.displacement_per_stroke_m3, expected_area * 3.0, places=12)
         self.assertEqual(result.strokes_per_day, 4.0 * 60.0 * 24.0)
         self.assertAlmostEqual(result.effective_stroke_m, 3.0 * .72, places=12)
@@ -88,11 +90,21 @@ class ProductionTests(unittest.TestCase):
             lambda: estimate_liquid(features(), pump(pump_efficiency=1.2), 1.0),
             lambda: estimate_liquid(features(), pump(), float("nan")),
             lambda: estimate_liquid(replace(features(), fillage=1.1), pump(), 1.0),
+            lambda: estimate_liquid(replace(features(), area_kn_m=float("nan")), pump(), 1.0),
+            lambda: estimate_liquid(replace(features(), closure_error=float("nan")), pump(), 1.0),
+            lambda: estimate_liquid(features(), pump(fillage_reference_load_span_kn=0.0), 1.0),
         )
         for call in invalid_calls:
             with self.subTest(call=call):
                 with self.assertRaises(ProductionValidationError):
                     call()
+
+    def test_estimate_above_theoretical_displacement_is_explicitly_warned(self):
+        result = estimate_liquid(
+            features(1.0), pump(pump_efficiency=1.0), 2.0,
+        )
+        self.assertGreater(result.estimated_m3_day, result.theoretical_m3_day)
+        self.assertTrue(any("exceeds theoretical" in warning for warning in result.warnings))
 
     def test_estimation_is_deterministic_and_preserves_inputs(self):
         measured = features()

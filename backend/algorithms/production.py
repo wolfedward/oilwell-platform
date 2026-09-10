@@ -1,6 +1,6 @@
 """Traceable liquid-production estimate from pump geometry and card fillage."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
 
 from backend.algorithms.dynagraph import DynagraphFeatures
@@ -19,10 +19,12 @@ class PumpParams:
     stroke_m: float
     strokes_per_minute: float
     pump_efficiency: float
+    fillage_reference_load_span_kn: float = 25.0
 
 
 @dataclass(frozen=True)
 class ProductionEstimate:
+    diameter_mm: float
     pump_area_m2: float
     stroke_m: float
     effective_stroke_m: float
@@ -35,6 +37,7 @@ class ProductionEstimate:
     correction_coefficient: float
     estimated_m3_day: float
     fillage_basis: str
+    fillage_reference_load_span_kn: float
     formula: str
     units: tuple[tuple[str, str], ...]
     warnings: tuple[str, ...]
@@ -58,7 +61,28 @@ def _number(value, name: str, minimum: float, maximum: float) -> float:
 def _validate_features(features: DynagraphFeatures) -> float:
     if not isinstance(features, DynagraphFeatures):
         raise ProductionValidationError("features must be DynagraphFeatures")
-    return _number(features.fillage, "fillage", 0.0, 1.0)
+    ranges = {
+        "max_load_kn": (-10_000.0, 10_000.0),
+        "min_load_kn": (-10_000.0, 10_000.0),
+        "area_kn_m": (0.0, 100_000.0),
+        "fillage": (0.0, 1.0),
+        "upstroke_load_kn": (-10_000.0, 10_000.0),
+        "downstroke_load_kn": (-10_000.0, 10_000.0),
+        "load_difference_kn": (-20_000.0, 20_000.0),
+        "top_edge_tilt_kn_per_m": (-10_000.0, 10_000.0),
+        "bottom_edge_tilt_kn_per_m": (-10_000.0, 10_000.0),
+        "closure_error": (0.0, 100.0),
+        "turning_points": (0.0, 10_000.0),
+    }
+    if tuple(field.name for field in fields(features)) != tuple(ranges):
+        raise ProductionValidationError("unsupported DynagraphFeatures contract")
+    for name, (minimum, maximum) in ranges.items():
+        _number(getattr(features, name), name, minimum, maximum)
+    if features.max_load_kn < features.min_load_kn:
+        raise ProductionValidationError("max_load_kn cannot be lower than min_load_kn")
+    if isinstance(features.turning_points, bool) or not isinstance(features.turning_points, int):
+        raise ProductionValidationError("turning_points must be an integer")
+    return float(features.fillage)
 
 
 def estimate_liquid(
@@ -76,6 +100,10 @@ def estimate_liquid(
     stroke_m = _number(pump.stroke_m, "stroke_m", .1, 10.0)
     strokes_per_minute = _number(pump.strokes_per_minute, "strokes_per_minute", .1, 20.0)
     pump_efficiency = _number(pump.pump_efficiency, "pump_efficiency", .1, 1.0)
+    fillage_reference = _number(
+        pump.fillage_reference_load_span_kn,
+        "fillage_reference_load_span_kn", 1.0, 500.0,
+    )
     correction_coefficient = _number(correction, "correction", .1, 2.0)
 
     diameter_m = diameter_mm / 1000.0
@@ -94,7 +122,10 @@ def estimate_liquid(
         warnings.append("zero fillage produces zero estimated liquid volume")
     if correction_coefficient != 1.0:
         warnings.append("field correction coefficient was applied")
+    if estimated_m3_day > theoretical_m3_day:
+        warnings.append("estimated liquid exceeds theoretical displacement because correction is above unity")
     return ProductionEstimate(
+        diameter_mm=diameter_mm,
         pump_area_m2=pump_area_m2,
         stroke_m=stroke_m,
         effective_stroke_m=effective_stroke_m,
@@ -107,6 +138,7 @@ def estimate_liquid(
         correction_coefficient=correction_coefficient,
         estimated_m3_day=estimated_m3_day,
         fillage_basis="calibrated_full_card_area",
+        fillage_reference_load_span_kn=fillage_reference,
         formula="estimated_m3_day = theoretical_m3_day × fillage × pump_efficiency × correction_coefficient",
         units=(
             ("diameter", "mm"),
