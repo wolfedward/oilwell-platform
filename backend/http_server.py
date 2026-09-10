@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
-from backend.api import AcquisitionApi, AnalysisApi, DeviceApi, StrategyApi, WellApi
+from backend.api import AcquisitionApi, AnalysisApi, CommandApi, DeviceApi, StrategyApi, WellApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
 from backend.config import Config
 from backend.database import Database
@@ -33,6 +33,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if CommandApi(self).get(self.path): return
         if StrategyApi(self).get(self.path): return
         if AnalysisApi(self).get(self.path): return
         if AcquisitionApi(self).get(self.path): return
@@ -48,6 +49,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if CommandApi(self).post(self.path): return
         if StrategyApi(self).post(self.path): return
         if AnalysisApi(self).post(self.path): return
         if AcquisitionApi(self).post(self.path): return

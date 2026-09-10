@@ -12,6 +12,7 @@ from backend.services.acquisition import (
 from backend.services.analysis import (
     AnalysisNotFound, AnalysisService, AnalysisValidationError, AnalysisVersionConflict,
 )
+from backend.services.commands import CommandNotFound, CommandService, CommandValidationError
 from backend.services.strategies import (
     StrategyNotFound, StrategyService, StrategyValidationError,
     StrategyVersionConflict,
@@ -426,6 +427,122 @@ class AnalysisApi:
         return page, page_size
 
 
+class CommandApi:
+    """Signed control-command dispatch, receipt and rollback routes."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service = CommandService(
+            handler.server.database, handler.server.audit, handler.server.simulator,
+        )
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        if parsed.path == "/api/commands":
+            try:
+                if self.handler._require("reports.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query,
+                    {"device_id", "strategy_id", "state", "page", "page_size"},
+                )
+                page, page_size = self._page(query)
+                return self._ok(self.service.list_commands(
+                    {**query, "page": page, "page_size": page_size}
+                ))
+            except (CommandValidationError, WellValidationError, ValueError) as error:
+                return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+        command_id = self._match_command(parsed.path)
+        if command_id is None:
+            return False
+        try:
+            if self.handler._require("reports.read") is None:
+                return True
+            if parsed.query:
+                raise CommandValidationError("command detail does not accept query parameters")
+            return self._ok(self.service.get(command_id))
+        except CommandNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Command not found")
+        except (CommandValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def post(self, request_target):
+        parsed = urlsplit(request_target)
+        if parsed.path == "/api/commands/process":
+            action, strategy_id = "process", None
+        else:
+            matched = None
+            for candidate in ("dispatch", "rollback"):
+                identifier = self._match_strategy(parsed.path, candidate)
+                if identifier is not None:
+                    matched = candidate, identifier
+                    break
+            if matched is None:
+                return False
+            action, strategy_id = matched
+        try:
+            if parsed.query:
+                raise CommandValidationError("command mutation does not accept query parameters")
+            actor = self.handler._require("devices.control")
+            if actor is None:
+                return True
+            body = self.handler._json_body()
+            if action in {"dispatch", "process"} and set(body):
+                raise CommandValidationError(f"{action} body must be an empty object")
+            if action == "dispatch":
+                return self._ok(
+                    self.service.dispatch_strategy(strategy_id, actor.id),
+                    HTTPStatus.ACCEPTED,
+                )
+            if action == "rollback":
+                if set(body) != {"reason"}:
+                    raise CommandValidationError(
+                        "rollback body must contain exactly reason"
+                    )
+                return self._ok(self.service.rollback(
+                    strategy_id, actor.id, body["reason"],
+                ), HTTPStatus.ACCEPTED)
+            return self._ok(self.service.process())
+        except CommandNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Command not found")
+        except InvalidState as error:
+            return self._error(HTTPStatus.CONFLICT, "invalid_state", error)
+        except (CommandValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def _ok(self, data, status=HTTPStatus.OK):
+        self.handler._send_json(status, {"ok": True, "data": data})
+        return True
+
+    def _error(self, status, code, message):
+        self.handler._send_json(status, self.handler._error(code, str(message)))
+        return True
+
+    @staticmethod
+    def _match_command(path):
+        match = re.fullmatch(
+            r"/api/commands/([A-Za-z0-9][A-Za-z0-9_-]{0,127})", path,
+        )
+        return unquote(match.group(1)) if match else None
+
+    @staticmethod
+    def _match_strategy(path, action):
+        match = re.fullmatch(
+            rf"/api/strategies/([A-Za-z0-9][A-Za-z0-9_-]{{0,127}})/{action}", path,
+        )
+        return unquote(match.group(1)) if match else None
+
+    @staticmethod
+    def _page(query):
+        page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+        page_size = WellApi._integer(
+            query.get("page_size", "20"), "page_size", 1, 100,
+        )
+        if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
+            raise CommandValidationError("page offset is out of range")
+        return page, page_size
+
+
 class StrategyApi:
     """Adaptive pumping strategy versions and approval workflow routes."""
 
@@ -477,8 +594,6 @@ class StrategyApi:
                 return False
             action, strategy_id = matched
         try:
-            if parsed.query:
-                raise StrategyValidationError("strategy mutation does not accept query parameters")
             permission = {
                 "optimize": "strategy.create", "copy": "strategy.create",
                 "submit": "strategy.submit", "approve": "strategy.approve",
@@ -488,6 +603,8 @@ class StrategyApi:
             if actor is None:
                 return True
             body = self.handler._json_body()
+            if parsed.query:
+                raise StrategyValidationError("strategy mutation does not accept query parameters")
             if action == "optimize":
                 if set(body) != {"well_id", "constraints"}:
                     raise StrategyValidationError(

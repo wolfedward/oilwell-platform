@@ -244,10 +244,12 @@ class StrategyService:
             if cursor.rowcount != 1:
                 raise StrategyVersionConflict()
             connection.execute(
-                """UPDATE strategy_versions SET status='submitted',submitted_at=
-                       strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'),actor_id=?
-                   WHERE id=? AND status='draft'""",
-                (actor_id, row["current_version_id"]),
+                """UPDATE strategy_versions SET
+                       status=CASE WHEN id=? THEN 'submitted' ELSE 'superseded' END,
+                       submitted_at=strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'),
+                       actor_id=?
+                   WHERE strategy_id=? AND status='draft'""",
+                (row["current_version_id"], actor_id, strategy_id),
             )
             connection.execute(
                 """INSERT INTO approvals(

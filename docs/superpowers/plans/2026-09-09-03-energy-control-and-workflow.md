@@ -34,7 +34,7 @@
 - RecoveryModel fields: capacity, tau_minutes, baseline, r_squared
 - CycleCandidate fields: on_minutes, off_minutes, cycles_per_day, predicted_liquid_m3, predicted_energy_kwh, saving_rate, feasible, violations
 
-- [ ] **Step 1: Write failing recovery and optimizer tests**
+- [x] **Step 1: Write failing recovery and optimizer tests**
 
     def test_fit_recovers_time_constant(self):
         model = fit_recovery_curve(load_fixture("low_output_a"))
@@ -51,23 +51,23 @@
         self.assertTrue(all(item.predicted_liquid_m3 >= 2.4 for item in feasible))
         self.assertEqual(feasible, sorted(feasible, key=lambda item: item.predicted_energy_kwh))
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_energy -v
 
 Expected: missing energy algorithm module.
 
-- [ ] **Step 3: Implement curve fitting and search**
+- [x] **Step 3: Implement curve fitting and search**
 
 Fit q(t)=baseline+capacity*(1-exp(-t/tau)) by deterministic grid search over tau 10 through 720 minutes and least-squares capacity. Enumerate on-times in ten-minute steps and off-times in fifteen-minute steps, calculate cycles per day, recovered fillage, predicted liquid, runtime, energy, starts, and savings against continuous operation. Return feasible and rejected candidates with explicit violation text.
 
-- [ ] **Step 4: Run optimizer tests**
+- [x] **Step 4: Run optimizer tests**
 
     python -m unittest tests.test_energy -v
 
 Expected: fixture regressions, infeasible constraints, zero capacity, and deterministic sorting pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add backend/algorithms/energy.py tests/fixtures/recovery_cases.json tests/test_energy.py
     git commit -m "feat: optimize adaptive pumping cycles"
@@ -88,7 +88,7 @@ Expected: fixture regressions, infeasible constraints, zero capacity, and determ
 - Produces: StrategyService.decide(strategy_id: int, decision: str, comment: str, actor_id: int) -> Strategy
 - Produces: GET/POST /api/strategies and POST actions optimize, submit, approve, reject
 
-- [ ] **Step 1: Write failing state tests**
+- [x] **Step 1: Write failing state tests**
 
     def test_submitted_strategy_is_immutable(self):
         strategy = service.create_draft("W-033", candidate(), actor_id=2)
@@ -101,23 +101,23 @@ Expected: fixture regressions, infeasible constraints, zero capacity, and determ
         with self.assertRaises(ValidationError):
             service.decide(strategy.id, "approve", "同意", actor_id=2)
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_strategies -v
 
 Expected: missing strategy service.
 
-- [ ] **Step 3: Implement strategy lifecycle**
+- [x] **Step 3: Implement strategy lifecycle**
 
 Allow draft to pending_approval, pending_approval to approved or rejected, approved to pending_dispatch, and effective to paused or rolled_back. Copy an approved strategy before any modification. Require approval comment, distinct approver, well safety limits, and optimistic version. Write approval and audit rows in the same transaction.
 
-- [ ] **Step 4: Run strategy tests**
+- [x] **Step 4: Run strategy tests**
 
     python -m unittest tests.test_strategies -v
 
 Expected: legal transitions pass and illegal, stale, unsafe, and self-approval cases fail with stable error codes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add backend/services/strategies.py backend/state_machine.py backend/api.py backend/http_server.py tests/test_strategies.py
     git commit -m "feat: add versioned energy strategy approval"
@@ -138,7 +138,7 @@ Expected: legal transitions pass and illegal, stale, unsafe, and self-approval c
 - Produces: POST /api/strategies/{id}/dispatch and POST /api/strategies/{id}/rollback
 - Produces: GET /api/commands and GET /api/commands/{id}
 
-- [ ] **Step 1: Write failing command tests**
+- [x] **Step 1: Write failing command tests**
 
     def test_online_terminal_returns_all_receipt_stages(self):
         command = service.dispatch_strategy(approved_strategy_id, actor_id=3)
@@ -156,23 +156,23 @@ Expected: legal transitions pass and illegal, stale, unsafe, and self-approval c
         service.process(at("2026-06-22T10:01:00+08:00"))
         self.assertEqual(service.get(command.id).state, "success")
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_commands -v
 
 Expected: missing command service.
 
-- [ ] **Step 3: Implement command processing**
+- [x] **Step 3: Implement command processing**
 
 Create a signed command payload containing device, strategy version, on/off minutes, issue time, expiry, nonce, and SHA-256 signature. Enforce terminal online state, expiry, maximum three attempts, fifteen-minute validity, safe ranges, and idempotency key. Persist each receipt stage. On success mark strategy effective; on terminal rejection or exhausted retry mark failed and create an alarm. Rollback sends the previous effective version.
 
-- [ ] **Step 4: Run command and strategy tests**
+- [x] **Step 4: Run command and strategy tests**
 
     python -m unittest tests.test_commands tests.test_strategies -v
 
 Expected: success, offline queue, timeout retry, unsafe rejection, idempotency, and rollback pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add backend/services/commands.py backend/simulator.py backend/services/strategies.py backend/api.py tests/test_commands.py
     git commit -m "feat: execute traceable terminal commands"

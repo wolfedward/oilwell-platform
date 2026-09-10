@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.sqlite3
 *.db
+*.command-key
 data/
 logs/
 backups/

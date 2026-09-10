@@ -65,6 +65,7 @@ class Database:
                 self._migrate_acquisition_columns(connection)
                 self._migrate_analysis_columns(connection)
                 self._migrate_strategy_columns(connection)
+                self._migrate_command_columns(connection)
                 self._normalize_legacy_timestamps(connection)
                 violations = connection.execute("PRAGMA foreign_key_check").fetchall()
                 if violations:
@@ -640,6 +641,202 @@ class Database:
                    SELECT RAISE(ABORT,'current strategy version belongs to another strategy');
                END"""
         )
+
+    @staticmethod
+    def _migrate_command_columns(connection: sqlite3.Connection) -> None:
+        required = {
+            "device_commands": (
+                ("strategy_id", "TEXT"), ("signature", "TEXT"),
+                ("idempotency_key", "TEXT"), ("issued_at", "TEXT"),
+                ("expires_at", "TEXT"), ("next_attempt_at", "TEXT"),
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+                ("completed_at", "TEXT"), ("failure_reason", "TEXT"),
+            ),
+            "command_attempts": (
+                ("attempt_number", "INTEGER"), ("state", "TEXT"),
+                ("receipt_at", "TEXT"),
+            ),
+            "alarms": (
+                ("strategy_id", "TEXT"), ("command_id", "TEXT"),
+                ("details_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+        }
+        for table_name, declarations in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in declarations:
+                if column_name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+                    )
+        connection.execute(
+            """UPDATE device_commands SET strategy_id=(
+                   SELECT version.strategy_id FROM strategy_versions AS version
+                   WHERE version.id=device_commands.strategy_version_id
+               ) WHERE strategy_id IS NULL AND strategy_version_id IS NOT NULL"""
+        )
+        connection.execute(
+            """WITH ranked_legacy AS (
+                   SELECT candidate.id,
+                          ROW_NUMBER() OVER(
+                              PARTITION BY candidate.command_id
+                              ORDER BY candidate.attempted_at,candidate.id
+                          ) + COALESCE((
+                              SELECT MAX(existing.attempt_number)
+                              FROM command_attempts AS existing
+                              WHERE existing.command_id=candidate.command_id
+                          ),0) AS derived_number
+                   FROM command_attempts AS candidate
+                   WHERE candidate.attempt_number IS NULL
+               )
+               UPDATE command_attempts SET
+                   attempt_number=COALESCE(attempt_number,(
+                       SELECT derived_number FROM ranked_legacy
+                       WHERE ranked_legacy.id=command_attempts.id
+                   )),
+                   state=COALESCE(state,status),
+                   receipt_at=COALESCE(receipt_at,attempted_at)
+               WHERE attempt_number IS NULL OR state IS NULL OR receipt_at IS NULL"""
+        )
+        command_foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(device_commands)")
+        }
+        if not {"device_id", "strategy_id", "strategy_version_id"}.issubset(
+            command_foreign_keys
+        ):
+            Database._rebuild_device_commands(connection)
+        alarm_foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(alarms)")
+        }
+        if not {"well_id", "diagnosis_id", "strategy_id", "command_id"}.issubset(
+            alarm_foreign_keys
+        ):
+            Database._rebuild_alarms(connection)
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS device_commands_idempotency_unique "
+            "ON device_commands(idempotency_key) WHERE idempotency_key IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS device_commands_process_idx "
+            "ON device_commands(status,next_attempt_at,expires_at,created_at,id)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS command_attempts_stage_unique "
+            "ON command_attempts(command_id,attempt_number,state) "
+            "WHERE attempt_number IS NOT NULL AND state IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS alarms_command_unique "
+            "ON alarms(command_id) WHERE command_id IS NOT NULL"
+        )
+        Database._create_command_timestamp_triggers(connection)
+
+    @staticmethod
+    def _rebuild_device_commands(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "device_commands")
+        connection.execute(
+            "ALTER TABLE device_commands RENAME TO device_commands_control_legacy"
+        )
+        connection.execute(
+            """CREATE TABLE device_commands (
+                   id TEXT PRIMARY KEY,
+                   device_id TEXT NOT NULL REFERENCES devices(id),
+                   strategy_id TEXT REFERENCES energy_strategies(id),
+                   strategy_version_id TEXT REFERENCES strategy_versions(id),
+                   command_type TEXT NOT NULL,
+                   payload TEXT NOT NULL,
+                   signature TEXT,
+                   idempotency_key TEXT UNIQUE,
+                   issued_at TEXT,
+                   expires_at TEXT,
+                   next_attempt_at TEXT,
+                   attempt_count INTEGER NOT NULL DEFAULT 0,
+                   max_attempts INTEGER NOT NULL DEFAULT 3,
+                   completed_at TEXT,
+                   failure_reason TEXT,
+                   status TEXT NOT NULL DEFAULT 'pending',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'system',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO device_commands(
+                   id,device_id,strategy_id,strategy_version_id,command_type,payload,
+                   signature,idempotency_key,issued_at,expires_at,next_attempt_at,
+                   attempt_count,max_attempts,completed_at,failure_reason,status,
+                   actor_id,source_type,created_at,updated_at
+               ) SELECT id,device_id,strategy_id,strategy_version_id,command_type,payload,
+                        signature,idempotency_key,issued_at,expires_at,next_attempt_at,
+                        attempt_count,max_attempts,completed_at,failure_reason,status,
+                        actor_id,source_type,created_at,updated_at
+                   FROM device_commands_control_legacy"""
+        )
+        connection.execute("DROP TABLE device_commands_control_legacy")
+
+    @staticmethod
+    def _rebuild_alarms(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "alarms")
+        connection.execute("ALTER TABLE alarms RENAME TO alarms_control_legacy")
+        connection.execute(
+            """CREATE TABLE alarms (
+                   id TEXT PRIMARY KEY,
+                   well_id TEXT NOT NULL REFERENCES wells(id),
+                   diagnosis_id TEXT REFERENCES diagnoses(id),
+                   strategy_id TEXT REFERENCES energy_strategies(id),
+                   command_id TEXT REFERENCES device_commands(id),
+                   alarm_type TEXT NOT NULL,
+                   severity TEXT NOT NULL,
+                   details_json TEXT NOT NULL DEFAULT '{}',
+                   version INTEGER NOT NULL DEFAULT 1,
+                   status TEXT NOT NULL DEFAULT 'new',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'system',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO alarms(
+                   id,well_id,diagnosis_id,strategy_id,command_id,alarm_type,severity,
+                   details_json,version,status,actor_id,source_type,created_at,updated_at
+               ) SELECT id,well_id,diagnosis_id,strategy_id,command_id,alarm_type,severity,
+                        details_json,version,status,actor_id,source_type,created_at,updated_at
+                   FROM alarms_control_legacy"""
+        )
+        connection.execute("DROP TABLE alarms_control_legacy")
+
+    @staticmethod
+    def _create_command_timestamp_triggers(connection: sqlite3.Connection) -> None:
+        for table_name in ("device_commands", "alarms"):
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_set_updated_at
+                    AFTER UPDATE ON {table_name}
+                    FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+                    BEGIN
+                        UPDATE {table_name} SET updated_at =
+                            strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_normalize_inserted_timestamps
+                    AFTER INSERT ON {table_name}
+                    FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00'
+                                      OR NEW.updated_at NOT GLOB '*+08:00'
+                    BEGIN
+                        UPDATE {table_name} SET
+                            created_at = CASE WHEN NEW.created_at GLOB '*+08:00'
+                                THEN NEW.created_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.created_at,'+8 hours') END,
+                            updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00'
+                                THEN NEW.updated_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.updated_at,'+8 hours') END
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
         for table_name in TIMESTAMP_TABLES:

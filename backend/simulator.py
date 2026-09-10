@@ -4,9 +4,14 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import json
 import math
+import os
+from pathlib import Path
 import queue
+import re
+import secrets
 import threading
 import time
 
@@ -21,9 +26,77 @@ _TRANSITIONS = {
     "running": {"stopped", "local_control", "offline", "fault"}, "stopped": {"running", "local_control", "offline", "fault"},
     "local_control": {"online", "offline", "fault"}, "fault": {"offline", "booting"}, "offline": {"booting", "online"},
 }
+COMMAND_KEYS = {
+    "schema_version", "command_id", "device_id", "strategy_id",
+    "strategy_version_id", "command_type", "on_minutes", "off_minutes",
+    "issued_at", "expires_at", "nonce", "idempotency_key", "reason", "signature",
+}
+COMMAND_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 class SimulatorValidationError(ValueError): pass
+class TerminalUnavailable(SimulatorValidationError): pass
+
+
+def _canonical_command(payload: dict) -> bytes:
+    if not isinstance(payload, dict):
+        raise SimulatorValidationError("control command must be an object")
+    try:
+        return json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        raise SimulatorValidationError("control command is not canonical JSON data") from None
+
+
+def _validate_signing_key(signing_key: bytes) -> bytes:
+    if not isinstance(signing_key, bytes) or len(signing_key) < 32:
+        raise SimulatorValidationError("command signing key is invalid")
+    return signing_key
+
+
+def load_command_signing_key(database_path: Path, explicit_key: bytes | None = None) -> bytes:
+    """Load one private key per installation, creating it atomically when absent."""
+    if explicit_key is not None:
+        return _validate_signing_key(explicit_key)
+    configured = os.environ.get("PLATFORM_COMMAND_SIGNING_KEY")
+    if configured is not None:
+        return _validate_signing_key(configured.encode("utf-8"))
+    key_path = Path(str(database_path) + ".command-key")
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = key_path.with_name(
+        f"{key_path.name}.{secrets.token_hex(12)}.tmp"
+    )
+    descriptor = os.open(
+        temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(secrets.token_hex(32).encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary_path, key_path)
+        except FileExistsError:
+            pass
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    try:
+        encoded = key_path.read_text(encoding="ascii").strip()
+        signing_key = bytes.fromhex(encoded)
+    except (OSError, UnicodeError, ValueError):
+        raise SimulatorValidationError("installation command signing key is unreadable") from None
+    return _validate_signing_key(signing_key)
+
+
+def sign_control_command(payload: dict, signing_key: bytes) -> str:
+    """Return the terminal-verifiable HMAC-SHA256 for an unsigned command."""
+    signing_key = _validate_signing_key(signing_key)
+    if "signature" in payload:
+        raise SimulatorValidationError("sign only the unsigned command body")
+    return hmac.new(signing_key, _canonical_command(payload), hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -53,6 +126,8 @@ class VirtualTerminal:
     def __init__(self, profile: TerminalProfile, seed: int = 202606):
         self.profile, self.seed, self.sequence, self.state = profile, seed, 0, "online"
         self.scenario = ScenarioState("normal", 0, None, "online")
+        self.control_cycle: dict | None = None
+        self._executed_commands: dict[str, dict] = {}
         self._last_tick: datetime | None = None
         self._frame_history: dict[int, bytes] = {}
         self._history_size = 4096
@@ -103,6 +178,102 @@ class VirtualTerminal:
 
     def apply_scenario(self, name: str, duration_minutes: int, *, now: datetime | None = None) -> ScenarioState:
         return self.commit_planned_scenario(self.preview_scenario(name, duration_minutes, now=now))
+
+    def preview_control_command(
+        self, envelope: dict, now: datetime, signing_key: bytes,
+    ) -> dict:
+        """Validate a signed command without changing terminal memory."""
+        now = self._aware(now)
+        if not isinstance(envelope, dict) or set(envelope) != COMMAND_KEYS:
+            raise SimulatorValidationError("control command fields are incomplete")
+        if self.state not in {"online", "running", "stopped"}:
+            raise TerminalUnavailable("terminal is unavailable for remote control")
+        unsigned = {key: value for key, value in envelope.items() if key != "signature"}
+        signature = envelope["signature"]
+        if not isinstance(signature, str) or not hmac.compare_digest(
+            signature, sign_control_command(unsigned, signing_key),
+        ):
+            raise SimulatorValidationError("control command signature is invalid")
+        for key in ("command_id", "device_id", "strategy_id", "strategy_version_id"):
+            if not isinstance(envelope[key], str) or not COMMAND_ID_PATTERN.fullmatch(envelope[key]):
+                raise SimulatorValidationError(f"{key} is invalid")
+        if envelope["device_id"] != self.profile.device_id:
+            raise SimulatorValidationError("control command targets another terminal")
+        if envelope["schema_version"] != 1:
+            raise SimulatorValidationError("control command schema version is unsupported")
+        if envelope["command_type"] not in {"set_intermittent_cycle", "rollback_cycle"}:
+            raise SimulatorValidationError("control command type is unsupported")
+        if not isinstance(envelope["nonce"], str) or not NONCE_PATTERN.fullmatch(envelope["nonce"]):
+            raise SimulatorValidationError("control command nonce is invalid")
+        if not isinstance(envelope["idempotency_key"], str) or not envelope["idempotency_key"]:
+            raise SimulatorValidationError("control command idempotency key is invalid")
+        if envelope["reason"] is not None and (
+            not isinstance(envelope["reason"], str) or not 5 <= len(envelope["reason"]) <= 500
+        ):
+            raise SimulatorValidationError("control command reason is invalid")
+        try:
+            issued = self._aware(datetime.fromisoformat(envelope["issued_at"]))
+            expires = self._aware(datetime.fromisoformat(envelope["expires_at"]))
+        except (TypeError, ValueError):
+            raise SimulatorValidationError("control command timestamps are invalid") from None
+        if expires - issued != timedelta(minutes=15) or now < issued - timedelta(minutes=1):
+            raise SimulatorValidationError("control command validity window is invalid")
+        if now >= expires:
+            raise SimulatorValidationError("control command has expired")
+        on_minutes, off_minutes = envelope["on_minutes"], envelope["off_minutes"]
+        if (
+            isinstance(on_minutes, bool) or not isinstance(on_minutes, int)
+            or not 20 <= on_minutes <= 240 or on_minutes % 10
+        ):
+            raise SimulatorValidationError("on_minutes violates terminal safety limits")
+        if (
+            isinstance(off_minutes, bool) or not isinstance(off_minutes, int)
+            or not 15 <= off_minutes <= 360 or off_minutes % 15
+        ):
+            raise SimulatorValidationError("off_minutes violates terminal safety limits")
+        return {
+            "command_id": envelope["command_id"],
+            "idempotency_key": envelope["idempotency_key"],
+            "strategy_id": envelope["strategy_id"],
+            "strategy_version_id": envelope["strategy_version_id"],
+            "command_type": envelope["command_type"],
+            "on_minutes": on_minutes,
+            "off_minutes": off_minutes,
+            "applied_at": now.isoformat(),
+        }
+
+    def commit_control_command(self, planned: dict) -> dict:
+        """Commit a prevalidated command; repeated IDs return the original result."""
+        with self._lock:
+            command_id = planned["command_id"]
+            if command_id in self._executed_commands:
+                return dict(self._executed_commands[command_id])
+            result = dict(planned)
+            self.control_cycle = result
+            self._executed_commands[command_id] = result
+            self.state = "running"
+            return dict(result)
+
+    def snapshot_control_state(self) -> dict:
+        """Capture mutable control state for compensation around database writes."""
+        with self._lock:
+            return {
+                "state": self.state,
+                "control_cycle": None if self.control_cycle is None else dict(self.control_cycle),
+                "executed_commands": {
+                    key: dict(value) for key, value in self._executed_commands.items()
+                },
+            }
+
+    def restore_control_state(self, snapshot: dict) -> None:
+        """Restore a snapshot when the surrounding persistence operation fails."""
+        with self._lock:
+            self.state = snapshot["state"]
+            cycle = snapshot["control_cycle"]
+            self.control_cycle = None if cycle is None else dict(cycle)
+            self._executed_commands = {
+                key: dict(value) for key, value in snapshot["executed_commands"].items()
+            }
 
     def tick(self, now: datetime) -> list[bytes]:
         now = self._aware(now)
@@ -168,10 +339,11 @@ class VirtualTerminal:
 
 class SimulatorRegistry:
     """Own terminal state, durable scenario transitions, and bounded live-frame hand-off."""
-    def __init__(self, database, *, cadence_seconds: float = 60.0, queue_size: int = 512, clock=None):
+    def __init__(self, database, *, cadence_seconds: float = 60.0, queue_size: int = 512, clock=None, signing_key=None):
         if not isinstance(queue_size, int) or isinstance(queue_size, bool) or queue_size < 1:
             raise ValueError("queue_size must be a positive integer")
         self.database, self.cadence_seconds = database, cadence_seconds
+        self.command_signing_key = load_command_signing_key(database.path, signing_key)
         self._clock = clock or (lambda: datetime.now(SHANGHAI_TIMEZONE))
         self._queue, self._queue_size, self._queue_lock, self._frame_sink = deque(), queue_size, threading.RLock(), None
         self._delivery_failures = deque()
@@ -184,6 +356,7 @@ class SimulatorRegistry:
                 terminal.sequence = cursor["last_sequence"]
         self.latest_registers, self._stop, self._thread, self._lock = {}, threading.Event(), None, threading.RLock()
         self._restore_persisted_scenarios(rows)
+        self._restore_persisted_control_cycles()
     @property
     def scenario_lock(self):
         """Shared mutation lock used by service requests and the runner."""
@@ -357,6 +530,87 @@ class SimulatorRegistry:
                 if not self._persist_duration_migration(device["id"], combined, planned):
                     self._reload_terminal(device["id"], now); continue
             terminal.restore_scenario(planned)
+    def _restore_persisted_control_cycles(self):
+        latest = {}
+        for row in self.database.query_all(
+            """SELECT command.*,device.well_id
+               FROM device_commands AS command
+               JOIN devices AS device ON device.id=command.device_id
+               WHERE command.status='success' AND command.signature IS NOT NULL
+               ORDER BY command.device_id,command.completed_at,command.created_at,command.id"""
+        ):
+            latest[row["device_id"]] = row
+        for device_id, row in latest.items():
+            terminal = self.terminals.get(device_id)
+            if terminal is None:
+                raise SimulatorValidationError(
+                    "successful command targets an unregistered terminal"
+                )
+            try:
+                envelope = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                raise SimulatorValidationError(
+                    "successful command payload is unreadable"
+                ) from None
+            expected = {
+                "command_id": row["id"], "device_id": device_id,
+                "strategy_id": row["strategy_id"],
+                "strategy_version_id": row["strategy_version_id"],
+                "command_type": row["command_type"], "signature": row["signature"],
+                "idempotency_key": row["idempotency_key"],
+                "issued_at": row["issued_at"], "expires_at": row["expires_at"],
+            }
+            if not isinstance(envelope, dict) or any(
+                envelope.get(key) != value for key, value in expected.items()
+            ):
+                raise SimulatorValidationError(
+                    "successful command does not match its persisted record"
+                )
+            version = self.database.query_one(
+                "SELECT strategy_id,configuration,status,submitted_at "
+                "FROM strategy_versions WHERE id=?",
+                (row["strategy_version_id"],),
+            )
+            strategy = self.database.query_one(
+                "SELECT parent_strategy_id FROM energy_strategies WHERE id=?",
+                (row["strategy_id"],),
+            )
+            expected_owner = row["strategy_id"]
+            if row["command_type"] == "rollback_cycle":
+                expected_owner = None if strategy is None else strategy["parent_strategy_id"]
+            try:
+                configuration = json.loads(version["configuration"])
+                selected = configuration["selected_candidate"]
+            except (TypeError, json.JSONDecodeError, KeyError):
+                raise SimulatorValidationError(
+                    "successful command strategy configuration is unreadable"
+                ) from None
+            if (
+                version is None or strategy is None or version["submitted_at"] is None
+                or version["status"] == "draft"
+                or version["strategy_id"] != expected_owner
+                or envelope.get("on_minutes") != selected.get("on_minutes")
+                or envelope.get("off_minutes") != selected.get("off_minutes")
+            ):
+                raise SimulatorValidationError(
+                    "successful command is not bound to its immutable strategy version"
+                )
+            try:
+                completed = VirtualTerminal._aware(
+                    datetime.fromisoformat(row["completed_at"])
+                )
+                validator = VirtualTerminal(terminal.profile)
+                planned = validator.preview_control_command(
+                    envelope, completed, self.command_signing_key,
+                )
+            except (TypeError, ValueError, SimulatorValidationError) as error:
+                raise SimulatorValidationError(
+                    "successful command cannot be restored safely"
+                ) from error
+            state = terminal.state
+            terminal.commit_control_command(planned)
+            if state not in {"online", "running", "stopped"}:
+                terminal.state = state
     def _persist_duration_migration(self, device_id, before, after):
         expected_name, expected_duration, expected_expires, before_data = self._persistence_snapshot(before)
         after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": after.expires_at.isoformat() if after.expires_at else None}

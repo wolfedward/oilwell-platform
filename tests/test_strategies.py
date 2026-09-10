@@ -165,6 +165,30 @@ class StrategyServiceTests(unittest.TestCase):
                     (submitted["current_version_id"],),
                 )
 
+    def test_submission_seals_every_prior_draft_version(self):
+        draft = self.draft()
+        updated = self.service.update(
+            draft["id"], {"off_minutes": 150}, draft["version"], self.creator,
+        )
+        submitted = self.service.submit(
+            updated["id"], updated["version"], self.creator,
+        )
+        prior = self.database.query_one(
+            "SELECT id,status,submitted_at FROM strategy_versions "
+            "WHERE strategy_id=? ORDER BY version_number LIMIT 1",
+            (submitted["id"],),
+        )
+        self.assertEqual(prior["status"], "superseded")
+        self.assertIsNotNone(prior["submitted_at"])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            with self.database.transaction(
+                self.creator, "test.tamper_prior", "strategy_version", prior["id"],
+            ) as connection:
+                connection.execute(
+                    "UPDATE strategy_versions SET configuration='{}' WHERE id=?",
+                    (prior["id"],),
+                )
+
     def test_current_version_cannot_point_to_another_strategy(self):
         first = self.draft()
         second = self.draft()
