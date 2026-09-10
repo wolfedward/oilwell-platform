@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import queue
 import threading
 import time
 
@@ -165,7 +166,8 @@ class SimulatorRegistry:
     def now(self): return VirtualTerminal._aware(self._clock())
     def get(self, device_id: str) -> VirtualTerminal | None: return self.terminals.get(device_id)
     def set_frame_sink(self, sink):
-        if sink is not None and not callable(sink): raise ValueError("frame sink must be callable or None")
+        if sink is not None and (type(sink) is not queue.Queue or sink.maxsize <= 0):
+            raise ValueError("frame sink must be a bounded standard-library queue.Queue or None")
         with self._queue_lock: self._frame_sink = sink
     def drain_frames(self, max_items=None):
         if max_items is not None and (not isinstance(max_items, int) or isinstance(max_items, bool) or max_items < 0):
@@ -183,8 +185,8 @@ class SimulatorRegistry:
         with self._queue_lock: sink = self._frame_sink
         if sink is not None:
             try:
-                sink(batch)
-            except Exception:
+                sink.put_nowait(tuple(batch))
+            except queue.Full:
                 pass
             else:
                 with self._queue_lock: self._delivered += len(batch)
@@ -206,49 +208,77 @@ class SimulatorRegistry:
         name, duration, expires = row["scenario_name"], row["duration_minutes"], row["expires_at"]
         state = row["status"] if row["status"] in STATES else "online"
         if name is None:
-            return ScenarioState("normal", 0, None, state), False
-        if name == "normal" and duration == 0 and expires is None:
-            return ScenarioState("normal", 0, None, state), False
+            return ScenarioState("normal", 0, None, state), False, False
+        if name == "normal" and duration in (None, 0) and expires is None:
+            return ScenarioState("normal", 0, None, state), False, False
         try:
             expiry = datetime.fromisoformat(expires) if isinstance(expires, str) else None
             expiry = VirtualTerminal._aware(expiry) if expiry is not None else None
         except (TypeError, ValueError):
             expiry = None
-        valid = name in SCENARIOS and name != "normal" and isinstance(duration, int) and not isinstance(duration, bool) and 1 <= duration <= 1440 and expiry is not None and expiry > now and (name != "offline" or state == "offline")
-        if valid: return ScenarioState(name, duration, expiry, state), False
-        return ScenarioState("normal", 0, None, "online" if state == "offline" else state), True
+        active = name in SCENARIOS and name != "normal" and expiry is not None and expiry > now and (name != "offline" or state == "offline")
+        if active and duration in (None, 0):
+            remaining = math.ceil((expiry - now).total_seconds() / 60)
+            if 1 <= remaining <= 1440:
+                return ScenarioState(name, remaining, expiry, state), False, True
+        if active and isinstance(duration, int) and not isinstance(duration, bool) and 1 <= duration <= 1440:
+            return ScenarioState(name, duration, expiry, state), False, False
+        return ScenarioState("normal", 0, None, "online" if state == "offline" else state), True, False
+    @staticmethod
+    def _before_state(combined):
+        try:
+            expires_at = datetime.fromisoformat(combined["expires_at"]) if isinstance(combined["expires_at"], str) else None
+            expires_at = VirtualTerminal._aware(expires_at) if expires_at is not None else None
+        except (TypeError, ValueError):
+            expires_at = None
+        return ScenarioState(
+            combined["scenario_name"] if isinstance(combined["scenario_name"], str) else "normal",
+            combined["duration_minutes"] if isinstance(combined["duration_minutes"], int) and not isinstance(combined["duration_minutes"], bool) else 0,
+            expires_at,
+            combined["status"] if combined["status"] in STATES else "online",
+        )
+    def _reload_terminal(self, device_id, now):
+        row = self._persisted_row(device_id)
+        if row is None: return
+        planned, _normalize, _migrate = self._scenario_from_row(row, now)
+        self.terminals[device_id].restore_scenario(planned)
+    def _persisted_row(self, device_id):
+        return self.database.query_one(
+            "SELECT d.status, s.name AS scenario_name, s.duration_minutes, s.expires_at FROM devices d LEFT JOIN device_scenarios s ON s.device_id=d.id WHERE d.id=?",
+            (device_id,),
+        )
     def _restore_persisted_scenarios(self, rows):
         now = self.now()
-        scenario_rows = {row["device_id"]: row for row in self.database.query_all("SELECT device_id, name AS scenario_name, duration_minutes, expires_at FROM device_scenarios")}
         for device in rows:
-            combined = {key: device[key] for key in device.keys()}
-            scenario = scenario_rows.get(device["id"])
-            if scenario is not None: combined.update({key: scenario[key] for key in scenario.keys()})
-            else: combined.update({"scenario_name": None, "duration_minutes": None, "expires_at": None})
-            planned, normalize = self._scenario_from_row(combined, now)
+            combined = self._persisted_row(device["id"])
+            if combined is None: continue
+            planned, normalize, migrate_duration = self._scenario_from_row(combined, now)
             terminal = self.terminals[device["id"]]
             if normalize:
-                try:
-                    expires_at = datetime.fromisoformat(combined["expires_at"]) if isinstance(combined["expires_at"], str) else None
-                    expires_at = VirtualTerminal._aware(expires_at) if expires_at is not None else None
-                except (TypeError, ValueError):
-                    expires_at = None
-                before = ScenarioState(
-                    combined["scenario_name"] if isinstance(combined["scenario_name"], str) else "normal",
-                    combined["duration_minutes"] if isinstance(combined["duration_minutes"], int) and not isinstance(combined["duration_minutes"], bool) else 0,
-                    expires_at,
-                    combined["status"] if combined["status"] in STATES else "online",
-                )
-                self._persist_expiration(device["id"], before, planned)
+                if not self._persist_expiration(device["id"], self._before_state(combined), planned):
+                    self._reload_terminal(device["id"], now); continue
+            elif migrate_duration:
+                if not self._persist_duration_migration(device["id"], self._before_state(combined), planned):
+                    self._reload_terminal(device["id"], now); continue
             terminal.restore_scenario(planned)
+    def _persist_duration_migration(self, device_id, before, after):
+        before_data = {"name": before.name, "duration_minutes": before.duration_minutes, "expires_at": before.expires_at.isoformat() if before.expires_at else None}
+        after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": after.expires_at.isoformat() if after.expires_at else None}
+        with self.database.transaction(None, "simulator.scenario_duration_migrated", "device", device_id, source_type="system", auto_audit=False) as conn:
+            updated = conn.execute("UPDATE device_scenarios SET duration_minutes=? WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (after.duration_minutes, device_id, before.name, before.duration_minutes, before.expires_at.isoformat() if before.expires_at else None)).rowcount
+            if updated != 1: return False
+            conn.execute("INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type) VALUES(NULL, 'simulator.scenario_duration_migrated', 'device', ?, ?, 'system')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
+            return True
     def _persist_expiration(self, device_id, before, after):
         before_data = {"name": before.name, "duration_minutes": before.duration_minutes, "expires_at": before.expires_at.isoformat() if before.expires_at else None}
         after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": None}
         with self.database.transaction(None, "simulator.scenario_expired", "device", device_id, source_type="system", auto_audit=False) as conn:
+            updated = conn.execute("UPDATE device_scenarios SET name='normal', duration_minutes=0, expires_at=NULL, source_type='virtual_device' WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (device_id, before.name, before.duration_minutes, before.expires_at.isoformat() if before.expires_at else None)).rowcount
+            if updated != 1: return False
             conn.execute("UPDATE devices SET status=? WHERE id=?", (after.terminal_state, device_id))
-            conn.execute("INSERT INTO device_scenarios(device_id, name, duration_minutes, expires_at, source_type) VALUES(?, 'normal', 0, NULL, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name='normal', duration_minutes=0, expires_at=NULL, source_type='virtual_device'", (device_id,))
             conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, source_type) VALUES(?, 'scenario_expired', ?, 'recorded', 'virtual_device')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
             conn.execute("INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type) VALUES(NULL, 'simulator.scenario_expired', 'device', ?, ?, 'system')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
+            return True
     def run_once(self, now=None):
         now = self.now() if now is None else VirtualTerminal._aware(now)
         batch = []
@@ -256,8 +286,10 @@ class SimulatorRegistry:
             for device_id, terminal in self.terminals.items():
                 expiration = terminal.plan_expiration(now)
                 if expiration is not None:
-                    try: self._persist_expiration(device_id, terminal.scenario, expiration)
+                    try: owner = self._persist_expiration(device_id, terminal.scenario, expiration)
                     except Exception: continue
+                    if not owner:
+                        self._reload_terminal(device_id, now); continue
                     terminal.commit_planned_scenario(expiration)
                 packets = terminal.tick(now)
                 batch.extend(packets)

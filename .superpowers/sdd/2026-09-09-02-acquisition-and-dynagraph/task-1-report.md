@@ -137,3 +137,26 @@ task threads. At the end of all verification commands, no `python` or
   repair. Real HTTP tests confirm missing/unknown scenario fields return 422
   without state change. Final discovery ran 107 tests successfully in 256.484
   seconds.
+
+## Fix round 3
+
+- Scenario expiry now acquires transition ownership with a conditional update
+  over the persisted name, duration, and expiry tuple. Only the CAS winner
+  changes device status and writes the expiry event/audit; a losing registry
+  reloads the current persisted scenario. Concurrent startup and runtime
+  expiry therefore produce one business transition.
+- An active pre-duration scenario is no longer ended during upgrade. A future
+  expiry with legacy duration `0` derives the bounded remaining minutes,
+  migrates that value with an audited CAS, and restores the terminal. Competing
+  initializers write the migration audit once and converge on the same state.
+- The simulator lifecycle thread no longer invokes arbitrary callbacks. Its
+  optional sink accepts only an exact bounded standard-library `queue.Queue`
+  and uses `put_nowait`; a full mailbox falls back to the private bounded
+  registry queue. Callable, unbounded, and subclassed sinks are rejected, so
+  external code cannot block `stop()`.
+- RED evidence came from independent reproductions: two registries wrote two
+  expiry events, an upgraded active offline scenario became normal/online, and
+  a blocking callback left the non-daemon runner alive after stop. The focused
+  scenario/simulator suites now pass 23/23 in 39.614 seconds. A fresh full
+  `python -m unittest discover -s tests -v` run passes 110/110 in 281.107
+  seconds with no residual Python process.

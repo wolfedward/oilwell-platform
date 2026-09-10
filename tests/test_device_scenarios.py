@@ -2,6 +2,7 @@
 
 import json
 import http.client
+import queue
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -10,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import threading
+import time
 
 from backend.audit import AuditService
 from backend.database import Database
@@ -121,6 +123,37 @@ class DeviceScenarioAtomicityTests(unittest.TestCase):
         self.assertEqual((terminal.scenario.name, terminal.state), ("offline", "offline"))
         self.assertEqual(self.database.scalar("SELECT status FROM devices WHERE id=?", (self.device_id,)), "offline")
 
+    def test_expiry_cas_is_exactly_once_for_concurrent_initialization_and_ticks(self):
+        now = datetime(2026, 6, 22, 10, 0, tzinfo=SHANGHAI)
+        seed = SimulatorRegistry(self.database, clock=lambda: now)
+        DevicesService(self.database, self.audit, seed).apply_scenario(self.actor_id, self.device_id, "offline", 1)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            expired = list(workers.map(lambda _unused: SimulatorRegistry(self.database, clock=lambda: now + timedelta(minutes=2)), range(2)))
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM device_events WHERE device_id=? AND event_type='scenario_expired'", (self.device_id,)), 1)
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE object_id=? AND action='simulator.scenario_expired'", (self.device_id,)), 1)
+        self.assertEqual([(registry.get(self.device_id).scenario.name, registry.get(self.device_id).state) for registry in expired], [("normal", "online"), ("normal", "online")])
+
+        runner = SimulatorRegistry(self.database, clock=lambda: now)
+        DevicesService(self.database, self.audit, runner).apply_scenario(self.actor_id, self.device_id, "offline", 1)
+        active = [SimulatorRegistry(self.database, clock=lambda: now) for _ in range(2)]
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            list(workers.map(lambda registry: registry.run_once(now + timedelta(minutes=2)), active))
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM device_events WHERE device_id=? AND event_type='scenario_expired'", (self.device_id,)), 2)
+        self.assertTrue(all((registry.get(self.device_id).scenario.name, registry.get(self.device_id).state) == ("normal", "online") for registry in active))
+
+    def test_legacy_future_scenario_derives_remaining_duration_without_ending_it(self):
+        now = datetime(2026, 6, 22, 10, 0, tzinfo=SHANGHAI)
+        expires = now + timedelta(minutes=7, seconds=1)
+        with self.database.transaction(None, "test.legacy_scenario", "device", self.device_id):
+            self.database.execute("UPDATE devices SET status='offline' WHERE id=?", (self.device_id,))
+            self.database.execute("INSERT INTO device_scenarios(device_id, name, duration_minutes, expires_at, source_type) VALUES(?, 'offline', 0, ?, 'virtual_device')", (self.device_id, expires.isoformat()))
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            registries = list(workers.map(lambda _unused: SimulatorRegistry(self.database, clock=lambda: now), range(2)))
+        persisted = self.database.query_one("SELECT name, duration_minutes, expires_at FROM device_scenarios WHERE device_id=?", (self.device_id,))
+        self.assertEqual((persisted["name"], persisted["duration_minutes"], persisted["expires_at"]), ("offline", 8, expires.isoformat()))
+        self.assertTrue(all((registry.get(self.device_id).scenario.name, registry.get(self.device_id).scenario.duration_minutes, registry.get(self.device_id).state) == ("offline", 8, "offline") for registry in registries))
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE object_id=? AND action='simulator.scenario_duration_migrated'", (self.device_id,)), 1)
+
 
 class DeviceScenarioApiTests(unittest.TestCase):
     def test_scenario_post_requires_exact_object_shape_without_calling_service(self):
@@ -179,11 +212,11 @@ class SimulatorQueueTests(unittest.TestCase):
         registry._publish_frames([b"one", b"two"])
         self.assertEqual(registry.drain_frames(1), [b"one"])
         self.assertEqual(registry.drain_frames(), [b"two"])
-        delivered = []
-        registry.set_frame_sink(delivered.extend)
+        mailbox = queue.Queue(maxsize=1)
+        registry.set_frame_sink(mailbox)
         registry._publish_frames([b"three"])
-        self.assertEqual(delivered, [b"three"])
-        registry.set_frame_sink(lambda _batch: (_ for _ in ()).throw(RuntimeError("sink down")))
+        self.assertEqual(mailbox.get_nowait(), (b"three",))
+        mailbox.put_nowait((b"mailbox-full",))
         registry._publish_frames([b"four", b"five", b"six"])
         self.assertEqual(registry.drain_frames(), [b"five", b"six"])
         self.assertEqual(registry.frame_stats()["dropped"], 1)
@@ -202,16 +235,20 @@ class SimulatorQueueTests(unittest.TestCase):
         self.assertEqual(set(drained), {item for batch in batches for item in batch})
         self.assertEqual(registry.drain_frames(), [])
 
-    def test_sink_callback_runs_after_registry_lock_is_released(self):
+    def test_sink_rejects_callbacks_and_unbounded_or_subclassed_queues(self):
         registry = SimulatorRegistry(self.database, clock=lambda: datetime(2026, 6, 22, 10, 0, tzinfo=SHANGHAI))
-        acquired = []
-        def sink(_batch):
-            worker = threading.Thread(target=lambda: acquired.append(registry.scenario_lock.acquire(timeout=.2)))
-            worker.start(); worker.join()
-            if acquired[-1]: registry.scenario_lock.release()
-        registry.set_frame_sink(sink)
-        registry.run_once()
-        self.assertEqual(acquired, [True])
+        class QueueSubclass(queue.Queue): pass
+        for unsafe in (lambda _batch: None, queue.Queue(), QueueSubclass(maxsize=1)):
+            with self.subTest(unsafe=unsafe):
+                with self.assertRaises(ValueError): registry.set_frame_sink(unsafe)
+
+    def test_full_mailbox_does_not_block_stop_or_leave_runner(self):
+        registry = SimulatorRegistry(self.database, cadence_seconds=.01, clock=lambda: datetime.now(SHANGHAI))
+        mailbox = queue.Queue(maxsize=1)
+        mailbox.put_nowait((b"already-full",))
+        registry.set_frame_sink(mailbox)
+        registry.start(); time.sleep(.03); registry.stop()
+        self.assertFalse(registry._thread.is_alive())
 
 
 if __name__ == "__main__":
