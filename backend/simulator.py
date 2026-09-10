@@ -225,18 +225,21 @@ class SimulatorRegistry:
             return ScenarioState(name, duration, expiry, state), False, False
         return ScenarioState("normal", 0, None, "online" if state == "offline" else state), True, False
     @staticmethod
-    def _before_state(combined):
-        try:
-            expires_at = datetime.fromisoformat(combined["expires_at"]) if isinstance(combined["expires_at"], str) else None
-            expires_at = VirtualTerminal._aware(expires_at) if expires_at is not None else None
-        except (TypeError, ValueError):
-            expires_at = None
-        return ScenarioState(
-            combined["scenario_name"] if isinstance(combined["scenario_name"], str) else "normal",
-            combined["duration_minutes"] if isinstance(combined["duration_minutes"], int) and not isinstance(combined["duration_minutes"], bool) else 0,
-            expires_at,
-            combined["status"] if combined["status"] in STATES else "online",
-        )
+    def _persistence_snapshot(value):
+        """Keep raw SQL NULLs distinct from normalized terminal values for CAS."""
+        if isinstance(value, ScenarioState):
+            name = value.name
+            duration = value.duration_minutes
+            expires_at = value.expires_at.isoformat() if value.expires_at else None
+        else:
+            name = value["scenario_name"]
+            duration = value["duration_minutes"]
+            expires_at = value["expires_at"]
+        return name, duration, expires_at, {
+            "name": name,
+            "duration_minutes": duration,
+            "expires_at": expires_at,
+        }
     def _reload_terminal(self, device_id, now):
         row = self._persisted_row(device_id)
         if row is None: return
@@ -255,25 +258,25 @@ class SimulatorRegistry:
             planned, normalize, migrate_duration = self._scenario_from_row(combined, now)
             terminal = self.terminals[device["id"]]
             if normalize:
-                if not self._persist_expiration(device["id"], self._before_state(combined), planned):
+                if not self._persist_expiration(device["id"], combined, planned):
                     self._reload_terminal(device["id"], now); continue
             elif migrate_duration:
-                if not self._persist_duration_migration(device["id"], self._before_state(combined), planned):
+                if not self._persist_duration_migration(device["id"], combined, planned):
                     self._reload_terminal(device["id"], now); continue
             terminal.restore_scenario(planned)
     def _persist_duration_migration(self, device_id, before, after):
-        before_data = {"name": before.name, "duration_minutes": before.duration_minutes, "expires_at": before.expires_at.isoformat() if before.expires_at else None}
+        expected_name, expected_duration, expected_expires, before_data = self._persistence_snapshot(before)
         after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": after.expires_at.isoformat() if after.expires_at else None}
         with self.database.transaction(None, "simulator.scenario_duration_migrated", "device", device_id, source_type="system", auto_audit=False) as conn:
-            updated = conn.execute("UPDATE device_scenarios SET duration_minutes=? WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (after.duration_minutes, device_id, before.name, before.duration_minutes, before.expires_at.isoformat() if before.expires_at else None)).rowcount
+            updated = conn.execute("UPDATE device_scenarios SET duration_minutes=? WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (after.duration_minutes, device_id, expected_name, expected_duration, expected_expires)).rowcount
             if updated != 1: return False
             conn.execute("INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type) VALUES(NULL, 'simulator.scenario_duration_migrated', 'device', ?, ?, 'system')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))
             return True
     def _persist_expiration(self, device_id, before, after):
-        before_data = {"name": before.name, "duration_minutes": before.duration_minutes, "expires_at": before.expires_at.isoformat() if before.expires_at else None}
+        expected_name, expected_duration, expected_expires, before_data = self._persistence_snapshot(before)
         after_data = {"name": after.name, "duration_minutes": after.duration_minutes, "expires_at": None}
         with self.database.transaction(None, "simulator.scenario_expired", "device", device_id, source_type="system", auto_audit=False) as conn:
-            updated = conn.execute("UPDATE device_scenarios SET name='normal', duration_minutes=0, expires_at=NULL, source_type='virtual_device' WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (device_id, before.name, before.duration_minutes, before.expires_at.isoformat() if before.expires_at else None)).rowcount
+            updated = conn.execute("UPDATE device_scenarios SET name='normal', duration_minutes=0, expires_at=NULL, source_type='virtual_device' WHERE device_id=? AND name IS ? AND duration_minutes IS ? AND expires_at IS ?", (device_id, expected_name, expected_duration, expected_expires)).rowcount
             if updated != 1: return False
             conn.execute("UPDATE devices SET status=? WHERE id=?", (after.terminal_state, device_id))
             conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, source_type) VALUES(?, 'scenario_expired', ?, 'recorded', 'virtual_device')", (device_id, json.dumps({"before": before_data, "after": after_data}, sort_keys=True)))

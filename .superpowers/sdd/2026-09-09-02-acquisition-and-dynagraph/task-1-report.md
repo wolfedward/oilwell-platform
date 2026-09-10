@@ -160,3 +160,19 @@ task threads. At the end of all verification commands, no `python` or
   scenario/simulator suites now pass 23/23 in 39.614 seconds. A fresh full
   `python -m unittest discover -s tests -v` run passes 110/110 in 281.107
   seconds with no residual Python process.
+
+## Fix round 4
+
+Independent review reproduced one intermediate legacy schema where
+`duration_minutes` already existed but was nullable. The prior compatibility
+path normalized SQL `NULL` to integer `0` before building its CAS predicate,
+so it restored memory but could not persist the migration. A real nullable
+SQLite-table regression first failed with the stored value still `NULL` and
+zero migration audits. Persistence snapshots now retain the raw SQL value for
+the CAS and audit while terminal planning uses its derived integer value.
+
+The nullable regression passes, and the focused scenario/simulator run passes
+24/24. One first full run had a timing-only failure in an unrelated stop-script
+test; that exact test and the complete health module both passed immediately
+in isolation. A fresh quiet full discovery then passed 111/111 in 280.645
+seconds. Compile and diff checks pass and no Python process remains.

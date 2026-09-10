@@ -154,6 +154,50 @@ class DeviceScenarioAtomicityTests(unittest.TestCase):
         self.assertTrue(all((registry.get(self.device_id).scenario.name, registry.get(self.device_id).scenario.duration_minutes, registry.get(self.device_id).state) == ("offline", 8, "offline") for registry in registries))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE object_id=? AND action='simulator.scenario_duration_migrated'", (self.device_id,)), 1)
 
+    def test_nullable_legacy_duration_is_cas_migrated_once_without_becoming_zero(self):
+        now = datetime(2026, 6, 22, 10, 0, tzinfo=SHANGHAI)
+        expires = now + timedelta(minutes=7, seconds=1)
+        # One pre-release database briefly exposed a nullable duration column.
+        # Rebuild only this empty table so the regression exercises the real
+        # SQLite NULL predicate rather than a mock row.
+        with self.database.connection() as connection:
+            connection.execute("DROP TABLE device_scenarios")
+            connection.execute("""CREATE TABLE device_scenarios (
+                device_id TEXT PRIMARY KEY REFERENCES devices(id),
+                name TEXT NOT NULL DEFAULT 'normal',
+                duration_minutes INTEGER,
+                expires_at TEXT,
+                actor_id INTEGER,
+                source_type TEXT NOT NULL DEFAULT 'virtual_device',
+                created_at TEXT,
+                updated_at TEXT
+            )""")
+        with self.database.transaction(None, "test.nullable_legacy_scenario", "device", self.device_id):
+            self.database.execute("UPDATE devices SET status='offline' WHERE id=?", (self.device_id,))
+            self.database.execute(
+                "INSERT INTO device_scenarios(device_id, name, duration_minutes, expires_at) VALUES(?, 'offline', NULL, ?)",
+                (self.device_id, expires.isoformat()),
+            )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            registries = list(workers.map(lambda _unused: SimulatorRegistry(self.database, clock=lambda: now), range(2)))
+        persisted = self.database.query_one(
+            "SELECT name, duration_minutes, expires_at FROM device_scenarios WHERE device_id=?",
+            (self.device_id,),
+        )
+        self.assertEqual((persisted["name"], persisted["duration_minutes"], persisted["expires_at"]), ("offline", 8, expires.isoformat()))
+        self.assertTrue(all(
+            (registry.get(self.device_id).scenario.name, registry.get(self.device_id).scenario.duration_minutes, registry.get(self.device_id).state)
+            == ("offline", 8, "offline")
+            for registry in registries
+        ))
+        self.assertEqual(
+            self.database.scalar(
+                "SELECT COUNT(*) FROM audit_logs WHERE object_id=? AND action='simulator.scenario_duration_migrated'",
+                (self.device_id,),
+            ),
+            1,
+        )
+
 
 class DeviceScenarioApiTests(unittest.TestCase):
     def test_scenario_post_requires_exact_object_shape_without_calling_service(self):
