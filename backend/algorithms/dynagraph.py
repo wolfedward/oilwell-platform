@@ -20,7 +20,7 @@ class DynagraphValidationError(ValueError):
 
 @dataclass(frozen=True)
 class ElectricalSample:
-    """One sample whose phase is a crank angle in [0, 360) degrees."""
+    """One crank-angle sample in degrees, or a legacy sequential phase index."""
 
     phase: float
     current_a: float
@@ -140,7 +140,7 @@ def split_cycle(samples: list[ElectricalSample], strokes_per_minute: float) -> l
     for sample in samples:
         if not isinstance(sample, ElectricalSample):
             raise DynagraphValidationError("samples must be ElectricalSample values")
-        phase = _number(sample.phase, "phase", 0.0, math.nextafter(360.0, 0.0))
+        phase = _number(sample.phase, "phase", 0.0, 511.0)
         _number(sample.current_a, "current_a", 0.0, 200.0)
         _number(sample.voltage_v, "voltage_v", 0.0, 1_000.0)
         _number(sample.active_power_kw, "active_power_kw", -100.0, 100.0)
@@ -149,6 +149,14 @@ def split_cycle(samples: list[ElectricalSample], strokes_per_minute: float) -> l
         last_phase = phase
         copied.append(sample)
     phases = [float(sample.phase) for sample in copied]
+    legacy_sequential = all(
+        math.isclose(phase, float(index), rel_tol=0.0, abs_tol=1e-9)
+        for index, phase in enumerate(phases)
+    )
+    if legacy_sequential:
+        return list(copied)
+    if phases[-1] >= 360.0:
+        raise DynagraphValidationError("degree phase must be within [0, 360)")
     circular_gaps = [
         following - current
         for current, following in zip(phases, [*phases[1:], phases[0] + 360.0])
@@ -230,7 +238,15 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
     smoothed = smooth([sample.active_power_kw for sample in cycle], 5)
     unique_count = NORMALIZED_POINT_COUNT - 1
     phases = [float(sample.phase) for sample in cycle]
-    powers = _periodic_resample(phases, smoothed, unique_count)
+    legacy_phase = all(
+        math.isclose(phase, float(index), rel_tol=0.0, abs_tol=1e-9)
+        for index, phase in enumerate(phases)
+    )
+    interpolation_phases = (
+        [360.0 * index / len(phases) for index in range(len(phases))]
+        if legacy_phase else phases
+    )
+    powers = _periodic_resample(interpolation_phases, smoothed, unique_count)
     omega_crank = math.tau * params.strokes_per_minute / 60.0
     omega_motor = omega_crank * params.gear_ratio
     phase_offset = math.radians(params.balance_phase_deg)
@@ -284,6 +300,10 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
         f"±{params.dead_center_exclusion_deg:.1f}° "
         f"({sum(inferred_flags)}/{unique_count} normalized points)"
     ]
+    if legacy_phase:
+        warnings.append(
+            "legacy sequential phase indices were mapped to a 360-degree cycle; raw samples were preserved"
+        )
     if min(powers) < 0:
         warnings.append("negative active power indicates regenerative motor operation")
     point_tuple = tuple(points)

@@ -168,6 +168,15 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         with self.assertRaises(DynagraphValidationError):
             convert_electric_card(incomplete, params)
 
+    def test_legacy_sequential_phase_is_mapped_without_changing_raw_samples(self):
+        samples, params = fixture("normal")
+        legacy = [replace(sample, phase=float(index)) for index, sample in enumerate(samples)]
+        current = convert_electric_card(samples, params)
+        converted = convert_electric_card(legacy, params)
+        self.assertEqual([sample.phase for sample in converted.raw_samples], list(map(float, range(12))))
+        self.assertEqual(converted.points, current.points)
+        self.assertTrue(any("legacy sequential phase" in warning for warning in converted.warnings))
+
     def test_geometric_features_do_not_depend_on_curve_orientation(self):
         points = self.analyze("normal").points
         forward = extract_features(points)
