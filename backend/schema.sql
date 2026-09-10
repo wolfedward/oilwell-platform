@@ -208,8 +208,15 @@ CREATE TABLE IF NOT EXISTS acquisition_cursors (
 CREATE TABLE IF NOT EXISTS dynagraphs (
     id TEXT PRIMARY KEY,
     well_id TEXT NOT NULL REFERENCES wells(id),
+    device_id TEXT REFERENCES devices(id),
+    raw_message_id INTEGER REFERENCES raw_messages(id),
     captured_at TEXT NOT NULL,
     sample_data TEXT NOT NULL,
+    conversion_json TEXT,
+    features_json TEXT,
+    model_version TEXT,
+    latest_model_run_id TEXT REFERENCES model_runs(id),
+    version INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'available',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
@@ -236,7 +243,27 @@ CREATE TABLE IF NOT EXISTS model_runs (
     model_version TEXT,
     input_object_type TEXT,
     input_object_id TEXT,
+    input_snapshot TEXT,
+    parameters_json TEXT,
+    output_snapshot TEXT,
+    warnings_json TEXT,
+    completed_at TEXT,
     status TEXT NOT NULL DEFAULT 'completed',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'algorithm',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
+CREATE TABLE IF NOT EXISTS diagnosis_templates (
+    id TEXT PRIMARY KEY,
+    condition_code TEXT NOT NULL UNIQUE,
+    version TEXT NOT NULL,
+    features_json TEXT NOT NULL,
+    scales_json TEXT NOT NULL,
+    weights_json TEXT NOT NULL,
+    sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+    status TEXT NOT NULL DEFAULT 'active',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
@@ -248,14 +275,50 @@ CREATE TABLE IF NOT EXISTS diagnoses (
     well_id TEXT NOT NULL REFERENCES wells(id),
     dynagraph_id TEXT REFERENCES dynagraphs(id),
     model_run_id TEXT REFERENCES model_runs(id),
+    template_id TEXT REFERENCES diagnosis_templates(id),
+    template_version TEXT,
     diagnosis_type TEXT NOT NULL,
     confidence REAL,
     evidence TEXT,
+    candidates_json TEXT,
+    rule_hits_json TEXT,
+    recommendation TEXT,
+    review_version INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'new',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
+CREATE TABLE IF NOT EXISTS production_estimates (
+    id INTEGER PRIMARY KEY,
+    well_id TEXT NOT NULL REFERENCES wells(id),
+    dynagraph_id TEXT NOT NULL REFERENCES dynagraphs(id),
+    model_run_id TEXT NOT NULL REFERENCES model_runs(id),
+    theoretical_m3_day REAL NOT NULL,
+    estimated_m3_day REAL NOT NULL,
+    factors_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'estimated',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'algorithm',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    UNIQUE(model_run_id)
+);
+
+CREATE TABLE IF NOT EXISTS diagnosis_reviews (
+    id INTEGER PRIMARY KEY,
+    diagnosis_id TEXT NOT NULL REFERENCES diagnoses(id),
+    diagnosis_version INTEGER NOT NULL,
+    reviewer_condition TEXT NOT NULL,
+    comment TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'recorded',
+    actor_id INTEGER NOT NULL REFERENCES users(id),
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    UNIQUE(diagnosis_id, diagnosis_version)
 );
 
 CREATE TABLE IF NOT EXISTS recovery_tests (
@@ -583,6 +646,27 @@ BEGIN
     UPDATE model_runs SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
 END;
 
+CREATE TRIGGER IF NOT EXISTS diagnosis_templates_set_updated_at
+AFTER UPDATE ON diagnosis_templates
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE diagnosis_templates SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS production_estimates_set_updated_at
+AFTER UPDATE ON production_estimates
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE production_estimates SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS diagnosis_reviews_set_updated_at
+AFTER UPDATE ON diagnosis_reviews
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE diagnosis_reviews SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
 CREATE TRIGGER IF NOT EXISTS recovery_tests_set_updated_at
 AFTER UPDATE ON recovery_tests
 FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
@@ -808,6 +892,36 @@ AFTER INSERT ON model_runs
 FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
 BEGIN
     UPDATE model_runs SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS diagnosis_templates_normalize_inserted_timestamps
+AFTER INSERT ON diagnosis_templates
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE diagnosis_templates SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS production_estimates_normalize_inserted_timestamps
+AFTER INSERT ON production_estimates
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE production_estimates SET
+        created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS diagnosis_reviews_normalize_inserted_timestamps
+AFTER INSERT ON diagnosis_reviews
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE diagnosis_reviews SET
         created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
         updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
     WHERE rowid = NEW.rowid;

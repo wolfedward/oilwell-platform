@@ -10,7 +10,8 @@ from typing import Iterator, Sequence
 TIMESTAMP_TABLES = (
     "units", "well_groups", "wells", "devices", "device_channels", "device_heartbeats",
     "telemetry", "production_daily", "seed_manifests", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
-    "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
+    "diagnoses", "model_runs", "diagnosis_templates", "production_estimates", "diagnosis_reviews",
+    "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
     "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions", "auth_bootstrap_state",
     "audit_logs", "system_events", "device_scenarios", "device_events",
@@ -56,6 +57,7 @@ class Database:
             self._migrate_auth_columns(connection)
             self._migrate_device_columns(connection)
             self._migrate_acquisition_columns(connection)
+            self._migrate_analysis_columns(connection)
             self._normalize_legacy_timestamps(connection)
 
     @staticmethod
@@ -133,6 +135,82 @@ class Database:
         connection.execute("CREATE INDEX IF NOT EXISTS data_quality_live_status_idx ON data_quality_events(source_type, device_id, kind, status, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS telemetry_raw_message_idx ON telemetry(raw_message_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS device_heartbeats_raw_message_idx ON device_heartbeats(raw_message_id)")
+
+    @staticmethod
+    def _migrate_analysis_columns(connection: sqlite3.Connection) -> None:
+        """Upgrade populated databases and materialize accepted electric cards."""
+        required = {
+            "dynagraphs": (
+                ("device_id", "TEXT"), ("raw_message_id", "INTEGER"),
+                ("conversion_json", "TEXT"), ("features_json", "TEXT"),
+                ("model_version", "TEXT"), ("latest_model_run_id", "TEXT"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+            "model_runs": (
+                ("input_snapshot", "TEXT"), ("parameters_json", "TEXT"),
+                ("output_snapshot", "TEXT"), ("warnings_json", "TEXT"),
+                ("completed_at", "TEXT"),
+            ),
+            "diagnoses": (
+                ("template_id", "TEXT"), ("template_version", "TEXT"),
+                ("candidates_json", "TEXT"), ("rule_hits_json", "TEXT"),
+                ("recommendation", "TEXT"),
+                ("review_version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+        }
+        for table_name, columns_to_add in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in columns_to_add:
+                if column_name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+                    )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS dynagraphs_raw_message_unique "
+            "ON dynagraphs(raw_message_id) WHERE raw_message_id IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS dynagraphs_live_list_idx "
+            "ON dynagraphs(well_id,status,captured_at DESC,id DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS model_runs_input_idx "
+            "ON model_runs(input_object_type,input_object_id,created_at DESC,id DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS diagnosis_reviews_diagnosis_idx "
+            "ON diagnosis_reviews(diagnosis_id,created_at,id)"
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO dynagraphs(
+                   id,well_id,device_id,raw_message_id,captured_at,sample_data,status,source_type
+               )
+               SELECT 'DG-RAW-' || printf('%012d', raw.id), device.well_id,
+                      raw.device_id, raw.id, COALESCE(raw.reported_at,raw.received_at),
+                      raw.payload, 'unprocessed', raw.source_type
+               FROM raw_messages AS raw
+               JOIN devices AS device ON device.id=raw.device_id
+               WHERE raw.frame_kind='electric_card'
+                 AND raw.status IN ('accepted','replayed')
+                 AND raw.source_type='virtual_device'"""
+        )
+        broken = connection.execute(
+            """SELECT raw.id
+               FROM raw_messages AS raw
+               JOIN devices AS device ON device.id=raw.device_id
+               LEFT JOIN dynagraphs AS card ON card.raw_message_id=raw.id
+               WHERE raw.frame_kind='electric_card'
+                 AND raw.status IN ('accepted','replayed')
+                 AND raw.source_type='virtual_device'
+                 AND (card.id IS NULL OR card.well_id<>device.well_id
+                      OR card.device_id<>raw.device_id OR card.sample_data<>raw.payload
+                      OR card.captured_at<>COALESCE(raw.reported_at,raw.received_at))
+               LIMIT 1"""
+        ).fetchone()
+        if broken is not None:
+            raise sqlite3.IntegrityError(
+                f"electric-card lineage migration failed for raw message {broken['id']}"
+            )
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:

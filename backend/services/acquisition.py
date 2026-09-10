@@ -395,6 +395,37 @@ class AcquisitionService:
                         "INSERT INTO telemetry(well_id, device_id, measured_at, metric_code, value, unit, status, raw_message_id, source_type) VALUES(?, ?, ?, ?, ?, ?, 'valid', ?, 'virtual_device')",
                         (device["well_id"], frame.device_id, frame.timestamp.isoformat(), metric, value, METRICS[metric][2], raw_id),
                     )
+            elif kind == "electric_card":
+                # The exact canonical raw payload is promoted into the
+                # analysis queue in the same transaction as acceptance.  The
+                # foreign key and unique raw-message index make the lineage
+                # inspectable and idempotent during replay/migration.
+                conn.execute(
+                    """INSERT OR IGNORE INTO dynagraphs(
+                           id,well_id,device_id,raw_message_id,captured_at,sample_data,
+                           status,source_type
+                       )
+                       SELECT ?,?,?,id,reported_at,payload,'unprocessed','virtual_device'
+                       FROM raw_messages WHERE id=?""",
+                    (
+                        f"DG-RAW-{raw_id:012d}", device["well_id"],
+                        frame.device_id, raw_id,
+                    ),
+                )
+                card = conn.execute(
+                    """SELECT well_id,device_id,raw_message_id,captured_at,sample_data
+                       FROM dynagraphs WHERE raw_message_id=?""", (raw_id,)
+                ).fetchone()
+                expected_card = (
+                    device["well_id"], frame.device_id, raw_id,
+                    frame.timestamp.isoformat(), conn.execute(
+                        "SELECT payload FROM raw_messages WHERE id=?", (raw_id,)
+                    ).fetchone()["payload"],
+                )
+                if card is None or tuple(card) != expected_card:
+                    raise sqlite3.IntegrityError(
+                        "accepted electric card could not retain exact dynagraph lineage"
+                    )
 
             disposition = "replayed" if replay_event_id is not None else "accepted"
             conn.execute("UPDATE raw_messages SET status=? WHERE id=?", (disposition, raw_id))

@@ -9,6 +9,9 @@ from backend.services.devices import ChannelVersionConflict, DeviceNotFound, Dev
 from backend.services.acquisition import (
     AcquisitionNotFound, AcquisitionService, AcquisitionValidationError, AcquisitionVersionConflict,
 )
+from backend.services.analysis import (
+    AnalysisNotFound, AnalysisService, AnalysisValidationError, AnalysisVersionConflict,
+)
 
 
 class WellApi:
@@ -294,3 +297,125 @@ class AcquisitionApi:
         value = int(match.group(1))
         if value > WellApi.SQLITE_MAX_INTEGER: raise AcquisitionValidationError("quality event id is out of range")
         return value
+
+
+class AnalysisApi:
+    """Traceable dynagraph conversion, diagnosis, production and review routes."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service = AnalysisService(handler.server.database, handler.server.audit)
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        try:
+            if parsed.path == "/api/dynagraphs":
+                if self.handler._require("reports.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query, {"well_id", "status", "page", "page_size"}
+                )
+                page, page_size = self._page(query)
+                return self._ok(self.service.list_dynagraphs(
+                    {**query, "page": page, "page_size": page_size}
+                ))
+            if parsed.path == "/api/model-runs":
+                if self.handler._require("reports.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query, {"dynagraph_id", "status", "page", "page_size"}
+                )
+                page, page_size = self._page(query)
+                return self._ok(self.service.model_runs(
+                    {**query, "page": page, "page_size": page_size}
+                ))
+            match = re.fullmatch(
+                r"/api/dynagraphs/([A-Za-z0-9][A-Za-z0-9_-]{0,127})",
+                parsed.path,
+            )
+            if match:
+                if self.handler._require("reports.read") is None:
+                    return True
+                if parsed.query:
+                    raise AnalysisValidationError(
+                        "dynagraph detail does not accept query parameters"
+                    )
+                return self._ok(self.service.detail(unquote(match.group(1))))
+            return False
+        except AnalysisNotFound:
+            self.handler._send_json(
+                HTTPStatus.NOT_FOUND,
+                self.handler._error("not_found", "Analysis record not found"),
+            )
+        except (AnalysisValidationError, WellValidationError, ValueError) as error:
+            self.handler._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self.handler._error("validation_error", str(error)),
+            )
+        return True
+
+    def post(self, request_target):
+        parsed = urlsplit(request_target)
+        analyze = re.fullmatch(
+            r"/api/dynagraphs/([A-Za-z0-9][A-Za-z0-9_-]{0,127})/analyze",
+            parsed.path,
+        )
+        review = re.fullmatch(
+            r"/api/diagnoses/([A-Za-z0-9][A-Za-z0-9_-]{0,127})/review",
+            parsed.path,
+        )
+        if analyze is None and review is None:
+            return False
+        try:
+            if parsed.query:
+                raise AnalysisValidationError(
+                    "analysis mutation does not accept query parameters"
+                )
+            if analyze:
+                actor = self.handler._require("diagnosis.run")
+                if actor is None:
+                    return True
+                body = self.handler._json_body()
+                if set(body):
+                    raise AnalysisValidationError("analyze body must be an empty object")
+                return self._ok(self.service.run(unquote(analyze.group(1)), actor.id))
+            actor = self.handler._require("diagnosis.review")
+            if actor is None:
+                return True
+            body = self.handler._json_body()
+            if set(body) != {"condition", "comment", "version"}:
+                raise AnalysisValidationError(
+                    "review body must contain exactly condition, comment and version"
+                )
+            return self._ok(self.service.review(
+                unquote(review.group(1)), actor.id, body["condition"],
+                body["comment"], body["version"],
+            ))
+        except AnalysisNotFound:
+            self.handler._send_json(
+                HTTPStatus.NOT_FOUND,
+                self.handler._error("not_found", "Analysis record not found"),
+            )
+        except AnalysisVersionConflict:
+            self.handler._send_json(
+                HTTPStatus.CONFLICT,
+                self.handler._error("version_conflict", "Diagnosis version is stale"),
+            )
+        except (AnalysisValidationError, ValueError) as error:
+            self.handler._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self.handler._error("validation_error", str(error)),
+            )
+        return True
+
+    def _ok(self, data):
+        self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": data})
+        return True
+
+    @staticmethod
+    def _page(query):
+        page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+        page_size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
+        if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
+            raise AnalysisValidationError("page offset is out of range")
+        return page, page_size
