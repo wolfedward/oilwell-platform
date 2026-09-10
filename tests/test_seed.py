@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.database import Database
-from backend.seed import SeedSummary, _content_hash, _previous_content_hash, _upgrade_manifest_hash, seed_database
+from backend.seed import SeedSummary, _content_hash, _content_hash_from, _previous_content_hash, _task1_current_v4_content_hash, _upgrade_manifest_hash, seed_database
 
 
 class SeedDatabaseTests(unittest.TestCase):
@@ -265,6 +265,60 @@ class SeedDatabaseTests(unittest.TestCase):
         self.assertEqual(
             self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='seed.upgrade_manifest_hash'"), before + 1
         )
+
+    def test_device_config_projection_excludes_well_lifecycle_status_and_version(self):
+        """The device projection must retain the lifecycle v3 immutable well contract."""
+        seed_database(self.database)
+        before = _content_hash(self.database, 202606, "")
+        with self.database.transaction(None, "test.mutable_well_lifecycle", "well", "W-001"):
+            self.database.execute(
+                "UPDATE wells SET status='stopped', version=version+1 WHERE id='W-001'"
+            )
+        self.assertEqual(_content_hash(self.database, 202606, ""), before)
+        with self.database.transaction(None, "test.immutable_well_identity", "well", "W-001"):
+            self.database.execute("UPDATE wells SET name='tampered' WHERE id='W-001'")
+        self.assertNotEqual(_content_hash(self.database, 202606, ""), before)
+
+    def test_future_device_config_projection_inherits_lifecycle_exclusions(self):
+        """A future device-config projection must not silently reintroduce lifecycle fields."""
+        seed_database(self.database)
+        with self.database.connection() as connection:
+            before = _content_hash_from(connection, 202606, "", projection="device-config-v5")
+        with self.database.transaction(None, "test.mutable_well_lifecycle", "well", "W-001"):
+            self.database.execute("UPDATE wells SET status='stopped', version=version+1 WHERE id='W-001'")
+        with self.database.connection() as connection:
+            after = _content_hash_from(connection, 202606, "", projection="device-config-v5")
+        self.assertEqual(after, before)
+
+    def test_current_v4_manifest_is_upgraded_to_fixed_lifecycle_projection(self):
+        """The ec75f85 v4 hash remains restart-compatible during the semantic repair."""
+        seed_database(self.database)
+        old_v4 = _task1_current_v4_content_hash(self.database, 202606, "")
+        with self.database.transaction(None, "test.current_v4_manifest", "seed_manifest", "acceptance-history"):
+            self.database.execute(
+                "UPDATE seed_manifests SET content_hash=? WHERE dataset_name='acceptance-history'",
+                (old_v4,),
+            )
+        seed_database(self.database)
+        self.assertEqual(self.database.scalar("SELECT content_hash FROM seed_manifests WHERE dataset_name='acceptance-history'"), _content_hash(self.database, 202606, ""))
+
+    def test_v4_upgrade_preserves_status_change_and_rejects_identity_tampering(self):
+        """A v4-compatible restart migrates once, then preserves mutable lifecycle only."""
+        seed_database(self.database)
+        old_v4 = _task1_current_v4_content_hash(self.database, 202606, "")
+        with self.database.transaction(None, "test.current_v4_manifest", "seed_manifest", "acceptance-history"):
+            self.database.execute(
+                "UPDATE seed_manifests SET content_hash=? WHERE dataset_name='acceptance-history'",
+                (old_v4,),
+            )
+        seed_database(self.database)
+        with self.database.transaction(None, "test.mutable_well_lifecycle", "well", "W-001"):
+            self.database.execute("UPDATE wells SET status='stopped', version=version+1 WHERE id='W-001'")
+        self.assertEqual(seed_database(self.database).wells, 48)
+        with self.database.transaction(None, "test.immutable_well_identity", "well", "W-001"):
+            self.database.execute("UPDATE wells SET name='tampered' WHERE id='W-001'")
+        with self.assertRaisesRegex(RuntimeError, "content fingerprint"):
+            seed_database(self.database)
 
 
 if __name__ == "__main__":

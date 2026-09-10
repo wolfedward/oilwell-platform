@@ -44,15 +44,21 @@ class DevicesService:
         terminal = self.registry.get(device_id)
         if terminal is None: raise DeviceNotFound()
         now = datetime.now(SHANGHAI_TIMEZONE)
-        try: state = terminal.apply_scenario(name, duration_minutes, now=now)
-        except SimulatorValidationError as error: raise DeviceValidationError(str(error)) from None
-        before = self._scenario(device_id)
-        after = {"name": state.name, "duration_minutes": state.duration_minutes, "expires_at": state.expires_at.isoformat() if state.expires_at else None}
-        with self.database.transaction(actor_id, "device.scenario", "device", device_id, source_type="manual", auto_audit=False) as conn:
-            conn.execute("UPDATE devices SET status=?, actor_id=? WHERE id=?", ("offline" if name == "offline" else terminal.state, actor_id, device_id))
-            conn.execute("INSERT INTO device_scenarios(device_id, name, expires_at, actor_id, source_type) VALUES(?, ?, ?, ?, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, expires_at=excluded.expires_at, actor_id=excluded.actor_id, source_type='virtual_device'", (device_id, name, after["expires_at"], actor_id))
-            conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, actor_id, source_type) VALUES(?, 'scenario_applied', ?, 'recorded', ?, 'virtual_device')", (device_id, json.dumps(after, sort_keys=True), actor_id))
-            self.audit.record(actor_id, "device.scenario", "device", device_id, {"before": before, "after": after, "reason": "operator scenario request"}, conn, source_type="manual")
+        with self.registry.scenario_lock:
+            # Capture before and build a pure plan before changing terminal memory.
+            before = self._scenario(device_id)
+            try:
+                planned = terminal.preview_scenario(name, duration_minutes, now=now)
+            except SimulatorValidationError as error: raise DeviceValidationError(str(error)) from None
+            after = {"name": planned.name, "duration_minutes": planned.duration_minutes, "expires_at": planned.expires_at.isoformat() if planned.expires_at else None}
+            with self.database.transaction(actor_id, "device.scenario", "device", device_id, source_type="manual", auto_audit=False) as conn:
+                conn.execute("UPDATE devices SET status=?, actor_id=? WHERE id=?", (planned.terminal_state, actor_id, device_id))
+                conn.execute("INSERT INTO device_scenarios(device_id, name, expires_at, actor_id, source_type) VALUES(?, ?, ?, ?, 'virtual_device') ON CONFLICT(device_id) DO UPDATE SET name=excluded.name, expires_at=excluded.expires_at, actor_id=excluded.actor_id, source_type='virtual_device'", (device_id, planned.name, after["expires_at"], actor_id))
+                conn.execute("INSERT INTO device_events(device_id, event_type, detail, status, actor_id, source_type) VALUES(?, 'scenario_applied', ?, 'recorded', ?, 'virtual_device')", (device_id, json.dumps({"before": before, "after": after}, sort_keys=True), actor_id))
+                self.audit.record(actor_id, "device.scenario", "device", device_id, {"before": before, "after": after, "reason": "operator scenario request"}, conn, source_type="manual")
+            # The commit path only assigns this prevalidated plan; no new
+            # validation or fallible work can create a DB/memory split here.
+            terminal.commit_planned_scenario(planned)
         return after
     def update_channel(self, actor_id, device_id, channel_id, body):
         if not DEVICE_ID.fullmatch(device_id) or not DEVICE_ID.fullmatch(channel_id): raise DeviceValidationError("invalid device or channel id")

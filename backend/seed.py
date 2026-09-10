@@ -235,9 +235,14 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
     unit_ids = [_identifier(namespace, f"U-{index:02d}") for index in range(1, 5)]
     group_ids = [_identifier(namespace, f"G-{index:02d}") for index in range(1, 9)]
     digest = hashlib.sha256()
-    projection_markers = {"legacy-auth-v1": "", "auth-v2": "|auth-projection-v2", "well-lifecycle-v3": "|well-lifecycle-projection-v3", "device-config-v4": "|device-config-projection-v4"}
-    if projection not in projection_markers:
+    projection_markers = {"legacy-auth-v1": "", "auth-v2": "|auth-projection-v2", "well-lifecycle-v3": "|well-lifecycle-projection-v3", "device-config-v4": "|device-config-projection-v4", "device-config-v4-legacy": "|device-config-projection-v4"}
+    if projection not in projection_markers and not (
+        projection.startswith("device-config-v")
+        and projection.removeprefix("device-config-v").isdigit()
+    ):
         raise ValueError("unsupported seed hash projection")
+    if projection not in projection_markers:
+        projection_markers[projection] = f"|device-config-projection-{projection.removeprefix('device-config-')}"
     digest.update(f"{MANIFEST_NAME}|{MANIFEST_VERSION}|{seed}|{namespace}{projection_markers[projection]}\n".encode())
 
     def append_rows(label: str, select_sql: str, parameters: list) -> None:
@@ -260,10 +265,17 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
 
     rows_for_ids("units", "units", "id", unit_ids, "'id',id,'code',code,'name',name,'status',status,'source',source_type")
     rows_for_ids("groups", "well_groups", "id", group_ids, "'id',id,'unit',unit_id,'code',code,'name',name,'status',status,'source',source_type")
-    well_fields = "'id',id,'group',group_id,'code',code,'name',name,'low',is_low_output,'source',source_type" if projection == "well-lifecycle-v3" else "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type"
+    # Device-config projections build on the well-lifecycle-v3 contract.  Well
+    # status and optimistic version are mutable lifecycle state and therefore
+    # must never invalidate a seed manifest.  Keep this capability-based rather
+    # than checking only the current projection name so future vN projections
+    # cannot accidentally reintroduce those fields.
+    lifecycle_projection = projection == "well-lifecycle-v3" or (projection.startswith("device-config-v") and projection != "device-config-v4-legacy")
+    well_fields = "'id',id,'group',group_id,'code',code,'name',name,'low',is_low_output,'source',source_type" if lifecycle_projection else "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type"
     rows_for_ids("wells", "wells", "id", well_ids, well_fields)
-    device_fields = "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'source',source_type" if projection == "device-config-v4" else "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type"
-    channel_fields = "'id',id,'device',device_id,'code',channel_code,'name',name,'source',source_type" if projection == "device-config-v4" else "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type"
+    config_projection = projection.startswith("device-config-v")
+    device_fields = "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'source',source_type" if config_projection else "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type"
+    channel_fields = "'id',id,'device',device_id,'code',channel_code,'name',name,'source',source_type" if config_projection else "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type"
     rows_for_ids("devices", "devices", "id", device_ids, device_fields)
     rows_for_ids("channels", "device_channels", "id", channel_ids, channel_fields)
     rows_for_ids("heartbeats", "device_heartbeats", "device_id", device_ids, "'device',device_id,'reported',reported_at,'status',status,'source',source_type")
@@ -330,6 +342,12 @@ def _task1_previous_content_hash(db: Database, seed: int, namespace: str) -> str
         return _content_hash_from(connection, seed, namespace, projection="well-lifecycle-v3")
 
 
+def _task1_current_v4_content_hash(db: Database, seed: int, namespace: str) -> str:
+    """Exact ec75f85 projection accepted once while v4 semantics are repaired."""
+    with db.connection() as connection:
+        return _content_hash_from(connection, seed, namespace, projection="device-config-v4-legacy")
+
+
 def _canonical_json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -380,8 +398,9 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     # damaged immutable seed record remains fail-closed.
     previous_hash = _previous_content_hash(db, requested_seed, manifest["namespace"])
     task1_previous_hash = _task1_previous_content_hash(db, requested_seed, manifest["namespace"])
+    task1_current_v4_hash = _task1_current_v4_content_hash(db, requested_seed, manifest["namespace"])
     legacy_hash = _legacy_content_hash(db, requested_seed, manifest["namespace"])
-    if manifest["content_hash"] not in {task1_previous_hash, previous_hash, legacy_hash}:
+    if manifest["content_hash"] not in {task1_previous_hash, task1_current_v4_hash, previous_hash, legacy_hash}:
         raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
     _upgrade_manifest_hash(db, manifest["content_hash"], projected_hash)
     return summary

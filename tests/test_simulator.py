@@ -52,6 +52,20 @@ class ProtocolTests(unittest.TestCase):
 
 
 class VirtualTerminalTests(unittest.TestCase):
+    def test_preview_is_pure_and_plans_terminal_state_and_expiry(self):
+        terminal = VirtualTerminal(profile_for("D-001"), seed=11)
+        now = at("2026-06-22T10:00:00+08:00")
+        terminal.apply_scenario("offline", 5, now=now)
+
+        planned = terminal.preview_scenario("supply_shortage", 30, now=now)
+
+        self.assertEqual(terminal.scenario.name, "offline")
+        self.assertEqual(terminal.state, "offline")
+        self.assertEqual(planned.terminal_state, "online")
+        self.assertEqual(planned.expires_at, now + timedelta(minutes=30))
+        terminal.commit_planned_scenario(planned)
+        self.assertEqual(terminal.state, planned.terminal_state)
+
     def test_supply_shortage_changes_fillage_not_identity(self):
         terminal = VirtualTerminal(profile_for("D-001"), seed=11)
         normal = terminal.tick(at("2026-06-22T10:00:00+08:00"))
