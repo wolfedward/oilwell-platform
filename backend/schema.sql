@@ -337,7 +337,16 @@ CREATE TABLE IF NOT EXISTS recovery_tests (
 CREATE TABLE IF NOT EXISTS energy_strategies (
     id TEXT PRIMARY KEY,
     well_id TEXT NOT NULL REFERENCES wells(id),
+    parent_strategy_id TEXT REFERENCES energy_strategies(id),
+    current_version_id TEXT REFERENCES strategy_versions(id),
     name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id),
+    submitted_by INTEGER REFERENCES users(id),
+    decision_by INTEGER REFERENCES users(id),
+    submitted_at TEXT,
+    decision_at TEXT,
+    approval_comment TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
@@ -350,6 +359,8 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
     strategy_id TEXT NOT NULL REFERENCES energy_strategies(id),
     version_number INTEGER NOT NULL,
     configuration TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id),
+    submitted_at TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
@@ -474,7 +485,10 @@ CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
     object_type TEXT NOT NULL,
     object_id TEXT NOT NULL,
+    object_version INTEGER,
     decision TEXT,
+    comment TEXT,
+    decided_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
@@ -687,6 +701,47 @@ AFTER UPDATE ON strategy_versions
 FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
 BEGIN
     UPDATE strategy_versions SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_update
+BEFORE UPDATE OF strategy_id, version_number, configuration ON strategy_versions
+FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'submitted strategy version is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_state
+BEFORE UPDATE OF status, submitted_at ON strategy_versions
+FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'submitted strategy version state is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_delete
+BEFORE DELETE ON strategy_versions
+FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'submitted strategy version is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS energy_strategies_current_version_owner_insert
+BEFORE INSERT ON energy_strategies
+FOR EACH ROW WHEN NEW.current_version_id IS NOT NULL AND NOT EXISTS(
+    SELECT 1 FROM strategy_versions
+    WHERE id = NEW.current_version_id AND strategy_id = NEW.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'current strategy version belongs to another strategy');
+END;
+
+CREATE TRIGGER IF NOT EXISTS energy_strategies_current_version_owner_update
+BEFORE UPDATE OF id, current_version_id ON energy_strategies
+FOR EACH ROW WHEN NEW.current_version_id IS NOT NULL AND NOT EXISTS(
+    SELECT 1 FROM strategy_versions
+    WHERE id = NEW.current_version_id AND strategy_id = NEW.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'current strategy version belongs to another strategy');
 END;
 
 CREATE TRIGGER IF NOT EXISTS device_commands_set_updated_at

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -301,6 +302,43 @@ class SeedDatabaseTests(unittest.TestCase):
             )
         seed_database(self.database)
         self.assertEqual(self.database.scalar("SELECT content_hash FROM seed_manifests WHERE dataset_name='acceptance-history'"), _content_hash(self.database, 202606, ""))
+
+    def test_verified_v4_recovery_summaries_upgrade_once_to_observations(self):
+        seed_database(self.database)
+        with self.database.transaction(
+            None, "test.restore_v4_recovery", "seed_manifest", "acceptance-history",
+        ) as connection:
+            for row in connection.execute(
+                "SELECT id,result_data FROM recovery_tests WHERE source_type='simulator'"
+            ).fetchall():
+                payload = json.loads(row["result_data"])
+                connection.execute(
+                    "UPDATE recovery_tests SET result_data=? WHERE id=?",
+                    (json.dumps({
+                        "fluid_target": payload["fluid_target"], "recovery_hours": 8,
+                    }, sort_keys=True), row["id"]),
+                )
+            old_hash = _content_hash_from(
+                connection, 202606, "", projection="device-config-v4",
+            )
+            connection.execute(
+                "UPDATE seed_manifests SET content_hash=? WHERE dataset_name='acceptance-history'",
+                (old_hash,),
+            )
+        before = self.database.scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='seed.enrich_recovery_observations'"
+        )
+        seed_database(self.database)
+        self.assertEqual(self.database.scalar(
+            "SELECT COUNT(*) FROM recovery_tests WHERE json_type(result_data,'$.observations')='array'"
+        ), 16)
+        self.assertEqual(self.database.scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='seed.enrich_recovery_observations'"
+        ), before + 1)
+        seed_database(self.database)
+        self.assertEqual(self.database.scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='seed.enrich_recovery_observations'"
+        ), before + 1)
 
     def test_v4_upgrade_preserves_status_change_and_rejects_identity_tampering(self):
         """A v4-compatible restart migrates once, then preserves mutable lifecycle only."""

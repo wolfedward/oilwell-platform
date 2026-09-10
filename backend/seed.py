@@ -223,7 +223,7 @@ def _content_hash(db: Database, seed: int, namespace: str) -> str:
         return _content_hash_from(connection, seed, namespace)
 
 
-def _content_hash_from(connection, seed: int, namespace: str, *, projection: str = "device-config-v4") -> str:
+def _content_hash_from(connection, seed: int, namespace: str, *, projection: str = "strategy-recovery-v5") -> str:
     profiles = _well_profiles(seed, namespace)
     specs = _workflow_specs(profiles)
     well_ids = [profile["well_id"] for profile in profiles]
@@ -235,7 +235,13 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
     unit_ids = [_identifier(namespace, f"U-{index:02d}") for index in range(1, 5)]
     group_ids = [_identifier(namespace, f"G-{index:02d}") for index in range(1, 9)]
     digest = hashlib.sha256()
-    projection_markers = {"legacy-auth-v1": "", "auth-v2": "|auth-projection-v2", "well-lifecycle-v3": "|well-lifecycle-projection-v3", "device-config-v4": "|device-config-projection-v4", "device-config-v4-legacy": "|device-config-projection-v4"}
+    projection_markers = {
+        "legacy-auth-v1": "", "auth-v2": "|auth-projection-v2",
+        "well-lifecycle-v3": "|well-lifecycle-projection-v3",
+        "device-config-v4": "|device-config-projection-v4",
+        "device-config-v4-legacy": "|device-config-projection-v4",
+        "strategy-recovery-v5": "|strategy-recovery-projection-v5",
+    }
     if projection not in projection_markers and not (
         projection.startswith("device-config-v")
         and projection.removeprefix("device-config-v").isdigit()
@@ -270,10 +276,10 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
     # must never invalidate a seed manifest.  Keep this capability-based rather
     # than checking only the current projection name so future vN projections
     # cannot accidentally reintroduce those fields.
-    lifecycle_projection = projection == "well-lifecycle-v3" or (projection.startswith("device-config-v") and projection != "device-config-v4-legacy")
+    lifecycle_projection = projection in {"well-lifecycle-v3", "strategy-recovery-v5"} or (projection.startswith("device-config-v") and projection != "device-config-v4-legacy")
     well_fields = "'id',id,'group',group_id,'code',code,'name',name,'low',is_low_output,'source',source_type" if lifecycle_projection else "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type"
     rows_for_ids("wells", "wells", "id", well_ids, well_fields)
-    config_projection = projection.startswith("device-config-v")
+    config_projection = projection.startswith("device-config-v") or projection == "strategy-recovery-v5"
     device_fields = "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'source',source_type" if config_projection else "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type"
     channel_fields = "'id',id,'device',device_id,'code',channel_code,'name',name,'source',source_type" if config_projection else "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type"
     rows_for_ids("devices", "devices", "id", device_ids, device_fields)
@@ -348,6 +354,12 @@ def _task1_current_v4_content_hash(db: Database, seed: int, namespace: str) -> s
         return _content_hash_from(connection, seed, namespace, projection="device-config-v4-legacy")
 
 
+def _strategy_previous_v4_content_hash(db: Database, seed: int, namespace: str) -> str:
+    """Exact pre-strategy projection with the corrected mutable lifecycle contract."""
+    with db.connection() as connection:
+        return _content_hash_from(connection, seed, namespace, projection="device-config-v4")
+
+
 def _canonical_json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -390,6 +402,20 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
         raise SeedDataIntegrityError("seed dataset incomplete: manifest summary") from None
     if not isinstance(declared_summary, dict) or _canonical_json(declared_summary) != expected_summary:
         raise SeedDataIntegrityError("seed dataset incomplete: manifest summary")
+    if _needs_recovery_enrichment(db, requested_seed, manifest["namespace"]):
+        legacy_candidates = {
+            _task1_previous_content_hash(db, requested_seed, manifest["namespace"]),
+            _task1_current_v4_content_hash(db, requested_seed, manifest["namespace"]),
+            _strategy_previous_v4_content_hash(db, requested_seed, manifest["namespace"]),
+            _previous_content_hash(db, requested_seed, manifest["namespace"]),
+            _legacy_content_hash(db, requested_seed, manifest["namespace"]),
+        }
+        if manifest["content_hash"] not in legacy_candidates:
+            raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
+        _enrich_recovery_observations(
+            db, requested_seed, manifest["namespace"], manifest["content_hash"],
+        )
+        return summary
     projected_hash = _content_hash(db, requested_seed, manifest["namespace"])
     if manifest["content_hash"] == projected_hash:
         return summary
@@ -399,8 +425,14 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     previous_hash = _previous_content_hash(db, requested_seed, manifest["namespace"])
     task1_previous_hash = _task1_previous_content_hash(db, requested_seed, manifest["namespace"])
     task1_current_v4_hash = _task1_current_v4_content_hash(db, requested_seed, manifest["namespace"])
+    strategy_previous_v4_hash = _strategy_previous_v4_content_hash(
+        db, requested_seed, manifest["namespace"],
+    )
     legacy_hash = _legacy_content_hash(db, requested_seed, manifest["namespace"])
-    if manifest["content_hash"] not in {task1_previous_hash, task1_current_v4_hash, previous_hash, legacy_hash}:
+    if manifest["content_hash"] not in {
+        task1_previous_hash, task1_current_v4_hash, strategy_previous_v4_hash,
+        previous_hash, legacy_hash,
+    }:
         raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
     _upgrade_manifest_hash(db, manifest["content_hash"], projected_hash)
     return summary
@@ -420,7 +452,7 @@ def _upgrade_manifest_hash(db: Database, expected_hash: str, projected_hash: str
             connection.execute(
                 """INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type)
                    VALUES(NULL, 'seed.upgrade_manifest_hash', 'seed_manifest', ?, ?, ?)""",
-                (MANIFEST_NAME, '{"after":{"projection":"device-config-v4"},"before":{"projection":"verified-legacy"}}', SIMULATOR),
+                (MANIFEST_NAME, '{"after":{"projection":"strategy-recovery-v5"},"before":{"projection":"verified-legacy"}}', SIMULATOR),
             )
             return
         current = connection.execute(
@@ -428,6 +460,88 @@ def _upgrade_manifest_hash(db: Database, expected_hash: str, projected_hash: str
         ).fetchone()
         if current is None or current["content_hash"] != projected_hash:
             raise SeedDataIntegrityError("seed dataset incomplete: manifest update")
+
+
+def _recovery_payload(profile: dict) -> dict:
+    """Build the persisted shut-in observations used by strategy optimization."""
+    target = float(profile["fluid_target"])
+    baseline = max(.5, target * .25)
+    capacity = target * 4.0
+    tau_minutes = 72.0 + (profile["index"] % 5) * 12.0
+    observations = [
+        {
+            "shut_in_minutes": minute,
+            "liquid_rate_m3_day": round(
+                baseline + capacity * (1.0 - math.exp(-minute / tau_minutes)), 3,
+            ),
+        }
+        for minute in (0, 30, 60, 90, 120, 180, 240, 360)
+    ]
+    return {
+        "fluid_target": round(target, 3),
+        "recovery_hours": 8,
+        "observations": observations,
+        "units": {"liquid_rate": "m³/d", "time": "min"},
+    }
+
+
+def _needs_recovery_enrichment(db: Database, seed: int, namespace: str) -> bool:
+    for spec in _workflow_specs(_well_profiles(seed, namespace)):
+        raw = db.scalar("SELECT result_data FROM recovery_tests WHERE id=?", (spec["recovery_id"],))
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(payload, dict) or "observations" not in payload:
+            return True
+    return False
+
+
+def _enrich_recovery_observations(
+    db: Database, seed: int, namespace: str, expected_hash: str,
+) -> None:
+    """Upgrade verified v4 recovery summaries to measured-point v5 records atomically."""
+    with db.transaction(
+        None, "seed.enrich_recovery_observations", "seed_manifest", MANIFEST_NAME,
+        source_type=SIMULATOR, auto_audit=False,
+    ) as connection:
+        current = connection.execute(
+            "SELECT content_hash FROM seed_manifests WHERE dataset_name=?", (MANIFEST_NAME,),
+        ).fetchone()
+        if current is None or current["content_hash"] != expected_hash:
+            raise SeedDataIntegrityError("seed dataset incomplete: manifest update")
+        for spec in _workflow_specs(_well_profiles(seed, namespace)):
+            expected_legacy = {
+                "fluid_target": round(spec["profile"]["fluid_target"], 3),
+                "recovery_hours": 8,
+            }
+            existing = connection.execute(
+                "SELECT result_data FROM recovery_tests WHERE id=?", (spec["recovery_id"],),
+            ).fetchone()
+            try:
+                existing_payload = json.loads(existing["result_data"]) if existing else None
+            except (TypeError, json.JSONDecodeError):
+                existing_payload = None
+            if existing_payload != expected_legacy:
+                raise SeedDataIntegrityError("seed dataset incomplete: legacy recovery result")
+            connection.execute(
+                "UPDATE recovery_tests SET result_data=? WHERE id=?",
+                (_canonical_json(_recovery_payload(spec["profile"])), spec["recovery_id"]),
+            )
+        projected_hash = _content_hash_from(connection, seed, namespace)
+        if connection.execute(
+            "UPDATE seed_manifests SET content_hash=? WHERE dataset_name=? AND content_hash=?",
+            (projected_hash, MANIFEST_NAME, expected_hash),
+        ).rowcount != 1:
+            raise SeedDataIntegrityError("seed dataset incomplete: manifest update")
+        connection.execute(
+            """INSERT INTO audit_logs(
+                   actor_id,action,object_type,object_id,details_json,source_type
+               ) VALUES(NULL,'seed.enrich_recovery_observations','seed_manifest',?,?,?)""",
+            (MANIFEST_NAME,
+             '{"after":{"projection":"strategy-recovery-v5"},"before":{"projection":"device-config-v4"}}',
+             SIMULATOR),
+        )
 
 
 def bootstrap_local_auth(db: Database) -> None:
@@ -883,7 +997,7 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
         """,
         [
             (spec["recovery_id"], spec["profile"]["well_id"], GENERATED_AT,
-             json.dumps({"recovery_hours": 8, "fluid_target": round(spec["profile"]["fluid_target"], 3)}, sort_keys=True),
+             _canonical_json(_recovery_payload(spec["profile"])),
              SIMULATOR, GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],
@@ -912,6 +1026,14 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
              spec["strategy"], SIMULATOR, GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],
+    )
+    connection.execute(
+        """UPDATE energy_strategies SET current_version_id=(
+               SELECT version.id FROM strategy_versions AS version
+               WHERE version.strategy_id=energy_strategies.id
+               ORDER BY version.version_number DESC,version.id DESC LIMIT 1
+           ) WHERE source_type=? AND current_version_id IS NULL""",
+        (SIMULATOR,),
     )
     connection.executemany(
         """

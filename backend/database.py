@@ -64,6 +64,7 @@ class Database:
                 self._migrate_device_columns(connection)
                 self._migrate_acquisition_columns(connection)
                 self._migrate_analysis_columns(connection)
+                self._migrate_strategy_columns(connection)
                 self._normalize_legacy_timestamps(connection)
                 violations = connection.execute("PRAGMA foreign_key_check").fetchall()
                 if violations:
@@ -397,6 +398,248 @@ class Database:
                     END"""
             )
 
+    @staticmethod
+    def _migrate_strategy_columns(connection: sqlite3.Connection) -> None:
+        required = {
+            "energy_strategies": (
+                ("parent_strategy_id", "TEXT"), ("current_version_id", "TEXT"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"), ("created_by", "INTEGER"),
+                ("submitted_by", "INTEGER"), ("decision_by", "INTEGER"),
+                ("submitted_at", "TEXT"), ("decision_at", "TEXT"),
+                ("approval_comment", "TEXT"),
+            ),
+            "strategy_versions": (
+                ("created_by", "INTEGER"), ("submitted_at", "TEXT"),
+            ),
+            "approvals": (
+                ("object_version", "INTEGER"), ("comment", "TEXT"),
+                ("decided_at", "TEXT"),
+            ),
+        }
+        for table_name, declarations in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in declarations:
+                if column_name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+                    )
+        foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(energy_strategies)")
+        }
+        if not {
+            "well_id", "parent_strategy_id", "current_version_id", "created_by",
+            "submitted_by", "decision_by",
+        }.issubset(foreign_keys):
+            Database._rebuild_energy_strategies(connection)
+        version_foreign_keys = {
+            row[3] for row in connection.execute(
+                "PRAGMA foreign_key_list(strategy_versions)"
+            )
+        }
+        if not {"strategy_id", "created_by"}.issubset(version_foreign_keys):
+            Database._rebuild_strategy_versions(connection)
+        connection.execute(
+            """UPDATE energy_strategies SET current_version_id=(
+                   SELECT version.id FROM strategy_versions AS version
+                   WHERE version.strategy_id=energy_strategies.id
+                   ORDER BY version.version_number DESC,version.id DESC LIMIT 1
+               ) WHERE current_version_id IS NULL AND EXISTS(
+                   SELECT 1 FROM strategy_versions AS version
+                   WHERE version.strategy_id=energy_strategies.id
+               )"""
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS energy_strategies_list_idx "
+            "ON energy_strategies(well_id,status,updated_at DESC,id DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS approvals_object_idx "
+            "ON approvals(object_type,object_id,created_at DESC,id DESC)"
+        )
+        Database._create_strategy_timestamp_trigger(connection)
+        Database._create_strategy_version_triggers(connection)
+        Database._create_strategy_integrity_triggers(connection)
+
+    @staticmethod
+    def _rebuild_energy_strategies(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "energy_strategies")
+        connection.execute(
+            "ALTER TABLE energy_strategies RENAME TO energy_strategies_workflow_legacy"
+        )
+        connection.execute(
+            """CREATE TABLE energy_strategies (
+                   id TEXT PRIMARY KEY,
+                   well_id TEXT NOT NULL REFERENCES wells(id),
+                   parent_strategy_id TEXT REFERENCES energy_strategies(id),
+                   current_version_id TEXT REFERENCES strategy_versions(id),
+                   name TEXT NOT NULL,
+                   version INTEGER NOT NULL DEFAULT 1,
+                   created_by INTEGER REFERENCES users(id),
+                   submitted_by INTEGER REFERENCES users(id),
+                   decision_by INTEGER REFERENCES users(id),
+                   submitted_at TEXT,
+                   decision_at TEXT,
+                   approval_comment TEXT,
+                   status TEXT NOT NULL DEFAULT 'draft',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'manual',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO energy_strategies(
+                   id,well_id,parent_strategy_id,current_version_id,name,version,
+                   created_by,submitted_by,decision_by,submitted_at,decision_at,
+                   approval_comment,status,actor_id,source_type,created_at,updated_at
+               ) SELECT id,well_id,parent_strategy_id,current_version_id,name,version,
+                        created_by,submitted_by,decision_by,submitted_at,decision_at,
+                        approval_comment,status,actor_id,source_type,created_at,updated_at
+                   FROM energy_strategies_workflow_legacy"""
+        )
+        connection.execute("DROP TABLE energy_strategies_workflow_legacy")
+
+    @staticmethod
+    def _create_strategy_timestamp_trigger(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS energy_strategies_set_updated_at
+               AFTER UPDATE ON energy_strategies
+               FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+               BEGIN
+                   UPDATE energy_strategies SET updated_at =
+                       strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')
+                   WHERE rowid = NEW.rowid;
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS energy_strategies_normalize_inserted_timestamps
+               AFTER INSERT ON energy_strategies
+               FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00'
+                                 OR NEW.updated_at NOT GLOB '*+08:00'
+               BEGIN
+                   UPDATE energy_strategies SET
+                       created_at = CASE WHEN NEW.created_at GLOB '*+08:00'
+                           THEN NEW.created_at ELSE strftime(
+                               '%Y-%m-%dT%H:%M:%f+08:00',NEW.created_at,'+8 hours') END,
+                       updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00'
+                           THEN NEW.updated_at ELSE strftime(
+                               '%Y-%m-%dT%H:%M:%f+08:00',NEW.updated_at,'+8 hours') END
+                   WHERE rowid = NEW.rowid;
+               END"""
+        )
+
+    @staticmethod
+    def _rebuild_strategy_versions(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "strategy_versions")
+        connection.execute("DROP TRIGGER IF EXISTS strategy_versions_immutable_update")
+        connection.execute("DROP TRIGGER IF EXISTS strategy_versions_immutable_state")
+        connection.execute("DROP TRIGGER IF EXISTS strategy_versions_immutable_delete")
+        connection.execute(
+            "ALTER TABLE strategy_versions RENAME TO strategy_versions_workflow_legacy"
+        )
+        connection.execute(
+            """CREATE TABLE strategy_versions (
+                   id TEXT PRIMARY KEY,
+                   strategy_id TEXT NOT NULL REFERENCES energy_strategies(id),
+                   version_number INTEGER NOT NULL,
+                   configuration TEXT NOT NULL,
+                   created_by INTEGER REFERENCES users(id),
+                   submitted_at TEXT,
+                   status TEXT NOT NULL DEFAULT 'draft',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'manual',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   UNIQUE(strategy_id,version_number)
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO strategy_versions(
+                   id,strategy_id,version_number,configuration,created_by,submitted_at,
+                   status,actor_id,source_type,created_at,updated_at
+               ) SELECT id,strategy_id,version_number,configuration,created_by,submitted_at,
+                        status,actor_id,source_type,created_at,updated_at
+                   FROM strategy_versions_workflow_legacy"""
+        )
+        connection.execute("DROP TABLE strategy_versions_workflow_legacy")
+
+    @staticmethod
+    def _create_strategy_version_triggers(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS strategy_versions_set_updated_at
+               AFTER UPDATE ON strategy_versions
+               FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+               BEGIN
+                   UPDATE strategy_versions SET updated_at =
+                       strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')
+                   WHERE rowid = NEW.rowid;
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS strategy_versions_normalize_inserted_timestamps
+               AFTER INSERT ON strategy_versions
+               FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00'
+                                 OR NEW.updated_at NOT GLOB '*+08:00'
+               BEGIN
+                   UPDATE strategy_versions SET
+                       created_at = CASE WHEN NEW.created_at GLOB '*+08:00'
+                           THEN NEW.created_at ELSE strftime(
+                               '%Y-%m-%dT%H:%M:%f+08:00',NEW.created_at,'+8 hours') END,
+                       updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00'
+                           THEN NEW.updated_at ELSE strftime(
+                               '%Y-%m-%dT%H:%M:%f+08:00',NEW.updated_at,'+8 hours') END
+                   WHERE rowid = NEW.rowid;
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_update
+               BEFORE UPDATE OF strategy_id,version_number,configuration ON strategy_versions
+               FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+               BEGIN
+                   SELECT RAISE(ABORT,'submitted strategy version is immutable');
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_state
+               BEFORE UPDATE OF status,submitted_at ON strategy_versions
+               FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+               BEGIN
+                   SELECT RAISE(ABORT,'submitted strategy version state is immutable');
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS strategy_versions_immutable_delete
+               BEFORE DELETE ON strategy_versions
+               FOR EACH ROW WHEN OLD.status <> 'draft' OR OLD.submitted_at IS NOT NULL
+               BEGIN
+                   SELECT RAISE(ABORT,'submitted strategy version is immutable');
+               END"""
+        )
+
+    @staticmethod
+    def _create_strategy_integrity_triggers(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS energy_strategies_current_version_owner_insert
+               BEFORE INSERT ON energy_strategies
+               FOR EACH ROW WHEN NEW.current_version_id IS NOT NULL AND NOT EXISTS(
+                   SELECT 1 FROM strategy_versions
+                   WHERE id=NEW.current_version_id AND strategy_id=NEW.id
+               )
+               BEGIN
+                   SELECT RAISE(ABORT,'current strategy version belongs to another strategy');
+               END"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS energy_strategies_current_version_owner_update
+               BEFORE UPDATE OF id,current_version_id ON energy_strategies
+               FOR EACH ROW WHEN NEW.current_version_id IS NOT NULL AND NOT EXISTS(
+                   SELECT 1 FROM strategy_versions
+                   WHERE id=NEW.current_version_id AND strategy_id=NEW.id
+               )
+               BEGIN
+                   SELECT RAISE(ABORT,'current strategy version belongs to another strategy');
+               END"""
+        )
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
         for table_name in TIMESTAMP_TABLES:

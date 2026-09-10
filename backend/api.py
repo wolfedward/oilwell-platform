@@ -12,6 +12,11 @@ from backend.services.acquisition import (
 from backend.services.analysis import (
     AnalysisNotFound, AnalysisService, AnalysisValidationError, AnalysisVersionConflict,
 )
+from backend.services.strategies import (
+    StrategyNotFound, StrategyService, StrategyValidationError,
+    StrategyVersionConflict,
+)
+from backend.state_machine import InvalidState
 
 
 class WellApi:
@@ -418,4 +423,157 @@ class AnalysisApi:
         page_size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
         if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
             raise AnalysisValidationError("page offset is out of range")
+        return page, page_size
+
+
+class StrategyApi:
+    """Adaptive pumping strategy versions and approval workflow routes."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service = StrategyService(handler.server.database, handler.server.audit)
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        if parsed.path == "/api/strategies":
+            try:
+                if self.handler._require("reports.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query, {"well_id", "status", "page", "page_size"},
+                )
+                page, page_size = self._page(query)
+                return self._ok(self.service.list_strategies(
+                    {**query, "page": page, "page_size": page_size}
+                ))
+            except (StrategyValidationError, WellValidationError, ValueError) as error:
+                return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+        match = self._match(parsed.path, "")
+        if match is None:
+            return False
+        try:
+            if self.handler._require("reports.read") is None:
+                return True
+            if parsed.query:
+                raise StrategyValidationError("strategy detail does not accept query parameters")
+            return self._ok(self.service.detail(match))
+        except StrategyNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Strategy not found")
+        except (StrategyValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def post(self, request_target):
+        parsed = urlsplit(request_target)
+        if parsed.path == "/api/strategies/optimize":
+            action, strategy_id = "optimize", None
+        else:
+            matched = None
+            for candidate in ("submit", "approve", "reject", "copy"):
+                identifier = self._match(parsed.path, candidate)
+                if identifier is not None:
+                    matched = (candidate, identifier)
+                    break
+            if matched is None:
+                return False
+            action, strategy_id = matched
+        try:
+            if parsed.query:
+                raise StrategyValidationError("strategy mutation does not accept query parameters")
+            permission = {
+                "optimize": "strategy.create", "copy": "strategy.create",
+                "submit": "strategy.submit", "approve": "strategy.approve",
+                "reject": "strategy.approve",
+            }[action]
+            actor = self.handler._require(permission)
+            if actor is None:
+                return True
+            body = self.handler._json_body()
+            if action == "optimize":
+                if set(body) != {"well_id", "constraints"}:
+                    raise StrategyValidationError(
+                        "optimize body must contain exactly well_id and constraints"
+                    )
+                return self._ok(
+                    self.service.optimize(body["well_id"], body["constraints"], actor.id),
+                    HTTPStatus.CREATED,
+                )
+            if action == "copy":
+                if set(body):
+                    raise StrategyValidationError("copy body must be an empty object")
+                return self._ok(self.service.copy(strategy_id, actor.id), HTTPStatus.CREATED)
+            if action == "submit":
+                if set(body) != {"version"}:
+                    raise StrategyValidationError("submit body must contain exactly version")
+                return self._ok(self.service.submit(strategy_id, body["version"], actor.id))
+            if set(body) != {"version", "comment"}:
+                raise StrategyValidationError(
+                    "approval body must contain exactly version and comment"
+                )
+            return self._ok(self.service.decide(
+                strategy_id, action, body["comment"], actor.id, body["version"],
+            ))
+        except StrategyNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Strategy not found")
+        except StrategyVersionConflict:
+            return self._error(
+                HTTPStatus.CONFLICT, "version_conflict", "Strategy version is stale",
+            )
+        except InvalidState as error:
+            return self._error(HTTPStatus.CONFLICT, "invalid_state", error)
+        except (StrategyValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def patch(self, request_target):
+        parsed = urlsplit(request_target)
+        strategy_id = self._match(parsed.path, "")
+        if strategy_id is None:
+            return False
+        try:
+            if parsed.query:
+                raise StrategyValidationError("strategy mutation does not accept query parameters")
+            actor = self.handler._require("strategy.create")
+            if actor is None:
+                return True
+            body = self.handler._json_body()
+            if "version" not in body:
+                raise StrategyValidationError("version is required")
+            changes = {key: value for key, value in body.items() if key != "version"}
+            return self._ok(self.service.update(
+                strategy_id, changes, body["version"], actor.id,
+            ))
+        except StrategyNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Strategy not found")
+        except StrategyVersionConflict:
+            return self._error(
+                HTTPStatus.CONFLICT, "version_conflict", "Strategy version is stale",
+            )
+        except InvalidState as error:
+            return self._error(HTTPStatus.CONFLICT, "invalid_state", error)
+        except (StrategyValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def _ok(self, data, status=HTTPStatus.OK):
+        self.handler._send_json(status, {"ok": True, "data": data})
+        return True
+
+    def _error(self, status, code, message):
+        self.handler._send_json(status, self.handler._error(code, str(message)))
+        return True
+
+    @staticmethod
+    def _match(path, action):
+        suffix = f"/{action}" if action else ""
+        match = re.fullmatch(
+            rf"/api/strategies/([A-Za-z0-9][A-Za-z0-9_-]{{0,127}}){suffix}", path,
+        )
+        return unquote(match.group(1)) if match else None
+
+    @staticmethod
+    def _page(query):
+        page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+        page_size = WellApi._integer(
+            query.get("page_size", "20"), "page_size", 1, 100,
+        )
+        if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
+            raise StrategyValidationError("page offset is out of range")
         return page, page_size
