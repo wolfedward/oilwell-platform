@@ -48,16 +48,16 @@ LOCAL_ACCOUNTS = (
     ("production_engineer", "生产工程师", "production_engineer", "Production@2026"),
     ("algorithm_engineer", "算法工程师", "algorithm_engineer", "Algorithm@2026"),
     ("maintenance_engineer", "设备运维", "maintenance_engineer", "Maintenance@2026"),
-    ("reviewer", "只读评审", "reviewer", "Review@2026"),
+    ("reviewer", "复核评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
     "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "acquisition.read", "data_quality.read", "data_quality.repair"),
     "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
-    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "diagnosis.review", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
+    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
     "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair"),
-    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read"),
+    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read"),
 }
-AUTH_BOOTSTRAP_VERSION = 3
+AUTH_BOOTSTRAP_VERSION = 4
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -504,6 +504,29 @@ def bootstrap_local_auth(db: Database) -> None:
                         "SELECT ?, id, 'system' FROM permissions WHERE code=?",
                         (role["id"], permission),
                     )
+            if marker["bootstrap_version"] < 4:
+                # Version 4 separates machine execution from human review.
+                # Remove only the original system grant, preserving a later
+                # explicit administrator grant with manual provenance.
+                connection.execute(
+                    """DELETE FROM role_permissions
+                       WHERE role_id=(SELECT id FROM roles WHERE code='algorithm_engineer')
+                         AND permission_id=(SELECT id FROM permissions WHERE code='diagnosis.review')
+                         AND source_type='system'"""
+                )
+                connection.execute(
+                    """INSERT OR IGNORE INTO role_permissions(
+                           role_id,permission_id,source_type
+                       ) SELECT role.id,permission.id,'system'
+                         FROM roles AS role CROSS JOIN permissions AS permission
+                        WHERE role.code='reviewer' AND permission.code='diagnosis.review'"""
+                )
+                connection.execute(
+                    "UPDATE roles SET name='复核评审' WHERE code='reviewer' AND name='只读评审'"
+                )
+                connection.execute(
+                    "UPDATE users SET display_name='复核评审' WHERE username='reviewer' AND display_name='只读评审'"
+                )
             connection.execute("UPDATE auth_bootstrap_state SET bootstrap_version=? WHERE id=1", (AUTH_BOOTSTRAP_VERSION,))
 
 
@@ -963,7 +986,7 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
 def _insert_users_and_report(connection, namespace: str) -> None:
     roles = (("administrator", "管理员"), ("production_engineer", "生产工程师"),
              ("algorithm_engineer", "算法工程师"), ("maintenance_engineer", "设备运维"),
-             ("reviewer", "只读评审"))
+             ("reviewer", "复核评审"))
     connection.executemany(
         """
         INSERT INTO roles(code, name, status, source_type, created_at, updated_at)

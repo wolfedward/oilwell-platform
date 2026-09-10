@@ -1,6 +1,7 @@
 """Transactional, traceable dynagraph analysis application service."""
 
 from dataclasses import asdict, fields
+import hashlib
 import json
 import re
 import sqlite3
@@ -116,7 +117,6 @@ class AnalysisService:
 
         model_run_id = "MR-" + uuid.uuid4().hex.upper()
         diagnosis_id = "DX-" + uuid.uuid4().hex.upper()
-        template_id = f"TPL-{diagnosis.condition.upper().replace('_', '-')}-1"
         converted_points = [_plain(item) for item in converted.points]
         intermediate = [_plain(item) for item in converted.intermediate]
         features = _plain(converted.features)
@@ -140,8 +140,12 @@ class AnalysisService:
         }
         production_data = _plain(production)
         output_snapshot = {
+            "converted_points": converted_points,
+            "intermediate": intermediate,
             "features": features,
             "energy": energy,
+            "conversion_units": dict(converted.units),
+            "conversion_warnings": list(converted.warnings),
             "diagnosis": diagnosis_data,
             "production": production_data,
         }
@@ -160,9 +164,10 @@ class AnalysisService:
                 actor_id, "analysis.run", "dynagraph", dynagraph_id,
                 source_type="algorithm", auto_audit=False,
             ) as conn:
-                self._ensure_templates(
+                template_ids = self._ensure_templates(
                     conn, dict(diagnosis.metric_scales), dict(diagnosis.metric_weights)
                 )
+                template_id = template_ids[diagnosis.condition]
                 conn.execute(
                     """INSERT INTO model_runs(
                            id,model_name,model_version,input_object_type,input_object_id,
@@ -416,8 +421,10 @@ class AnalysisService:
     def _ensure_templates(self, conn, metric_scales, metric_weights):
         scales_json = _json(metric_scales)
         weights_json = _json(metric_weights)
+        template_ids = {}
         for template in self._templates():
-            template_id = f"TPL-{template.condition.upper().replace('_', '-')}-1"
+            version_digest = hashlib.sha256(template.version.encode("utf-8")).hexdigest()[:12].upper()
+            generated_id = f"TPL-{template.condition.upper().replace('_', '-')}-{version_digest}"
             features_json = _json(_plain(template.features))
             conn.execute(
                 """INSERT OR IGNORE INTO diagnosis_templates(
@@ -425,27 +432,28 @@ class AnalysisService:
                        sample_count,status,source_type
                    ) VALUES(?,?,?,?,?,?,?,'active','algorithm')""",
                 (
-                    template_id, template.condition, template.version, features_json,
+                    generated_id, template.condition, template.version, features_json,
                     scales_json, weights_json, template.sample_count,
                 ),
             )
             persisted = conn.execute(
-                "SELECT * FROM diagnosis_templates WHERE condition_code=?",
-                (template.condition,),
+                """SELECT * FROM diagnosis_templates
+                   WHERE condition_code=? AND version=?""",
+                (template.condition, template.version),
             ).fetchone()
             expected = (
-                template_id, template.version, features_json, scales_json,
-                weights_json, template.sample_count, "active",
+                features_json, scales_json, weights_json, template.sample_count, "active",
             )
             actual = (
-                persisted["id"], persisted["version"], persisted["features_json"],
-                persisted["scales_json"], persisted["weights_json"],
+                persisted["features_json"], persisted["scales_json"], persisted["weights_json"],
                 persisted["sample_count"], persisted["status"],
             )
             if actual != expected:
                 raise AnalysisValidationError(
                     f"diagnosis template {template.condition} does not match the active model contract"
                 )
+            template_ids[template.condition] = persisted["id"]
+        return template_ids
 
     @staticmethod
     def _payload(text):
@@ -525,6 +533,10 @@ class AnalysisService:
 
     @staticmethod
     def _model_run_item(row):
+        input_snapshot = _loads(row["input_snapshot"])
+        output_snapshot = _loads(row["output_snapshot"])
+        diagnosis = output_snapshot.get("diagnosis", {}) if isinstance(output_snapshot, dict) else {}
+        production = output_snapshot.get("production", {}) if isinstance(output_snapshot, dict) else {}
         return {
             "id": row["id"], "model_name": row["model_name"],
             "model_version": row["model_version"],
@@ -532,6 +544,14 @@ class AnalysisService:
             "input_object_id": row["input_object_id"], "status": row["status"],
             "parameters": _loads(row["parameters_json"]),
             "warnings": _loads(row["warnings_json"], []),
+            "input_snapshot": input_snapshot,
+            "output_snapshot": output_snapshot,
+            "component_versions": {
+                "dynagraph": row["model_version"],
+                "diagnosis": diagnosis.get("model_version"),
+                "production": production.get("model_version"),
+                "template": diagnosis.get("selected_template_version"),
+            },
             "completed_at": row["completed_at"], "created_at": row["created_at"],
         }
 

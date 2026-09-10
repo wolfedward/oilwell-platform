@@ -87,7 +87,7 @@ class AuthenticationTests(unittest.TestCase):
                 raise RuntimeError("rollback")
 
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM audit_logs"), before)
-        self.assertEqual(self.database.scalar("SELECT name FROM roles WHERE code = 'reviewer'"), "只读评审")
+        self.assertEqual(self.database.scalar("SELECT name FROM roles WHERE code = 'reviewer'"), "复核评审")
 
     def test_password_hash_uses_distinct_salt_and_safe_iterations(self):
         """A fixed salt or weak PBKDF2 cost makes a stolen credential database easier to crack."""
@@ -158,7 +158,49 @@ class AuthenticationTests(unittest.TestCase):
         )
         # Acquisition capabilities are introduced by the explicit Task 2 v3
         # migration; the revoked pre-existing grant still must not reappear.
-        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"), 3)
+        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"), 4)
+
+    def test_v4_bootstrap_separates_machine_run_from_human_review_once(self):
+        """The former default self-review grant must migrate exactly once."""
+        with self.database.transaction(1, "test.auth_v3", "database", "platform") as conn:
+            conn.execute("UPDATE auth_bootstrap_state SET bootstrap_version=3 WHERE id=1")
+            conn.execute("UPDATE roles SET name='只读评审' WHERE code='reviewer'")
+            conn.execute("UPDATE users SET display_name='只读评审' WHERE username='reviewer'")
+            conn.execute(
+                """DELETE FROM role_permissions
+                   WHERE role_id=(SELECT id FROM roles WHERE code='reviewer')
+                     AND permission_id=(SELECT id FROM permissions WHERE code='diagnosis.review')"""
+            )
+            conn.execute(
+                """INSERT OR REPLACE INTO role_permissions(role_id,permission_id,source_type)
+                   SELECT role.id,permission.id,'system'
+                     FROM roles role CROSS JOIN permissions permission
+                    WHERE role.code='algorithm_engineer'
+                      AND permission.code='diagnosis.review'"""
+            )
+        before = self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='auth.bootstrap'")
+        seed_database(self.database)
+        seed_database(self.database)
+        self.assertEqual(
+            self.database.scalar(
+                """SELECT COUNT(*) FROM role_permissions rp
+                   JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id
+                   WHERE r.code='algorithm_engineer' AND p.code='diagnosis.review'"""
+            ), 0,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                """SELECT COUNT(*) FROM role_permissions rp
+                   JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id
+                   WHERE r.code='reviewer' AND p.code='diagnosis.review'"""
+            ), 1,
+        )
+        self.assertEqual(self.database.scalar("SELECT name FROM roles WHERE code='reviewer'"), "复核评审")
+        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id=1"), 4)
+        self.assertEqual(
+            self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='auth.bootstrap'"),
+            before + 1,
+        )
 
     def test_audit_recursively_removes_common_secret_keys_but_keeps_public_key(self):
         """Redacting only password/token leaves API credentials in the persistent audit trail."""

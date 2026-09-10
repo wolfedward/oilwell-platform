@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import http.client
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -88,6 +89,18 @@ class AnalysisServiceTests(unittest.TestCase):
             "raw_message_id", "device_id", "conversion_json", "features_json",
             "latest_model_run_id", "version",
         }.issubset(dynagraph_columns))
+        dynagraph_foreign_keys = {
+            row[3]: (row[2], row[4])
+            for row in self.database.query_all("PRAGMA foreign_key_list(dynagraphs)")
+        }
+        self.assertEqual(dynagraph_foreign_keys["device_id"], ("devices", "id"))
+        self.assertEqual(dynagraph_foreign_keys["raw_message_id"], ("raw_messages", "id"))
+        self.assertEqual(dynagraph_foreign_keys["latest_model_run_id"], ("model_runs", "id"))
+        diagnosis_foreign_keys = {
+            row[3]: (row[2], row[4])
+            for row in self.database.query_all("PRAGMA foreign_key_list(diagnoses)")
+        }
+        self.assertEqual(diagnosis_foreign_keys["template_id"], ("diagnosis_templates", "id"))
 
         with self.database.transaction(None, "test.legacy", "raw_message", None) as conn:
             raw_id = conn.execute(
@@ -104,6 +117,35 @@ class AnalysisServiceTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 1)
         self.assertEqual(json.loads(rows[0]["sample_data"])["electric_samples"][1]["phase"], 1.0)
+
+    def test_pre_analysis_schema_is_rebuilt_with_native_foreign_keys(self):
+        path = Path(self.temporary.name) / "legacy.db"
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            """CREATE TABLE dynagraphs(
+                   id TEXT PRIMARY KEY, well_id TEXT NOT NULL, captured_at TEXT NOT NULL,
+                   sample_data TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'available',
+                   actor_id INTEGER, source_type TEXT NOT NULL DEFAULT 'device',
+                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+               );
+               CREATE TABLE diagnoses(
+                   id TEXT PRIMARY KEY, well_id TEXT NOT NULL, dynagraph_id TEXT,
+                   model_run_id TEXT, diagnosis_type TEXT NOT NULL, confidence REAL,
+                   evidence TEXT, status TEXT NOT NULL DEFAULT 'new', actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'algorithm',
+                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+               );"""
+        )
+        connection.close()
+        legacy = Database(path)
+        legacy.migrate()
+        dynagraph_fks = {row[3] for row in legacy.query_all("PRAGMA foreign_key_list(dynagraphs)")}
+        diagnosis_fks = {row[3] for row in legacy.query_all("PRAGMA foreign_key_list(diagnoses)")}
+        self.assertTrue({"well_id", "device_id", "raw_message_id", "latest_model_run_id"}.issubset(dynagraph_fks))
+        self.assertTrue({"well_id", "dynagraph_id", "model_run_id", "template_id"}.issubset(diagnosis_fks))
+        legacy.migrate()
 
     def test_ingest_materializes_exact_traceable_dynagraph(self):
         row = self.ingest_card()
@@ -139,6 +181,7 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(json.loads(model["input_snapshot"])["raw_message_id"], dynagraph["raw_message_id"])
         self.assertEqual(json.loads(model["parameters_json"])["full_load_span_kn"], 25.0)
         self.assertEqual(json.loads(model["output_snapshot"])["diagnosis"]["condition"], "pump_leak")
+        self.assertEqual(len(json.loads(model["output_snapshot"])["converted_points"]), 120)
         self.assertTrue(json.loads(model["warnings_json"]))
         template = self.database.query_one(
             "SELECT * FROM diagnosis_templates WHERE id=?", (self.database.scalar(
@@ -147,6 +190,18 @@ class AnalysisServiceTests(unittest.TestCase):
         )
         self.assertEqual(template["version"], data["diagnosis"]["selected_template_version"])
         self.assertEqual(set(json.loads(template["scales_json"])), set(data["features"]))
+        with self.database.transaction(self.actor_id, "test.template_version", "template", "normal-2") as conn:
+            conn.execute(
+                """INSERT INTO diagnosis_templates(
+                       id,condition_code,version,features_json,scales_json,weights_json,
+                       sample_count,status,source_type
+                   ) VALUES('TPL-NORMAL-2','normal','reference-2026.2','{}','{}','{}',
+                            12,'retired','algorithm')"""
+            )
+        self.assertEqual(
+            self.database.scalar("SELECT COUNT(*) FROM diagnosis_templates WHERE condition_code='normal'"),
+            2,
+        )
 
     def test_reanalysis_is_append_only_and_updates_only_latest_pointer(self):
         dynagraph = self.ingest_card()
@@ -276,9 +331,14 @@ class AnalysisHttpTests(unittest.TestCase):
         self.assertEqual(self._request("GET", f"/api/dynagraphs/{dynagraph_id}?extra=1", self.reviewer)[0], 422)
         status, runs = self._request("GET", "/api/model-runs?page_size=5", self.reviewer)
         self.assertEqual(status, 200)
-        self.assertTrue(any(item["id"] == data["model_run"]["id"] for item in runs["data"]["items"]))
+        run = next(item for item in runs["data"]["items"] if item["id"] == data["model_run"]["id"])
+        self.assertEqual(run["input_snapshot"]["raw_message_id"], detail["data"]["raw_message_id"])
+        self.assertEqual(run["output_snapshot"]["diagnosis"]["condition"], data["diagnosis"]["condition"])
+        self.assertEqual(len(run["output_snapshot"]["converted_points"]), 120)
+        self.assertEqual(run["component_versions"]["production"], "production-1.0")
         review_body = {"condition": "normal", "comment": "人工复核记录，不覆盖机器结论", "version": data["diagnosis"]["review_version"]}
-        status, reviewed = self._request("POST", f"/api/diagnoses/{data['diagnosis']['id']}/review", self.algorithm, review_body)
+        self.assertEqual(self._request("POST", f"/api/diagnoses/{data['diagnosis']['id']}/review", self.algorithm, review_body)[0], 403)
+        status, reviewed = self._request("POST", f"/api/diagnoses/{data['diagnosis']['id']}/review", self.reviewer, review_body)
         self.assertEqual(status, 200)
         self.assertEqual(reviewed["data"]["reviewer_condition"], "normal")
         self.assertEqual(self.server.database.scalar("SELECT diagnosis_type FROM diagnoses WHERE id=?", (data["diagnosis"]["id"],)), data["diagnosis"]["condition"])

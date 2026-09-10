@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS model_runs (
 
 CREATE TABLE IF NOT EXISTS diagnosis_templates (
     id TEXT PRIMARY KEY,
-    condition_code TEXT NOT NULL UNIQUE,
+    condition_code TEXT NOT NULL,
     version TEXT NOT NULL,
     features_json TEXT NOT NULL,
     scales_json TEXT NOT NULL,
@@ -267,7 +267,8 @@ CREATE TABLE IF NOT EXISTS diagnosis_templates (
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'algorithm',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    UNIQUE(condition_code, version)
 );
 
 CREATE TABLE IF NOT EXISTS diagnoses (

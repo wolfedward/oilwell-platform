@@ -52,13 +52,29 @@ class Database:
         """Create the base schema; statements are safe to apply repeatedly."""
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as connection:
-            connection.executescript(schema)
-            self._migrate_seed_columns(connection)
-            self._migrate_auth_columns(connection)
-            self._migrate_device_columns(connection)
-            self._migrate_acquisition_columns(connection)
-            self._migrate_analysis_columns(connection)
-            self._normalize_legacy_timestamps(connection)
+            # Table rebuilds are required to give pre-analysis databases the
+            # same native foreign keys as a fresh install.  Keep legacy rename
+            # semantics so child FKs continue to target the replacement table.
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("PRAGMA legacy_alter_table = ON")
+            try:
+                connection.executescript(schema)
+                self._migrate_seed_columns(connection)
+                self._migrate_auth_columns(connection)
+                self._migrate_device_columns(connection)
+                self._migrate_acquisition_columns(connection)
+                self._migrate_analysis_columns(connection)
+                self._normalize_legacy_timestamps(connection)
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    first = violations[0]
+                    raise sqlite3.IntegrityError(
+                        f"migration produced a foreign-key violation in {first[0]} row {first[1]}"
+                    )
+                connection.commit()
+            finally:
+                connection.execute("PRAGMA legacy_alter_table = OFF")
+                connection.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _migrate_seed_columns(connection: sqlite3.Connection) -> None:
@@ -165,6 +181,30 @@ class Database:
                     connection.execute(
                         f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
                     )
+        template_unique_columns = {
+            tuple(
+                row[2] for row in connection.execute(f"PRAGMA index_info({index[1]})")
+            )
+            for index in connection.execute("PRAGMA index_list(diagnosis_templates)")
+            if index[2]
+        }
+        if ("condition_code",) in template_unique_columns:
+            Database._rebuild_diagnosis_templates(connection)
+        dynagraph_foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(dynagraphs)")
+        }
+        if not {"well_id", "device_id", "raw_message_id", "latest_model_run_id"}.issubset(
+            dynagraph_foreign_keys
+        ):
+            Database._rebuild_dynagraphs(connection)
+        diagnosis_foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(diagnoses)")
+        }
+        if not {"well_id", "dynagraph_id", "model_run_id", "template_id"}.issubset(
+            diagnosis_foreign_keys
+        ):
+            Database._rebuild_diagnoses(connection)
+        Database._create_analysis_timestamp_triggers(connection)
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS dynagraphs_raw_message_unique "
             "ON dynagraphs(raw_message_id) WHERE raw_message_id IS NOT NULL"
@@ -210,6 +250,151 @@ class Database:
         if broken is not None:
             raise sqlite3.IntegrityError(
                 f"electric-card lineage migration failed for raw message {broken['id']}"
+            )
+
+    @staticmethod
+    def _drop_table_timestamp_triggers(connection, table_name: str) -> None:
+        connection.execute(f"DROP TRIGGER IF EXISTS {table_name}_set_updated_at")
+        connection.execute(
+            f"DROP TRIGGER IF EXISTS {table_name}_normalize_inserted_timestamps"
+        )
+
+    @staticmethod
+    def _rebuild_diagnosis_templates(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "diagnosis_templates")
+        connection.execute(
+            "ALTER TABLE diagnosis_templates RENAME TO diagnosis_templates_analysis_legacy"
+        )
+        connection.execute(
+            """CREATE TABLE diagnosis_templates (
+                   id TEXT PRIMARY KEY,
+                   condition_code TEXT NOT NULL,
+                   version TEXT NOT NULL,
+                   features_json TEXT NOT NULL,
+                   scales_json TEXT NOT NULL,
+                   weights_json TEXT NOT NULL,
+                   sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+                   status TEXT NOT NULL DEFAULT 'active',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'algorithm',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   UNIQUE(condition_code,version)
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO diagnosis_templates(
+                   id,condition_code,version,features_json,scales_json,weights_json,
+                   sample_count,status,actor_id,source_type,created_at,updated_at
+               ) SELECT id,condition_code,version,features_json,scales_json,weights_json,
+                        sample_count,status,actor_id,source_type,created_at,updated_at
+                   FROM diagnosis_templates_analysis_legacy"""
+        )
+        connection.execute("DROP TABLE diagnosis_templates_analysis_legacy")
+
+    @staticmethod
+    def _rebuild_dynagraphs(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "dynagraphs")
+        connection.execute("ALTER TABLE dynagraphs RENAME TO dynagraphs_analysis_legacy")
+        connection.execute(
+            """CREATE TABLE dynagraphs (
+                   id TEXT PRIMARY KEY,
+                   well_id TEXT NOT NULL REFERENCES wells(id),
+                   device_id TEXT REFERENCES devices(id),
+                   raw_message_id INTEGER REFERENCES raw_messages(id),
+                   captured_at TEXT NOT NULL,
+                   sample_data TEXT NOT NULL,
+                   conversion_json TEXT,
+                   features_json TEXT,
+                   model_version TEXT,
+                   latest_model_run_id TEXT REFERENCES model_runs(id),
+                   version INTEGER NOT NULL DEFAULT 1,
+                   status TEXT NOT NULL DEFAULT 'available',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'device',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO dynagraphs(
+                   id,well_id,device_id,raw_message_id,captured_at,sample_data,
+                   conversion_json,features_json,model_version,latest_model_run_id,
+                   version,status,actor_id,source_type,created_at,updated_at
+               ) SELECT id,well_id,device_id,raw_message_id,captured_at,sample_data,
+                        conversion_json,features_json,model_version,latest_model_run_id,
+                        version,status,actor_id,source_type,created_at,updated_at
+                   FROM dynagraphs_analysis_legacy"""
+        )
+        connection.execute("DROP TABLE dynagraphs_analysis_legacy")
+
+    @staticmethod
+    def _rebuild_diagnoses(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "diagnoses")
+        connection.execute("ALTER TABLE diagnoses RENAME TO diagnoses_analysis_legacy")
+        connection.execute(
+            """CREATE TABLE diagnoses (
+                   id TEXT PRIMARY KEY,
+                   well_id TEXT NOT NULL REFERENCES wells(id),
+                   dynagraph_id TEXT REFERENCES dynagraphs(id),
+                   model_run_id TEXT REFERENCES model_runs(id),
+                   template_id TEXT REFERENCES diagnosis_templates(id),
+                   template_version TEXT,
+                   diagnosis_type TEXT NOT NULL,
+                   confidence REAL,
+                   evidence TEXT,
+                   candidates_json TEXT,
+                   rule_hits_json TEXT,
+                   recommendation TEXT,
+                   review_version INTEGER NOT NULL DEFAULT 1,
+                   status TEXT NOT NULL DEFAULT 'new',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'algorithm',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO diagnoses(
+                   id,well_id,dynagraph_id,model_run_id,template_id,template_version,
+                   diagnosis_type,confidence,evidence,candidates_json,rule_hits_json,
+                   recommendation,review_version,status,actor_id,source_type,
+                   created_at,updated_at
+               ) SELECT id,well_id,dynagraph_id,model_run_id,template_id,template_version,
+                        diagnosis_type,confidence,evidence,candidates_json,rule_hits_json,
+                        recommendation,review_version,status,actor_id,source_type,
+                        created_at,updated_at FROM diagnoses_analysis_legacy"""
+        )
+        connection.execute("DROP TABLE diagnoses_analysis_legacy")
+
+    @staticmethod
+    def _create_analysis_timestamp_triggers(connection: sqlite3.Connection) -> None:
+        for table_name in ("dynagraphs", "diagnoses", "diagnosis_templates"):
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_set_updated_at
+                    AFTER UPDATE ON {table_name}
+                    FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+                    BEGIN
+                        UPDATE {table_name} SET updated_at =
+                            strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_normalize_inserted_timestamps
+                    AFTER INSERT ON {table_name}
+                    FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00'
+                                      OR NEW.updated_at NOT GLOB '*+08:00'
+                    BEGIN
+                        UPDATE {table_name} SET
+                            created_at = CASE WHEN NEW.created_at GLOB '*+08:00'
+                                THEN NEW.created_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.created_at,'+8 hours') END,
+                            updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00'
+                                THEN NEW.updated_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.updated_at,'+8 hours') END
+                        WHERE rowid = NEW.rowid;
+                    END"""
             )
 
     @staticmethod
