@@ -18,6 +18,7 @@ ALLOWED_INTERVALS = {"raw", "15m", "1h", "1d"}
 ALLOWED_WELL_STATUSES = {"active", "running", "intermittent", "stopped", "maintenance", "offline"}
 MAX_RANGE = timedelta(days=31)
 MAX_POINTS = {"raw": 2000, "15m": 3000, "1h": 1000, "1d": 100}
+MAX_POWER_HOLD_INTERVAL = timedelta(hours=6)
 SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 # This registry is intentionally semantic rather than unit-only: a metric
 # becomes eligible for energy integration only after acquisition registers it
@@ -190,9 +191,10 @@ class WellsService:
         """Integrate registered kW samples as left-held values until next sample.
 
         The final sample has no observable coverage and therefore contributes no
-        energy; this avoids inventing a cadence for irregular or future
-        high-frequency feeds.  A sample's interval is split at Shanghai day
-        boundaries, allowing one power reading to cover adjacent buckets.
+        energy.  A later point separated by more than six hours is treated as a
+        new acquisition run, not proof that the old reading remained constant;
+        this prevents live data months later from backfilling a historical gap.
+        A valid sample interval is split at Shanghai day boundaries.
         """
         metric_codes = tuple(POWER_METRIC_REGISTRY)
         placeholders = ", ".join("?" for _ in metric_codes)
@@ -223,8 +225,12 @@ class WellsService:
         energy: dict[tuple[str, str], float] = {}
         for metric, points in by_metric.items():
             for current, following in zip(points, points[1:]):
-                interval_start = max(self._parse_time(current["measured_at"], "stored timestamp"), start)
-                interval_end = min(self._parse_time(following["measured_at"], "stored timestamp"), end)
+                current_time = self._parse_time(current["measured_at"], "stored timestamp")
+                following_time = self._parse_time(following["measured_at"], "stored timestamp")
+                if following_time - current_time > MAX_POWER_HOLD_INTERVAL:
+                    continue
+                interval_start = max(current_time, start)
+                interval_end = min(following_time, end)
                 while interval_start < interval_end:
                     bucket, local_bucket_start = self._local_day_bucket(interval_start)
                     next_bucket = local_bucket_start + timedelta(days=1)

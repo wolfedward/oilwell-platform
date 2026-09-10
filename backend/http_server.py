@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
-from backend.api import DeviceApi, WellApi
+from backend.api import AcquisitionApi, DeviceApi, WellApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
 from backend.config import Config
 from backend.database import Database
@@ -33,6 +33,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if AcquisitionApi(self).get(self.path): return
         if DeviceApi(self).get(self.path): return
         if WellApi(self).get(self.path): return
         path = urlsplit(self.path).path
@@ -45,6 +46,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if AcquisitionApi(self).post(self.path): return
         if DeviceApi(self).post(self.path): return
         if path == "/api/auth/login": return self._login()
         if path == "/api/auth/logout": return self._logout()
@@ -336,10 +338,18 @@ class PlatformHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
     def serve_forever(self, *args, **kwargs):
-        self.simulator.start(); return super().serve_forever(*args, **kwargs)
+        self.acquisition_worker.start()
+        try:
+            self.simulator.start()
+        except BaseException:
+            self.acquisition_worker.stop()
+            raise
+        return super().serve_forever(*args, **kwargs)
     def server_close(self):
         simulator = getattr(self, "simulator", None)
         if simulator: simulator.stop()
+        acquisition_worker = getattr(self, "acquisition_worker", None)
+        if acquisition_worker: acquisition_worker.stop()
         return super().server_close()
 
 
@@ -347,5 +357,9 @@ def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServ
     database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
     from backend.simulator import SimulatorRegistry
+    from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     server.simulator = SimulatorRegistry(database)
+    server.acquisition = AcquisitionService(database, server.simulator)
+    server.acquisition_worker = AcquisitionWorker(server.acquisition, server.simulator)
+    server.simulator.acquisition_worker = server.acquisition_worker
     return server

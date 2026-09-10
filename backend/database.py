@@ -14,6 +14,7 @@ TIMESTAMP_TABLES = (
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
     "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions", "auth_bootstrap_state",
     "audit_logs", "system_events", "device_scenarios", "device_events",
+    "acquisition_cursors",
 )
 SHANGHAI_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')"
 
@@ -54,6 +55,7 @@ class Database:
             self._migrate_seed_columns(connection)
             self._migrate_auth_columns(connection)
             self._migrate_device_columns(connection)
+            self._migrate_acquisition_columns(connection)
             self._normalize_legacy_timestamps(connection)
 
     @staticmethod
@@ -88,7 +90,6 @@ class Database:
             for column_name, declaration in columns_to_add:
                 if column_name not in columns:
                     connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}")
-
     @staticmethod
     def _migrate_device_columns(connection: sqlite3.Connection) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(device_channels)")}
@@ -98,6 +99,38 @@ class Database:
         scenario_columns = {row[1] for row in connection.execute("PRAGMA table_info(device_scenarios)")}
         if "duration_minutes" not in scenario_columns:
             connection.execute("ALTER TABLE device_scenarios ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _migrate_acquisition_columns(connection: sqlite3.Connection) -> None:
+        required = {
+            "raw_messages": (
+                ("claimed_device_id", "TEXT"), ("raw_frame", "BLOB"),
+                ("frame_digest", "TEXT"), ("sequence_text", "TEXT"),
+                ("sequence_number", "INTEGER"), ("reported_at", "TEXT"),
+                ("frame_kind", "TEXT"), ("rejection_code", "TEXT"),
+                ("rejection_detail", "TEXT"), ("replay_event_id", "INTEGER"),
+            ),
+            "telemetry": (("raw_message_id", "INTEGER"),),
+            "data_quality_events": (
+                ("device_id", "TEXT"), ("raw_message_id", "INTEGER"),
+                ("kind", "TEXT"), ("missing_from", "INTEGER"),
+                ("missing_to", "INTEGER"), ("missing_sequences", "TEXT"),
+                ("resolution_detail", "TEXT"), ("resolved_at", "TEXT"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+        }
+        for table_name, columns_to_add in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in columns_to_add:
+                if column_name not in columns:
+                    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}")
+        # These indexes reference columns introduced above. Creating them only
+        # after the ALTER statements keeps upgrades from pre-acquisition
+        # databases safe while remaining idempotent for current databases.
+        connection.execute("CREATE INDEX IF NOT EXISTS raw_messages_live_cursor_idx ON raw_messages(source_type, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS raw_messages_device_sequence_idx ON raw_messages(device_id, sequence_text, status)")
+        connection.execute("CREATE INDEX IF NOT EXISTS data_quality_live_status_idx ON data_quality_events(source_type, device_id, kind, status, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS telemetry_raw_message_idx ON telemetry(raw_message_id)")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
@@ -194,7 +227,7 @@ class Database:
         *, source_type: str = "system", details_json: str = '{"after":{},"before":{}}', auto_audit: bool = True,
     ) -> Iterator[sqlite3.Connection]:
         """Commit business changes and their audit entry as one transaction."""
-        if source_type not in {"system", "manual", "simulator", "device", "algorithm"}:
+        if source_type not in {"system", "manual", "simulator", "device", "virtual_device", "algorithm"}:
             raise ValueError("unsupported audit source_type")
         with self.connection() as connection:
             token = self._transaction_connection.set(connection)

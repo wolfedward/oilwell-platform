@@ -54,6 +54,8 @@ class VirtualTerminal:
         self.profile, self.seed, self.sequence, self.state = profile, seed, 0, "online"
         self.scenario = ScenarioState("normal", 0, None, "online")
         self._last_tick: datetime | None = None
+        self._frame_history: dict[int, bytes] = {}
+        self._history_size = 4096
         self._lock = threading.RLock()
 
     def transition(self, state: str) -> str:
@@ -123,9 +125,27 @@ class VirtualTerminal:
             frames = []
             for index, payload in enumerate(payloads):
                 self.sequence += 1
+                encoded = encode_frame(self.profile.device_id, self.sequence, payload, timestamp=now)
+                self._frame_history[self.sequence] = encoded
+                while len(self._frame_history) > self._history_size:
+                    self._frame_history.pop(next(iter(self._frame_history)))
                 if self.scenario.name == "packet_loss" and (self.sequence + index) % 3 == 0: continue
-                frames.append(encode_frame(self.profile.device_id, self.sequence, payload, timestamp=now))
+                frames.append(encoded)
             return frames
+
+    def replay_frames(self, start_sequence: int, end_sequence: int) -> dict[int, bytes]:
+        if (
+            not isinstance(start_sequence, int) or isinstance(start_sequence, bool)
+            or not isinstance(end_sequence, int) or isinstance(end_sequence, bool)
+            or start_sequence < 1 or end_sequence < start_sequence or end_sequence - start_sequence > 1000
+        ):
+            raise SimulatorValidationError("replay sequence range is invalid")
+        with self._lock:
+            return {
+                sequence: self._frame_history[sequence]
+                for sequence in range(start_sequence, end_sequence + 1)
+                if sequence in self._frame_history
+            }
 
     def _registers(self, now: datetime) -> dict:
         stable = int.from_bytes(hashlib.sha256(f"{self.profile.device_id}|{self.seed}".encode()).digest()[:4], "big")
@@ -157,6 +177,10 @@ class SimulatorRegistry:
         self._delivered, self._dropped = 0, 0
         rows = database.query_all("SELECT id, well_id, serial_number, device_type, firmware_version, status FROM devices ORDER BY id")
         self.terminals = {row["id"]: VirtualTerminal(profile_for(row["id"], row)) for row in rows}
+        for cursor in database.query_all("SELECT device_id,last_sequence FROM acquisition_cursors"):
+            terminal = self.terminals.get(cursor["device_id"])
+            if terminal is not None and isinstance(cursor["last_sequence"], int) and cursor["last_sequence"] >= 0:
+                terminal.sequence = cursor["last_sequence"]
         self.latest_registers, self._stop, self._thread, self._lock = {}, threading.Event(), None, threading.RLock()
         self._restore_persisted_scenarios(rows)
     @property
@@ -165,6 +189,10 @@ class SimulatorRegistry:
         return self._lock
     def now(self): return VirtualTerminal._aware(self._clock())
     def get(self, device_id: str) -> VirtualTerminal | None: return self.terminals.get(device_id)
+    def replay_frames(self, device_id: str, start_sequence: int, end_sequence: int) -> dict[int, bytes]:
+        terminal = self.get(device_id)
+        if terminal is None: raise SimulatorValidationError("device is not registered")
+        return terminal.replay_frames(start_sequence, end_sequence)
     def set_frame_sink(self, sink):
         if sink is not None and (type(sink) is not queue.Queue or sink.maxsize <= 0):
             raise ValueError("frame sink must be a bounded standard-library queue.Queue or None")

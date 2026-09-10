@@ -6,6 +6,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from backend.services.wells import WellNotFound, WellValidationError, WellVersionConflict, WellsService
 from backend.services.devices import ChannelVersionConflict, DeviceNotFound, DevicesService, DeviceValidationError
+from backend.services.acquisition import (
+    AcquisitionNotFound, AcquisitionService, AcquisitionValidationError, AcquisitionVersionConflict,
+)
 
 
 class WellApi:
@@ -190,3 +193,99 @@ class DeviceApi:
         if not path.startswith(prefix): return None
         parts = tuple(unquote(value) for value in path.removeprefix(prefix).split("/"))
         return None if not parts or any(not value or "/" in value or "\\" in value or any(ord(c) < 32 for c in value) for value in parts) else parts
+
+
+class AcquisitionApi:
+    """Authenticated finite acquisition feed, evidence, and repair routes."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service: AcquisitionService = handler.server.acquisition
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        path = parsed.path
+        try:
+            if path == "/api/acquisition/stream":
+                if self.handler._require("acquisition.read") is None: return True
+                query = WellApi._query(parsed.query, {"after_id", "limit"})
+                after_id = WellApi._integer(query.get("after_id", "0"), "after_id", 0, WellApi.SQLITE_MAX_INTEGER)
+                limit = WellApi._integer(query.get("limit", "100"), "limit", 1, 500)
+                return self._ok(self.service.stream(after_id, limit))
+            if path == "/api/acquisition/messages":
+                if self.handler._require("acquisition.read") is None: return True
+                query = WellApi._query(parsed.query, {"device_id", "status", "kind", "page", "page_size"})
+                page, size = self._page(query)
+                self._filters(query)
+                return self._ok(self.service.list_messages({**query, "page": page, "page_size": size}))
+            message_id = self._message_id(path)
+            if message_id is not None:
+                if self.handler._require("acquisition.read") is None: return True
+                return self._ok(self.service.message_detail(message_id))
+            if path == "/api/data-quality":
+                if self.handler._require("data_quality.read") is None: return True
+                query = WellApi._query(parsed.query, {"device_id", "status", "kind", "page", "page_size"})
+                page, size = self._page(query)
+                self._filters(query)
+                return self._ok(self.service.list_quality({**query, "page": page, "page_size": size}))
+            return False
+        except AcquisitionNotFound:
+            self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Acquisition record not found")); return True
+        except (AcquisitionValidationError, WellValidationError) as error:
+            self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error))); return True
+
+    def post(self, request_target):
+        try:
+            event_id = self._repair_event_id(urlsplit(request_target).path)
+            if event_id is None: return False
+            actor = self.handler._require("data_quality.repair")
+            if actor is None: return True
+            body = self.handler._json_body()
+            if not isinstance(body, dict) or set(body) != {"version"}:
+                raise AcquisitionValidationError("repair body must contain exactly version")
+            result = self.service.repair_event(actor.id, event_id, body["version"])
+            return self._ok(result.__dict__)
+        except AcquisitionNotFound:
+            self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Quality event not found")); return True
+        except AcquisitionVersionConflict:
+            self.handler._send_json(HTTPStatus.CONFLICT, self.handler._error("version_conflict", "Quality event version is stale")); return True
+        except (AcquisitionValidationError, ValueError) as error:
+            self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error))); return True
+
+    def _ok(self, data):
+        self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": data})
+        return True
+
+    @staticmethod
+    def _page(query):
+        page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+        size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
+        if (page - 1) * size > WellApi.SQLITE_MAX_INTEGER:
+            raise AcquisitionValidationError("page offset is out of range")
+        return page, size
+
+    @staticmethod
+    def _filters(query):
+        device_id = query.get("device_id")
+        if device_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", device_id):
+            raise AcquisitionValidationError("invalid device id")
+        if query.get("status") and query["status"] not in {"received", "accepted", "replayed", "duplicate", "rejected", "open", "repaired", "closed"}:
+            raise AcquisitionValidationError("invalid status")
+        if query.get("kind") and not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", query["kind"]):
+            raise AcquisitionValidationError("invalid kind")
+
+    @staticmethod
+    def _message_id(path):
+        match = re.fullmatch(r"/api/acquisition/messages/([1-9][0-9]{0,18})", path)
+        if not match: return None
+        value = int(match.group(1))
+        if value > WellApi.SQLITE_MAX_INTEGER: raise AcquisitionValidationError("message id is out of range")
+        return value
+
+    @staticmethod
+    def _repair_event_id(path):
+        match = re.fullmatch(r"/api/data-quality/([1-9][0-9]{0,18})/repair", path)
+        if not match: return None
+        value = int(match.group(1))
+        if value > WellApi.SQLITE_MAX_INTEGER: raise AcquisitionValidationError("quality event id is out of range")
+        return value

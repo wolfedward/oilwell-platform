@@ -156,9 +156,9 @@ class AuthenticationTests(unittest.TestCase):
             ),
             0,
         )
-        # Device capabilities are introduced by the explicit Task 1 v2
+        # Acquisition capabilities are introduced by the explicit Task 2 v3
         # migration; the revoked pre-existing grant still must not reappear.
-        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"), 2)
+        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"), 3)
 
     def test_audit_recursively_removes_common_secret_keys_but_keeps_public_key(self):
         """Redacting only password/token leaves API credentials in the persistent audit trail."""

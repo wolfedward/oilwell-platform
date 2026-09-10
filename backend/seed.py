@@ -51,13 +51,13 @@ LOCAL_ACCOUNTS = (
     ("reviewer", "只读评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
-    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure"),
-    "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read"),
-    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "diagnosis.review", "reports.read", "devices.read"),
-    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage"),
-    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "reports.read", "audit.read", "devices.read"),
+    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "acquisition.read", "data_quality.read", "data_quality.repair"),
+    "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
+    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "diagnosis.review", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
+    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair"),
+    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read"),
 }
-AUTH_BOOTSTRAP_VERSION = 2
+AUTH_BOOTSTRAP_VERSION = 3
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -124,7 +124,7 @@ def _validated_summary_from(connection, seed: int, namespace: str) -> SeedSummar
     for table_name, expected_rows in (("production_daily", 90), ("telemetry", 720)):
         rows = connection.execute(
             f"SELECT well_id, COUNT(*) AS records FROM {table_name} "
-            f"WHERE well_id IN ({placeholder}) GROUP BY well_id", well_ids
+            f"WHERE well_id IN ({placeholder}) AND source_type = ? GROUP BY well_id", [*well_ids, SIMULATOR]
         ).fetchall()
         if len(rows) != 48 or any(row["records"] != expected_rows for row in rows):
             raise SeedDataIntegrityError(f"seed dataset incomplete: {table_name} distribution")

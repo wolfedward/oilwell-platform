@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS telemetry (
     value REAL NOT NULL,
     unit TEXT,
     status TEXT NOT NULL DEFAULT 'valid',
+    raw_message_id INTEGER REFERENCES raw_messages(id),
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
@@ -151,8 +152,18 @@ CREATE TABLE IF NOT EXISTS seed_manifests (
 CREATE TABLE IF NOT EXISTS raw_messages (
     id INTEGER PRIMARY KEY,
     device_id TEXT REFERENCES devices(id),
+    claimed_device_id TEXT,
     received_at TEXT NOT NULL,
     payload TEXT NOT NULL,
+    raw_frame BLOB,
+    frame_digest TEXT,
+    sequence_text TEXT,
+    sequence_number INTEGER,
+    reported_at TEXT,
+    frame_kind TEXT,
+    rejection_code TEXT,
+    rejection_detail TEXT,
+    replay_event_id INTEGER REFERENCES data_quality_events(id),
     status TEXT NOT NULL DEFAULT 'received',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'device',
@@ -164,14 +175,35 @@ CREATE TABLE IF NOT EXISTS data_quality_events (
     id INTEGER PRIMARY KEY,
     telemetry_id INTEGER REFERENCES telemetry(id),
     well_id TEXT REFERENCES wells(id),
+    device_id TEXT REFERENCES devices(id),
+    raw_message_id INTEGER REFERENCES raw_messages(id),
     event_type TEXT NOT NULL,
+    kind TEXT,
     detail TEXT,
+    missing_from INTEGER,
+    missing_to INTEGER,
+    missing_sequences TEXT,
+    resolution_detail TEXT,
+    resolved_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'open',
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'system',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
+
+CREATE TABLE IF NOT EXISTS acquisition_cursors (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id),
+    last_sequence_text TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL,
+    last_reported_at TEXT,
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'virtual_device',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
 CREATE TABLE IF NOT EXISTS dynagraphs (
     id TEXT PRIMARY KEY,
     well_id TEXT NOT NULL REFERENCES wells(id),
@@ -946,4 +978,21 @@ AFTER INSERT ON device_events
 FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
 BEGIN
     UPDATE device_events SET created_at=CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END, updated_at=CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END WHERE rowid=NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS acquisition_cursors_set_updated_at
+AFTER UPDATE ON acquisition_cursors
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE acquisition_cursors SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS acquisition_cursors_normalize_inserted_timestamps
+AFTER INSERT ON acquisition_cursors
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE acquisition_cursors SET
+        created_at=CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
+        updated_at=CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
+    WHERE rowid=NEW.rowid;
 END;
