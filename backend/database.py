@@ -13,7 +13,7 @@ TIMESTAMP_TABLES = (
     "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
     "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions", "auth_bootstrap_state",
-    "audit_logs", "system_events",
+    "audit_logs", "system_events", "device_scenarios", "device_events",
 )
 SHANGHAI_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')"
 
@@ -53,6 +53,7 @@ class Database:
             connection.executescript(schema)
             self._migrate_seed_columns(connection)
             self._migrate_auth_columns(connection)
+            self._migrate_device_columns(connection)
             self._normalize_legacy_timestamps(connection)
 
     @staticmethod
@@ -87,6 +88,13 @@ class Database:
             for column_name, declaration in columns_to_add:
                 if column_name not in columns:
                     connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}")
+
+    @staticmethod
+    def _migrate_device_columns(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(device_channels)")}
+        for name, declaration in (("enabled", "INTEGER NOT NULL DEFAULT 1"), ("sample_interval_ms", "INTEGER NOT NULL DEFAULT 60000"), ("scale", "REAL NOT NULL DEFAULT 1.0"), ("offset", "REAL NOT NULL DEFAULT 0.0"), ("version", "INTEGER NOT NULL DEFAULT 1")):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE device_channels ADD COLUMN {name} {declaration}")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:

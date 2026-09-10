@@ -5,6 +5,7 @@ import re
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from backend.services.wells import WellNotFound, WellValidationError, WellVersionConflict, WellsService
+from backend.services.devices import ChannelVersionConflict, DeviceNotFound, DevicesService, DeviceValidationError
 
 
 class WellApi:
@@ -131,3 +132,58 @@ class WellApi:
     MAX_PAGE = 1_000_000
     SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
     WELL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+class DeviceApi:
+    """Device routes use the same handler auth/error contract as well routes."""
+    MAX_PAGE = 1_000_000
+    SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
+    def __init__(self, handler): self.handler = handler; self.service = DevicesService(handler.server.database, handler.server.audit, handler.server.simulator)
+    def get(self, request_target):
+        parsed = urlsplit(request_target); path = parsed.path
+        try:
+            if path == "/api/devices":
+                if self.handler._require("devices.read") is None: return True
+                query = WellApi._query(parsed.query, {"unit", "unit_id", "well", "well_id", "status", "keyword", "page", "page_size"})
+                if "unit" in query and "unit_id" not in query: query["unit_id"] = query.pop("unit")
+                if "well" in query and "well_id" not in query: query["well_id"] = query.pop("well")
+                page = WellApi._integer(query.get("page", "1"), "page", 1, self.MAX_PAGE); size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
+                if (page - 1) * size > self.SQLITE_MAX_INTEGER: raise DeviceValidationError("page offset is out of range")
+                self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": self.service.list_devices({**query, "page": page, "page_size": size})}); return True
+            segments = self._segments(path)
+            if segments is None: return False
+            if self.handler._require("devices.read") is None: return True
+            if len(segments) == 1: payload = self.service.detail(segments[0])
+            elif len(segments) == 2 and segments[1] == "registers": payload = self.service.registers(segments[0])
+            else: return False
+            self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": payload}); return True
+        except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device not found")); return True
+        except DeviceValidationError as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error))); return True
+    def post(self, request_target):
+        segments = self._segments(urlsplit(request_target).path)
+        if segments is None or len(segments) != 2 or segments[1] != "scenarios": return False
+        actor = self.handler._require("devices.control")
+        if actor is None: return True
+        try:
+            body = self.handler._json_body(); result = self.service.apply_scenario(actor.id, segments[0], body.get("name"), body.get("duration_minutes"))
+            self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": result})
+        except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device not found"))
+        except (DeviceValidationError, ValueError) as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error)))
+        return True
+    def patch(self, request_target):
+        segments = self._segments(urlsplit(request_target).path)
+        if segments is None or len(segments) != 3 or segments[1] != "channels": return False
+        actor = self.handler._require("devices.configure")
+        if actor is None: return True
+        try:
+            result = self.service.update_channel(actor.id, segments[0], segments[2], self.handler._json_body()); self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": result})
+        except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device or channel not found"))
+        except ChannelVersionConflict: self.handler._send_json(HTTPStatus.CONFLICT, self.handler._error("version_conflict", "Record version is stale"))
+        except (DeviceValidationError, ValueError) as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error)))
+        return True
+    @staticmethod
+    def _segments(path):
+        prefix = "/api/devices/"
+        if not path.startswith(prefix): return None
+        parts = tuple(unquote(value) for value in path.removeprefix(prefix).split("/"))
+        return None if not parts or any(not value or "/" in value or "\\" in value or any(ord(c) < 32 for c in value) for value in parts) else parts

@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
-from backend.api import WellApi
+from backend.api import DeviceApi, WellApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
 from backend.config import Config
 from backend.database import Database
@@ -33,6 +33,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if DeviceApi(self).get(self.path): return
         if WellApi(self).get(self.path): return
         path = urlsplit(self.path).path
         if path == "/api/health": return self._health()
@@ -44,6 +45,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if DeviceApi(self).post(self.path): return
         if path == "/api/auth/login": return self._login()
         if path == "/api/auth/logout": return self._logout()
         if path == "/api/users": return self._users_create()
@@ -57,6 +59,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if DeviceApi(self).patch(self.path): return
         if WellApi(self).patch(self.path): return
         path = urlsplit(self.path).path
         if path.startswith("/api/users/"): return self._users_patch(path)
@@ -70,7 +73,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         except (sqlite3.Error, OSError):
             return self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, self._error("database_unavailable", "Database is unavailable"))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"service": "ok", "database": status,
-            "simulator": "pending", "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
+            "simulator": "running" if getattr(self.server.simulator, "_thread", None) and self.server.simulator._thread.is_alive() else "ready", "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
 
     def _login(self):
         try:
@@ -332,9 +335,17 @@ class PlatformHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = False
     daemon_threads = True
+    def serve_forever(self, *args, **kwargs):
+        self.simulator.start(); return super().serve_forever(*args, **kwargs)
+    def server_close(self):
+        simulator = getattr(self, "simulator", None)
+        if simulator: simulator.stop()
+        return super().server_close()
 
 
 def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServer:
     database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
+    from backend.simulator import SimulatorRegistry
+    server.simulator = SimulatorRegistry(database)
     return server

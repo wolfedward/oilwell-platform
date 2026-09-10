@@ -54,11 +54,38 @@ CREATE TABLE IF NOT EXISTS device_channels (
     channel_code TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    sample_interval_ms INTEGER NOT NULL DEFAULT 60000 CHECK(sample_interval_ms BETWEEN 100 AND 3600000),
+    scale REAL NOT NULL DEFAULT 1.0 CHECK(scale BETWEEN -1000 AND 1000),
+    offset REAL NOT NULL DEFAULT 0.0 CHECK(offset BETWEEN -1000 AND 1000),
+    version INTEGER NOT NULL DEFAULT 1,
     actor_id INTEGER,
     source_type TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
     UNIQUE(device_id, channel_code)
+);
+
+CREATE TABLE IF NOT EXISTS device_scenarios (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id),
+    name TEXT NOT NULL DEFAULT 'normal',
+    expires_at TEXT,
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'virtual_device',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
+CREATE TABLE IF NOT EXISTS device_events (
+    id INTEGER PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(id),
+    event_type TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'recorded',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'virtual_device',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS device_heartbeats (
@@ -890,4 +917,32 @@ BEGIN
         created_at = CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END,
         updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END
     WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_scenarios_set_updated_at
+AFTER UPDATE ON device_scenarios
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE device_scenarios SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_events_set_updated_at
+AFTER UPDATE ON device_events
+FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE device_events SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours') WHERE rowid = NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_scenarios_normalize_inserted_timestamps
+AFTER INSERT ON device_scenarios
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE device_scenarios SET created_at=CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END, updated_at=CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END WHERE rowid=NEW.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_events_normalize_inserted_timestamps
+AFTER INSERT ON device_events
+FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00' OR NEW.updated_at NOT GLOB '*+08:00'
+BEGIN
+    UPDATE device_events SET created_at=CASE WHEN NEW.created_at GLOB '*+08:00' THEN NEW.created_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.created_at, '+8 hours') END, updated_at=CASE WHEN NEW.updated_at GLOB '*+08:00' THEN NEW.updated_at ELSE strftime('%Y-%m-%dT%H:%M:%f+08:00', NEW.updated_at, '+8 hours') END WHERE rowid=NEW.rowid;
 END;
