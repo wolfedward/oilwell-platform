@@ -12,7 +12,7 @@ TIMESTAMP_TABLES = (
     "telemetry", "production_daily", "seed_manifests", "raw_messages", "data_quality_events", "dynagraphs", "dynagraph_features",
     "diagnoses", "model_runs", "recovery_tests", "energy_strategies", "strategy_versions",
     "device_commands", "command_attempts", "alarms", "approvals", "work_orders",
-    "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions",
+    "work_order_logs", "reports", "users", "roles", "permissions", "role_permissions", "sessions", "auth_bootstrap_state",
     "audit_logs", "system_events",
 )
 SHANGHAI_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')"

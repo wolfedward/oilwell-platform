@@ -334,6 +334,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
 );
 
+CREATE TABLE IF NOT EXISTS auth_bootstrap_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    bootstrap_version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'complete',
+    actor_id INTEGER,
+    source_type TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+);
+
 CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
     object_type TEXT NOT NULL,

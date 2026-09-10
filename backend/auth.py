@@ -66,7 +66,11 @@ class AuthService:
 
     @staticmethod
     def _token_hash(token: str) -> str:
-        return hashlib.sha256(token.encode("ascii")).hexdigest()
+        try:
+            encoded = token.encode("ascii")
+        except UnicodeEncodeError:
+            raise AuthError("authentication required") from None
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _now() -> datetime:

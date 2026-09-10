@@ -8,6 +8,16 @@ from backend.database import Database
 
 
 _SECRET_MARKERS = ("password", "salt", "hash", "token", "secret", "credential")
+_SECRET_KEY_NAMES = {
+    "api_key", "private_key", "secret_key", "client_secret", "access_token", "refresh_token",
+}
+
+
+def _is_secret_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if normalized == "public_key":
+        return False
+    return normalized in _SECRET_KEY_NAMES or any(marker in normalized for marker in _SECRET_MARKERS)
 
 
 def _safe(value: Any) -> Any:
@@ -15,7 +25,7 @@ def _safe(value: Any) -> Any:
         return {
             key: _safe(item)
             for key, item in value.items()
-            if not any(marker in key.lower() for marker in _SECRET_MARKERS)
+            if not _is_secret_key(key)
         }
     if isinstance(value, (list, tuple)):
         return [_safe(item) for item in value]

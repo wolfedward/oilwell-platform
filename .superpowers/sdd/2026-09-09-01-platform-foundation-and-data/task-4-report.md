@@ -43,3 +43,29 @@ The migration adds password/version/audit-detail fields with additive `ALTER TAB
 ## Residual risk
 
 This is an offline local service: demonstration passwords must be changed before use outside the controlled acceptance environment. SQLite serializes writes and has a busy timeout, but it is not intended as a multi-host identity service. Transport is loopback/local deployment rather than a TLS termination layer.
+
+## Fix round 1 — mutable auth configuration preservation
+
+### RED / GREEN evidence
+
+- RED: the new hash compatibility test failed with `SeedDataIntegrityError: seed dataset incomplete: content fingerprint` after a legitimate reviewer role/user configuration edit. The permission-revocation test found the grant restored (`1 != 0`), and the recursive audit-redaction test found `api-value` in persisted details. Administrator self-demotion, administrator-role disablement, malformed route, and restart tests likewise failed or dropped their request before the fixes.
+- GREEN: focused hash/bootstrap/redaction tests passed; focused administrator, malformed-ID/non-ASCII bearer, and real-restart tests passed. The final `python -m unittest discover -v` completed `Ran 62 tests in 127.032s` with `OK`.
+- Final syntax check: `python -m py_compile backend/auth.py backend/audit.py backend/database.py backend/seed.py backend/http_server.py server.py` completed successfully. `git diff --check` completed successfully.
+
+### Manifest projection and legacy migration
+
+The v2 manifest version remains stable, but its content-hash projection now explicitly includes `auth-projection-v2`. Seed-role identity (`code`, provenance) and seed-user identity (`username`, provenance) remain protected, so deletion or alteration of seeded identities/business data still fails closed. Mutable role name/status and user display name/status/role/version/password material no longer change the fingerprint.
+
+For a persisted legacy projection, startup first validates all normal manifest fields and the immutable seed distributions, then calculates the exact prior hash projection. Only when the stored value exactly matches that prior projection does it atomically write the new projection and an explicit `seed.upgrade_manifest_hash` audit record with simulator provenance. A hash that matches neither projection still fails closed. Once upgraded, normal startup is read-only with respect to the manifest.
+
+### Bootstrap semantics and administrator safety
+
+`auth_bootstrap_state` persists bootstrap version 1. Initial installation or the explicit marker migration adds the five accounts, password material, permission definitions, and default grants. Later launches may add missing permission *definitions*, but never recreate a deleted `role_permissions` row. This preserves deliberate administrator revocations across `seed_database` and real server restart.
+
+User role/status changes now evaluate the post-update state and reject removal of the final active administrator. With two administrators, the first demotion is permitted and the second is rejected. The `administrator` role itself cannot be disabled through the normal API, and its required user/role management permissions remain protected.
+
+### Minor fixes
+
+- Invalid user/role route IDs return a JSON 400 validation envelope rather than terminating the request.
+- Non-ASCII bearer values are rejected as 401 without an encoding exception.
+- Audit redaction recursively removes `api_key`, `private_key`, `secret_key`, `client_secret`, `access_token`, and `refresh_token`, while retaining an ordinary `public_key`.

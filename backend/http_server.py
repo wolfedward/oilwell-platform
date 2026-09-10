@@ -97,7 +97,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
 
     def _users_get(self, path):
         if self._require("users.read") is None: return
-        identifier = self._path_optional_id(path, "/api/users/")
+        try:
+            identifier = self._path_optional_id(path, "/api/users/")
+        except RequestValidationError as error:
+            return self._send_json(HTTPStatus.BAD_REQUEST, self._error("validation_error", str(error)))
         if identifier is not None:
             row = self.server.database.query_one("SELECT * FROM users WHERE id = ?", (identifier,))
             if row is None: return self._send_json(HTTPStatus.NOT_FOUND, self._error("not_found", "User not found"))
@@ -138,15 +141,17 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 before = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
                 if before is None: raise RequestValidationError("user not found")
                 fields, values = [], []
+                proposed_role_id, proposed_status = before["role_id"], before["status"]
                 if "display_name" in body: fields.append("display_name = ?"); values.append(self._text(body, "display_name"))
                 if "role_id" in body:
                     role_id = self._positive_int(body["role_id"], "role_id")
                     if conn.execute("SELECT 1 FROM roles WHERE id = ? AND status = 'active'", (role_id,)).fetchone() is None: raise RequestValidationError("role_id is not active")
-                    fields.append("role_id = ?"); values.append(role_id)
+                    fields.append("role_id = ?"); values.append(role_id); proposed_role_id = role_id
                 if "status" in body:
                     if body["status"] not in {"active", "disabled"}: raise RequestValidationError("invalid status")
-                    if body["status"] == "disabled" and before["status"] == "active" and self._is_last_admin(conn, before): raise RequestValidationError("cannot disable the last active administrator")
-                    fields.append("status = ?"); values.append(body["status"])
+                    fields.append("status = ?"); values.append(body["status"]); proposed_status = body["status"]
+                if self._would_remove_last_admin(conn, before, proposed_role_id, proposed_status):
+                    raise RequestValidationError("cannot remove the last active administrator")
                 reset = "password" in body
                 if reset:
                     salt, digest, iterations = password_material(self._password(body["password"]))
@@ -162,12 +167,16 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(HTTPStatus.CONFLICT, self._error("version_conflict", "Record version is stale"))
         except RequestValidationError as error:
             code = "not_found" if str(error) == "user not found" else "validation_error"
-            return self._send_json(HTTPStatus.NOT_FOUND if code == "not_found" else HTTPStatus.UNPROCESSABLE_ENTITY, self._error(code, str(error)))
+            status = HTTPStatus.NOT_FOUND if code == "not_found" else HTTPStatus.BAD_REQUEST if str(error) == "invalid resource id" else HTTPStatus.UNPROCESSABLE_ENTITY
+            return self._send_json(status, self._error(code, str(error)))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._public_user(after)})
 
     def _roles_get(self, path):
         if self._require("roles.read") is None: return
-        identifier = self._path_optional_id(path, "/api/roles/")
+        try:
+            identifier = self._path_optional_id(path, "/api/roles/")
+        except RequestValidationError as error:
+            return self._send_json(HTTPStatus.BAD_REQUEST, self._error("validation_error", str(error)))
         if identifier is not None:
             row = self.server.database.query_one("SELECT * FROM roles WHERE id = ?", (identifier,))
             if row is None: return self._send_json(HTTPStatus.NOT_FOUND, self._error("not_found", "Role not found"))
@@ -202,7 +211,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 if "name" in body: fields.append("name = ?"); values.append(self._text(body, "name"))
                 if "status" in body:
                     if body["status"] not in {"active", "disabled"}: raise RequestValidationError("invalid status")
-                    if body["status"] == "disabled" and before["code"] == "administrator" and self._active_admin_count(conn) <= 1: raise RequestValidationError("cannot disable the last active administrator role")
+                    if body["status"] == "disabled" and before["code"] == "administrator": raise RequestValidationError("administrator role cannot be disabled")
                     fields.append("status = ?"); values.append(body["status"])
                 permissions = self._permissions(body["permissions"]) if "permissions" in body else None
                 if before["code"] == "administrator" and permissions is not None and not {"users.manage", "roles.manage"}.issubset(permissions): raise RequestValidationError("administrator must retain users.manage and roles.manage")
@@ -216,7 +225,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(HTTPStatus.CONFLICT, self._error("version_conflict", "Record version is stale"))
         except RequestValidationError as error:
             code = "not_found" if str(error) == "role not found" else "validation_error"
-            return self._send_json(HTTPStatus.NOT_FOUND if code == "not_found" else HTTPStatus.UNPROCESSABLE_ENTITY, self._error(code, str(error)))
+            status = HTTPStatus.NOT_FOUND if code == "not_found" else HTTPStatus.BAD_REQUEST if str(error) == "invalid resource id" else HTTPStatus.UNPROCESSABLE_ENTITY
+            return self._send_json(status, self._error(code, str(error)))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._public_role(after)})
 
     def _require(self, permission):
@@ -276,9 +286,12 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _active_admin_count(conn):
         return conn.execute("SELECT COUNT(*) FROM users u JOIN roles r ON r.id=u.role_id WHERE r.code='administrator' AND r.status='active' AND u.status='active'").fetchone()[0]
-    def _is_last_admin(self, conn, row):
-        role = conn.execute("SELECT code FROM roles WHERE id=?", (row["role_id"],)).fetchone()
-        return role and role["code"] == "administrator" and self._active_admin_count(conn) <= 1
+    def _would_remove_last_admin(self, conn, row, proposed_role_id, proposed_status):
+        current_role = conn.execute("SELECT code FROM roles WHERE id=?", (row["role_id"],)).fetchone()
+        proposed_role = conn.execute("SELECT code FROM roles WHERE id=?", (proposed_role_id,)).fetchone()
+        is_active_admin = row["status"] == "active" and current_role and current_role["code"] == "administrator"
+        remains_active_admin = proposed_status == "active" and proposed_role and proposed_role["code"] == "administrator"
+        return bool(is_active_admin and not remains_active_admin and self._active_admin_count(conn) <= 1)
     def _public_user(self, row):
         role = self.server.database.query_one("SELECT code FROM roles WHERE id=?", (row["role_id"],))
         return {"id": row["id"], "username": row["username"], "display_name": row["display_name"], "role_id": row["role_id"], "role_code": role["code"] if role else None, "status": row["status"], "version": row["version"]}
