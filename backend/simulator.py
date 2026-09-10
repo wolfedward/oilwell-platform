@@ -159,7 +159,7 @@ class VirtualTerminal:
 
     @staticmethod
     def _electric_samples(registers: dict) -> list[dict]:
-        return [{"phase": index, "current": round(registers["current"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3), "voltage": registers["voltage"], "power": round(registers["active_power"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3)} for index in range(12)]
+        return [{"phase": index * 30, "current": round(registers["current"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3), "voltage": registers["voltage"], "power": round(registers["active_power"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3)} for index in range(12)]
     @staticmethod
     def _aware(now: datetime) -> datetime:
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != timedelta(hours=8): raise SimulatorValidationError("tick requires aware +08:00 datetime")

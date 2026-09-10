@@ -101,6 +101,17 @@ class VirtualTerminalTests(unittest.TestCase):
         self.assertLess(telemetry(abnormal[1])["fillage"], telemetry(normal[1])["fillage"])
         self.assertEqual(decode_frame(abnormal[0]).device_id, "D-001")
 
+    def test_electric_card_uses_a_complete_degree_indexed_cycle(self):
+        terminal = VirtualTerminal(profile_for("D-001"), seed=11)
+        frames = terminal.tick(at("2026-06-22T10:00:00+08:00"))
+        card = next(
+            decode_frame(raw).payload for raw in frames
+            if decode_frame(raw).payload["kind"] == "electric_card"
+        )
+        phases = [sample["phase"] for sample in card["electric_samples"]]
+        self.assertEqual(phases, list(range(0, 360, 30)))
+        self.assertEqual(set(card["electric_samples"][0]), {"phase", "current", "voltage", "power"})
+
     def test_all_scenarios_are_deterministic_and_expire(self):
         now = at("2026-06-22T10:00:00+08:00")
         for scenario in ("normal", "supply_shortage", "pump_leak", "empty_pump", "sensor_drift", "packet_loss", "offline"):

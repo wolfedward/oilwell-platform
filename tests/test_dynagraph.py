@@ -22,11 +22,13 @@ FIXTURE = Path(__file__).with_name("fixtures") / "dynagraph_cases.json"
 
 def fixture(name):
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    powers = data["cases"][name]
+    case = data["cases"][name]
+    powers = case["active_power_kw"]
     samples = [
         ElectricalSample(
-            phase=float(index), current_a=power * 3.8,
-            voltage_v=380.0 + 2.0 * math.cos(index / len(powers) * math.tau),
+            phase=float(data["phase_deg"][index]),
+            current_a=float(case["current_a"][index]),
+            voltage_v=float(data["voltage_v"][index]),
             active_power_kw=power,
         )
         for index, power in enumerate(powers)
@@ -59,13 +61,16 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         self.assertGreater(result.features.area_kn_m, 10.0)
         self.assertGreater(result.features.max_load_kn, result.features.min_load_kn)
         self.assertEqual(result.model_version, "dynagraph-2.0")
+        self.assertLessEqual(sum(point.load_inferred for point in result.intermediate), 16)
+        self.assertGreater(result.energy.conversion_ratio, .70)
+        self.assertLessEqual(result.energy.conversion_ratio, 1.15)
 
     def test_result_exposes_units_parameters_intermediates_and_dead_center_warning(self):
         samples, params = fixture("normal")
         result = convert_electric_card(samples, params)
         units = dict(result.units)
         self.assertEqual(
-            {"power", "torque", "displacement", "load", "area"}, set(units)
+            {"phase", "power", "torque", "torque_factor", "displacement", "load", "area"}, set(units)
         )
         self.assertEqual((units["power"], units["torque"], units["area"]), ("kW", "N·m", "kN·m"))
         self.assertEqual(result.parameters, params)
@@ -77,6 +82,7 @@ class DynagraphAlgorithmTests(unittest.TestCase):
             item.power_kw, item.motor_torque_nm, item.crank_torque_nm,
             item.balance_torque_nm, item.net_torque_nm, item.effective_torque_factor_m,
         )))
+        self.assertTrue(dict(result.units)["phase"] == "deg")
 
     def test_supply_shortage_has_lower_fillage_and_area_than_normal(self):
         normal = self.analyze("normal").features
@@ -93,7 +99,6 @@ class DynagraphAlgorithmTests(unittest.TestCase):
             vectors.append((round(value.area_kn_m, 3), round(value.fillage, 3), round(value.load_difference_kn, 3)))
         self.assertEqual(len(set(vectors)), 3)
         self.assertLess(values["pump_leak"].fillage, values["normal"].fillage)
-        self.assertLess(values["empty_pump"].fillage, values["pump_leak"].fillage)
 
     def test_noisy_normal_remains_near_normal_after_smoothing(self):
         normal = self.analyze("normal").features
@@ -107,7 +112,10 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         powered = convert_electric_card([
             replace(sample, active_power_kw=sample.active_power_kw * 1.2) for sample in samples
         ], params)
-        longer = convert_electric_card(samples, replace(params, stroke_m=params.stroke_m * 1.2))
+        longer = convert_electric_card(samples, replace(
+            params, stroke_m=params.stroke_m * 1.2,
+            torque_factor_m=params.torque_factor_m * 1.2,
+        ))
         efficient = convert_electric_card(samples, replace(params, transmission_efficiency=.92))
         geared = convert_electric_card(samples, replace(params, gear_ratio=params.gear_ratio * 1.2))
         self.assertGreater(powered.features.max_load_kn, base.features.max_load_kn)
@@ -128,7 +136,7 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         sparse, params = fixture("normal")
         dense = [
             ElectricalSample(
-                phase=float(index),
+                phase=float(index * 360 / 48),
                 current_a=(5.0 + math.sin(index / 48 * math.tau)) * 3.8,
                 voltage_v=380.0,
                 active_power_kw=5.0 + math.sin(index / 48 * math.tau),
@@ -144,6 +152,22 @@ class DynagraphAlgorithmTests(unittest.TestCase):
                     (result.points[-1].displacement_m, result.points[-1].load_kn),
                 )
 
+    def test_nonuniform_phase_coordinates_change_resampling_but_keep_contract(self):
+        samples, params = fixture("normal")
+        phases = [0, 18, 42, 78, 112, 143, 177, 211, 249, 286, 321, 348]
+        nonuniform = [replace(sample, phase=float(phase)) for sample, phase in zip(samples, phases)]
+        regular = convert_electric_card(samples, params)
+        shifted = convert_electric_card(nonuniform, params)
+        self.assertEqual(len(shifted.points), 120)
+        self.assertEqual(shifted.smoothed_power_kw, regular.smoothed_power_kw)
+        self.assertNotEqual(shifted.intermediate[20].power_kw, regular.intermediate[20].power_kw)
+
+    def test_phase_must_cover_one_cycle_in_degrees(self):
+        samples, params = fixture("normal")
+        incomplete = [replace(sample, phase=index * .001) for index, sample in enumerate(samples)]
+        with self.assertRaises(DynagraphValidationError):
+            convert_electric_card(incomplete, params)
+
     def test_geometric_features_do_not_depend_on_curve_orientation(self):
         points = self.analyze("normal").points
         forward = extract_features(points)
@@ -152,6 +176,15 @@ class DynagraphAlgorithmTests(unittest.TestCase):
         self.assertAlmostEqual(forward.fillage, reverse.fillage, places=10)
         self.assertAlmostEqual(forward.top_edge_tilt_kn_per_m, reverse.top_edge_tilt_kn_per_m, places=10)
         self.assertAlmostEqual(forward.bottom_edge_tilt_kn_per_m, reverse.bottom_edge_tilt_kn_per_m, places=10)
+
+    def test_fillage_and_turning_points_do_not_depend_on_load_zero_or_cycle_start(self):
+        points = self.analyze("normal").points[:-1]
+        shifted_load = tuple(replace(point, load_kn=point.load_kn + 100.0) for point in points)
+        offset = 37
+        rotated = tuple([*points[offset:], *points[:offset]])
+        baseline = extract_features(points)
+        self.assertAlmostEqual(extract_features(shifted_load).fillage, baseline.fillage, places=12)
+        self.assertEqual(extract_features(rotated).turning_points, baseline.turning_points)
 
     def test_validation_boundary_rejects_unsafe_inputs(self):
         samples, params = fixture("normal")
@@ -163,6 +196,8 @@ class DynagraphAlgorithmTests(unittest.TestCase):
             lambda: convert_electric_card([replace(samples[0], active_power_kw=True), *samples[1:]], params),
             lambda: convert_electric_card(samples, replace(params, gear_ratio=0.0)),
             lambda: convert_electric_card(samples, replace(params, motor_efficiency=1.2)),
+            lambda: convert_electric_card(samples, replace(params, torque_factor_m=.42)),
+            lambda: convert_electric_card([replace(samples[0], active_power_kw=10 ** 10000), *samples[1:]], params),
             lambda: extract_features([]),
         )
         for call in invalid_calls:

@@ -504,7 +504,7 @@ class AcquisitionService:
             for sample in samples:
                 if not isinstance(sample, dict) or set(sample) != {"phase", "current", "voltage", "power"}:
                     raise _RejectedFrame("schema_error", "electric sample fields are invalid")
-                self._finite_range(sample["phase"], 0, 511, "phase")
+                self._finite_range(sample["phase"], 0, 359.999999, "phase")
                 self._finite_range(sample["current"], 0, 200, "current")
                 self._finite_range(sample["voltage"], 200, 500, "voltage")
                 self._finite_range(sample["power"], 0, 100, "power")

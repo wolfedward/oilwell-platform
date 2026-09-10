@@ -6,6 +6,7 @@ field calibration is consulted.
 """
 
 from dataclasses import dataclass
+from bisect import bisect_right
 import math
 
 
@@ -19,6 +20,8 @@ class DynagraphValidationError(ValueError):
 
 @dataclass(frozen=True)
 class ElectricalSample:
+    """One sample whose phase is a crank angle in [0, 360) degrees."""
+
     phase: float
     current_a: float
     voltage_v: float
@@ -36,6 +39,7 @@ class MechanismParams:
     balance_phase_deg: float
     torque_factor_m: float
     static_rod_load_kn: float
+    dead_center_exclusion_deg: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,15 @@ class TorquePoint:
     balance_torque_nm: float
     net_torque_nm: float
     effective_torque_factor_m: float
+    load_inferred: bool
+
+
+@dataclass(frozen=True)
+class EnergyCheck:
+    input_electrical_power_kw: float
+    available_mechanical_power_kw: float
+    card_power_kw: float
+    conversion_ratio: float
 
 
 @dataclass(frozen=True)
@@ -79,18 +92,24 @@ class DynagraphResult:
     points: tuple[LoadDisplacementPoint, ...]
     features: DynagraphFeatures
     parameters: MechanismParams
+    energy: EnergyCheck
     units: tuple[tuple[str, str], ...]
     warnings: tuple[str, ...]
     model_version: str = MODEL_VERSION
 
 
 def _number(value, name: str, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DynagraphValidationError(f"{name} must be finite numeric data")
-    value = float(value)
-    if not minimum <= value <= maximum:
+    try:
+        result = float(value)
+    except (OverflowError, TypeError, ValueError) as error:
+        raise DynagraphValidationError(f"{name} must be finite numeric data") from error
+    if not math.isfinite(result):
+        raise DynagraphValidationError(f"{name} must be finite numeric data")
+    if not minimum <= result <= maximum:
         raise DynagraphValidationError(f"{name} is outside the engineering range")
-    return value
+    return result
 
 
 def smooth(samples: list[float], window: int = 5) -> list[float]:
@@ -112,7 +131,7 @@ def smooth(samples: list[float], window: int = 5) -> list[float]:
 
 
 def split_cycle(samples: list[ElectricalSample], strokes_per_minute: float) -> list[ElectricalSample]:
-    """Validate and copy one monotonically sampled electric-card cycle."""
+    """Validate and copy one degree-indexed electric-card cycle."""
     _number(strokes_per_minute, "strokes_per_minute", .1, 20.0)
     if not isinstance(samples, list) or not 8 <= len(samples) <= 512:
         raise DynagraphValidationError("one cycle must contain 8-512 samples")
@@ -121,7 +140,7 @@ def split_cycle(samples: list[ElectricalSample], strokes_per_minute: float) -> l
     for sample in samples:
         if not isinstance(sample, ElectricalSample):
             raise DynagraphValidationError("samples must be ElectricalSample values")
-        phase = _number(sample.phase, "phase", -1_000_000.0, 1_000_000.0)
+        phase = _number(sample.phase, "phase", 0.0, math.nextafter(360.0, 0.0))
         _number(sample.current_a, "current_a", 0.0, 200.0)
         _number(sample.voltage_v, "voltage_v", 0.0, 1_000.0)
         _number(sample.active_power_kw, "active_power_kw", -100.0, 100.0)
@@ -129,6 +148,16 @@ def split_cycle(samples: list[ElectricalSample], strokes_per_minute: float) -> l
             raise DynagraphValidationError("sample phases must be strictly increasing")
         last_phase = phase
         copied.append(sample)
+    phases = [float(sample.phase) for sample in copied]
+    circular_gaps = [
+        following - current
+        for current, following in zip(phases, [*phases[1:], phases[0] + 360.0])
+    ]
+    maximum_allowed_gap = max(60.0, 2.5 * 360.0 / len(phases))
+    if max(circular_gaps) > maximum_allowed_gap:
+        raise DynagraphValidationError(
+            "sample phases do not cover one 360-degree cycle with adequate continuity"
+        )
     return list(copied)
 
 
@@ -144,18 +173,54 @@ def _validate_params(params: MechanismParams) -> None:
     _number(params.balance_phase_deg, "balance_phase_deg", -360.0, 360.0)
     _number(params.torque_factor_m, "torque_factor_m", .02, 10.0)
     _number(params.static_rod_load_kn, "static_rod_load_kn", 0.0, 500.0)
+    _number(params.dead_center_exclusion_deg, "dead_center_exclusion_deg", 1.0, 20.0)
+    expected_factor = params.stroke_m / 2.0
+    if not math.isclose(params.torque_factor_m, expected_factor, rel_tol=.02, abs_tol=.002):
+        raise DynagraphValidationError(
+            "torque_factor_m must equal stroke_m / 2 within the simple-harmonic geometry tolerance"
+        )
 
 
-def _periodic_resample(values: list[float], unique_count: int) -> list[float]:
-    count = len(values)
+def _periodic_resample(phases_deg: list[float], values: list[float], unique_count: int) -> list[float]:
+    """Interpolate a cyclic signal on its measured degree coordinates."""
+    extended_phases = [phases_deg[-1] - 360.0, *phases_deg, phases_deg[0] + 360.0]
+    extended_values = [values[-1], *values, values[0]]
     result = []
     for index in range(unique_count):
-        position = index * count / unique_count
-        left = int(math.floor(position)) % count
-        fraction = position - math.floor(position)
-        right = (left + 1) % count
-        result.append(values[left] * (1.0 - fraction) + values[right] * fraction)
+        target = 360.0 * index / unique_count
+        left = bisect_right(extended_phases, target) - 1
+        span = extended_phases[left + 1] - extended_phases[left]
+        fraction = (target - extended_phases[left]) / span
+        result.append(
+            extended_values[left] * (1.0 - fraction)
+            + extended_values[left + 1] * fraction
+        )
     return result
+
+
+def _interpolate_unobservable(values: list[float | None]) -> list[float]:
+    """Interpolate short dead-centre gaps on a uniform circular phase grid."""
+    if all(value is None for value in values):
+        raise DynagraphValidationError("dead-center exclusion removed the entire cycle")
+    result = list(values)
+    count = len(result)
+    for index, value in enumerate(result):
+        if value is not None:
+            continue
+        previous = (index - 1) % count
+        while result[previous] is None:
+            previous = (previous - 1) % count
+        following = (index + 1) % count
+        while result[following] is None:
+            following = (following + 1) % count
+        previous_distance = (index - previous) % count
+        following_distance = (following - index) % count
+        total = previous_distance + following_distance
+        result[index] = (
+            float(result[previous]) * following_distance
+            + float(result[following]) * previous_distance
+        ) / total
+    return [float(value) for value in result]
 
 
 def convert_electric_card(samples: list[ElectricalSample], params: MechanismParams) -> DynagraphResult:
@@ -164,18 +229,14 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
     cycle = split_cycle(samples, params.strokes_per_minute)
     smoothed = smooth([sample.active_power_kw for sample in cycle], 5)
     unique_count = NORMALIZED_POINT_COUNT - 1
-    powers = _periodic_resample(smoothed, unique_count)
+    phases = [float(sample.phase) for sample in cycle]
+    powers = _periodic_resample(phases, smoothed, unique_count)
     omega_crank = math.tau * params.strokes_per_minute / 60.0
     omega_motor = omega_crank * params.gear_ratio
-    # Near crank dead centres the idealised sine torque factor approaches zero,
-    # while measured motor power still contains inertia and balance work that
-    # cannot be assigned wholly to polished-rod load.  A conservative 70% floor
-    # keeps the inversion finite and explicitly reports the regularisation.
-    minimum_factor = max(.02, params.torque_factor_m * .70)
     phase_offset = math.radians(params.balance_phase_deg)
-    intermediates = []
-    points = []
-    regularized = False
+    torque_values = []
+    load_values = []
+    inferred_flags = []
 
     for index, power_kw in enumerate(powers):
         theta = math.tau * index / unique_count
@@ -185,21 +246,28 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
         balance_torque = params.balance_torque_nm * math.sin(theta + phase_offset)
         net_torque = crank_torque - balance_torque
         raw_factor = params.torque_factor_m * math.sin(theta)
-        if abs(raw_factor) < minimum_factor:
-            regularized = True
-            if abs(raw_factor) < 1e-15:
-                sign = 1.0 if theta <= math.pi else -1.0
-            else:
-                sign = math.copysign(1.0, raw_factor)
-            effective_factor = sign * minimum_factor
-        else:
-            effective_factor = raw_factor
-        displacement = params.stroke_m * .5 * (1.0 - math.cos(theta))
-        load = params.static_rod_load_kn + net_torque / effective_factor / 1000.0
-        intermediates.append(TorquePoint(
+        distance_to_dead_center = min(
+            phase_deg, abs(phase_deg - 180.0), 360.0 - phase_deg,
+        )
+        inferred = distance_to_dead_center < params.dead_center_exclusion_deg
+        load = None if inferred else (
+            params.static_rod_load_kn + net_torque / raw_factor / 1000.0
+        )
+        torque_values.append((
             phase_deg, power_kw, motor_torque, crank_torque,
-            balance_torque, net_torque, effective_factor,
+            balance_torque, net_torque, raw_factor,
         ))
+        load_values.append(load)
+        inferred_flags.append(inferred)
+
+    loads = _interpolate_unobservable(load_values)
+    intermediates = []
+    points = []
+    for values, load, inferred in zip(torque_values, loads, inferred_flags):
+        phase_deg = values[0]
+        theta = math.radians(phase_deg)
+        displacement = params.torque_factor_m * (1.0 - math.cos(theta))
+        intermediates.append(TorquePoint(*values, inferred))
         points.append(LoadDisplacementPoint(phase_deg, displacement, load))
 
     first_intermediate = intermediates[0]
@@ -208,24 +276,37 @@ def convert_electric_card(samples: list[ElectricalSample], params: MechanismPara
         360.0, first_intermediate.power_kw, first_intermediate.motor_torque_nm,
         first_intermediate.crank_torque_nm, first_intermediate.balance_torque_nm,
         first_intermediate.net_torque_nm, first_intermediate.effective_torque_factor_m,
+        first_intermediate.load_inferred,
     ))
     points.append(LoadDisplacementPoint(360.0, first_point.displacement_m, first_point.load_kn))
-    warnings = []
-    if regularized:
-        warnings.append(
-            "dead-center torque factor was regularized to avoid a kinematic singularity"
-        )
+    warnings = [
+        "dead-center load was inferred within "
+        f"±{params.dead_center_exclusion_deg:.1f}° "
+        f"({sum(inferred_flags)}/{unique_count} normalized points)"
+    ]
     if min(powers) < 0:
         warnings.append("negative active power indicates regenerative motor operation")
     point_tuple = tuple(points)
+    features = extract_features(point_tuple)
+    electrical_power = sum(powers) / len(powers)
+    available_power = electrical_power * params.motor_efficiency * params.transmission_efficiency
+    card_power = features.area_kn_m * params.strokes_per_minute / 60.0
+    conversion_ratio = card_power / available_power if available_power > 1e-12 else 0.0
+    if conversion_ratio > 1.15:
+        warnings.append("card power exceeds the available mechanical-power tolerance")
+    elif conversion_ratio < .50:
+        warnings.append("card power is below half of available mechanical power")
     return DynagraphResult(
         raw_samples=tuple(cycle),
         smoothed_power_kw=tuple(smoothed),
         intermediate=tuple(intermediates),
         points=point_tuple,
-        features=extract_features(point_tuple),
+        features=features,
         parameters=params,
-        units=(("power", "kW"), ("torque", "N·m"), ("displacement", "m"), ("load", "kN"), ("area", "kN·m")),
+        energy=EnergyCheck(
+            electrical_power, available_power, card_power, conversion_ratio,
+        ),
+        units=(("phase", "deg"), ("power", "kW"), ("torque", "N·m"), ("torque_factor", "m"), ("displacement", "m"), ("load", "kN"), ("area", "kN·m")),
         warnings=tuple(warnings),
     )
 
@@ -267,11 +348,10 @@ def extract_features(points: list[LoadDisplacementPoint] | tuple[LoadDisplacemen
         current.displacement_m * following.load_kn - following.displacement_m * current.load_kn
         for current, following in zip(points, [*points[1:], points[0]])
     )) * .5
-    # Work-area occupancy is normalized against stroke times peak absolute
-    # surface load.  Unlike bounding-box occupancy, this falls as a card
-    # collapses toward an empty-pump trace instead of increasing merely because
-    # its vertical span shrank.
-    fillage_reference = stroke_span * max(abs(maximum_y), abs(minimum_y))
+    # Normalized card-area occupancy is invariant to the chosen load zero.  It
+    # is a geometric fillage proxy; field pump-fillage calibration is applied
+    # separately by the production model.
+    fillage_reference = stroke_span * load_span
     fillage = max(0.0, min(1.0, area / fillage_reference))
     upstroke = [point for point in points if 0.0 <= point.phase_deg < 180.0]
     downstroke = [point for point in points if 180.0 <= point.phase_deg < 360.0]
@@ -286,10 +366,16 @@ def extract_features(points: list[LoadDisplacementPoint] | tuple[LoadDisplacemen
         points[-1].load_kn - points[0].load_kn,
     ) / math.hypot(stroke_span, load_span)
     tolerance = max(.05, load_span * .01)
-    differences = [following.load_kn - current.load_kn for current, following in zip(points, points[1:])]
+    differences = [
+        following.load_kn - current.load_kn
+        for current, following in zip(points, [*points[1:], points[0]])
+    ]
     signs = [1 if value > tolerance else -1 if value < -tolerance else 0 for value in differences]
     nonzero = [value for value in signs if value]
-    turning_points = sum(first != second for first, second in zip(nonzero, nonzero[1:]))
+    turning_points = sum(
+        first != second
+        for first, second in zip(nonzero, [*nonzero[1:], nonzero[0]])
+    ) if nonzero else 0
     return DynagraphFeatures(
         max_load_kn=maximum_y,
         min_load_kn=minimum_y,
