@@ -18,6 +18,7 @@ ALLOWED_INTERVALS = {"raw", "15m", "1h", "1d"}
 ALLOWED_WELL_STATUSES = {"active", "running", "intermittent", "stopped", "maintenance", "offline"}
 MAX_RANGE = timedelta(days=31)
 MAX_POINTS = {"raw": 2000, "15m": 3000, "1h": 1000, "1d": 100}
+SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 # This registry is intentionally semantic rather than unit-only: a metric
 # becomes eligible for energy integration only after acquisition registers it
 # as active power.  Future metadata may replace this small local registry.
@@ -202,9 +203,23 @@ class WellsService:
             "ORDER BY metric_code, measured_at, id",
             (well_id, *metric_codes, self._iso_utc(start), self._iso_utc(end)),
         )
-        by_metric: dict[str, list] = {}
+        by_metric: dict[str, list] = {metric: [] for metric in metric_codes}
         for row in rows:
-            by_metric.setdefault(row["metric_code"], []).append(row)
+            by_metric[row["metric_code"]].append(row)
+        for metric, points in by_metric.items():
+            predecessor = self.database.query_one(
+                "SELECT metric_code, measured_at, value FROM telemetry "
+                "WHERE well_id=? AND metric_code=? AND datetime(measured_at) < datetime(?) "
+                "ORDER BY datetime(measured_at) DESC, id DESC LIMIT 1",
+                (well_id, metric, self._iso_utc(start)),
+            )
+            successor = self.database.query_one(
+                "SELECT metric_code, measured_at, value FROM telemetry "
+                "WHERE well_id=? AND metric_code=? AND datetime(measured_at) > datetime(?) "
+                "ORDER BY datetime(measured_at), id LIMIT 1",
+                (well_id, metric, self._iso_utc(end)),
+            )
+            by_metric[metric] = ([predecessor] if predecessor else []) + points + ([successor] if successor else [])
         energy: dict[tuple[str, str], float] = {}
         for metric, points in by_metric.items():
             for current, following in zip(points, points[1:]):
@@ -267,6 +282,10 @@ class WellsService:
             raise WellValidationError("reason must be 2-500 characters")
         if not isinstance(version, int) or isinstance(version, bool):
             raise WellValidationError("version must be an integer")
+        # -1 remains the documented stale-version sentinel.  Every other
+        # accepted value is a meaningful positive SQLite INTEGER binding.
+        if version != -1 and not 1 <= version <= SQLITE_MAX_INTEGER:
+            raise WellValidationError("version is out of range")
         with self.database.transaction(actor_id, "well.status.update", "well", well_id, source_type="manual", auto_audit=False) as connection:
             before = connection.execute("SELECT id, status, version FROM wells WHERE id=?", (well_id,)).fetchone()
             if before is None:

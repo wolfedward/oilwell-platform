@@ -180,6 +180,49 @@ class WellApiTests(unittest.TestCase):
         active_power = next(item for item in payload["data"]["items"] if item["metric"] == "active_power")
         self.assertAlmostEqual(active_power["energy_kwh"], 7.0, places=6)
 
+    def test_daily_power_energy_uses_window_neighbors_without_leaking_them_into_stats(self):
+        """A predecessor/successor supplies coverage, but only the inner sample is counted."""
+        rows = (
+            ("2026-06-14T23:30:00+08:00", 2.0),
+            ("2026-06-15T01:00:00+08:00", 4.0),
+            ("2026-06-15T03:00:00+08:00", 7.0),
+        )
+        with self.server.database.transaction(1, "test.window_neighbors", "telemetry", "W-001") as connection:
+            for measured_at, value in rows:
+                connection.execute(
+                    """INSERT INTO telemetry(well_id, device_id, channel_id, measured_at, metric_code, value, unit, source_type)
+                       SELECT ?, d.id, c.id, ?, 'active_power', ?, 'kW', 'manual'
+                       FROM devices d JOIN device_channels c ON c.device_id=d.id WHERE d.well_id=? LIMIT 1""",
+                    ("W-001", measured_at, value, "W-001"),
+                )
+        token = self.login()
+        response, payload = self.request(
+            "GET", "/api/wells/W-001/telemetry?from=2026-06-15T00:00:00%2B08:00&to=2026-06-15T02:00:00%2B08:00&interval=1d",
+            token=token,
+        )
+        self.assertEqual(response.status, 200)
+        active_power = next(item for item in payload["data"]["items"] if item["metric"] == "active_power")
+        self.assertAlmostEqual(active_power["energy_kwh"], 6.0, places=6)
+        self.assertEqual((active_power["count"], active_power["value"], active_power["min"], active_power["max"]), (1, 4.0, 4.0, 4.0))
+
+    def test_daily_power_energy_does_not_extrapolate_a_sample_without_successor(self):
+        """The final left-held reading has no inferred coverage after the query end."""
+        with self.server.database.transaction(1, "test.no_successor", "telemetry", "W-001") as connection:
+            connection.execute(
+                """INSERT INTO telemetry(well_id, device_id, channel_id, measured_at, metric_code, value, unit, source_type)
+                   SELECT ?, d.id, c.id, ?, 'active_power', 9.0, 'kW', 'manual'
+                   FROM devices d JOIN device_channels c ON c.device_id=d.id WHERE d.well_id=? LIMIT 1""",
+                ("W-001", "2026-06-20T01:00:00+08:00", "W-001"),
+            )
+        token = self.login()
+        response, payload = self.request(
+            "GET", "/api/wells/W-001/telemetry?from=2026-06-20T00:00:00%2B08:00&to=2026-06-20T02:00:00%2B08:00&interval=1d",
+            token=token,
+        )
+        self.assertEqual(response.status, 200)
+        active_power = next(item for item in payload["data"]["items"] if item["metric"] == "active_power")
+        self.assertEqual(active_power["energy_kwh"], 0.0)
+
     def test_well_routes_require_exact_path_segments(self):
         """Treating nested route suffixes as a well ID hides malformed API requests."""
         token = self.login()
@@ -191,6 +234,16 @@ class WellApiTests(unittest.TestCase):
         ):
             with self.subTest(method=method, path=path):
                 response, payload = self.request(method, path, {"status": "stopped", "reason": "检修", "version": 1} if method == "PATCH" else None, token)
+                self.assertEqual((response.status, payload["error"]["code"]), (404, "not_found"))
+
+    def test_decoded_path_separators_are_not_well_ids_but_encoded_hyphen_is_valid(self):
+        """Decode once, then reject decoded traversal-like and control segments as routes."""
+        token = self.login()
+        response, payload = self.request("GET", "/api/wells/W%2D001", token=token)
+        self.assertEqual((response.status, payload["data"]["well"]["id"]), (200, "W-001"))
+        for path in ("/api/wells/W-001%2Ftelemetry", "/api/wells/W-001%5Ctelemetry", "/api/wells/W-001%00"):
+            with self.subTest(path=path):
+                response, payload = self.request("GET", path, token=token)
                 self.assertEqual((response.status, payload["error"]["code"]), (404, "not_found"))
 
     def test_status_write_is_audited_versioned_permissioned_and_survives_restart(self):
@@ -232,6 +285,17 @@ class WellApiTests(unittest.TestCase):
         replacement_token = self.login()
         response, persisted = self.request("GET", "/api/wells/W-001", token=replacement_token)
         self.assertEqual((response.status, persisted["data"]["well"]["status"]), (200, "stopped"))
+
+    def test_status_rejects_integer_beyond_sqlite_binding_range(self):
+        """An astronomical optimistic version must be a validation response, not a dropped socket."""
+        token = self.login()
+        for version in (9223372036854775808, -2, "1", 1.5):
+            with self.subTest(version=version):
+                response, payload = self.request(
+                    "PATCH", "/api/wells/W-001/status",
+                    {"status": "stopped", "reason": "检修", "version": version}, token,
+                )
+                self.assertEqual((response.status, payload["error"]["code"]), (422, "validation_error"))
 
     def test_tampered_immutable_seed_data_fails_closed_after_mutable_status_change(self):
         token = self.login()

@@ -109,7 +109,15 @@ class WellApi:
         suffix = path.removeprefix(prefix)
         if not suffix:
             return ()
-        return tuple(unquote(segment) for segment in suffix.split("/"))
+        segments = tuple(unquote(segment) for segment in suffix.split("/"))
+        # A decoded separator/control character changes route structure.  It
+        # is therefore not a malformed well ID; it is not a route match.
+        if any(
+            "/" in segment or "\\" in segment or any(ord(character) < 32 or ord(character) == 127 for character in segment)
+            for segment in segments
+        ):
+            return None
+        return segments
 
     @staticmethod
     def _integer(value, name, minimum, maximum):
