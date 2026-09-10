@@ -31,9 +31,16 @@ Legacy hash migration now compares-and-swaps under the existing SQLite transacti
 ## Verification
 
 - `python -m py_compile server.py backend/config.py backend/lifecycle.py backend/http_server.py backend/seed.py` — exit 0.
-- Full suite was run in timeout-safe groups: auth API 8/8, auth unit 11/11, database 23/23, health 10/10, seed 12/12, well API 15/15, lifecycle 4/4 — 83 tests passing.
+- Full suite was run in timeout-safe groups: auth API 8/8, auth unit 11/11, database 23/23, health 10/10, seed 12/12, well API 15/15, lifecycle 5/5 — 84 tests passing.
 - `git diff --check` — no whitespace errors.
 
 ## Residual risk
 
 Windows may transiently deny replacement while a reader has runtime state open; atomic publication retries that short-lived sharing conflict, while readers also retry malformed/transient reads.  An operator wanting deliberately independent instances must provide distinct log roots (and normally distinct database paths), which is the intentional safety boundary.
+
+## Fix round 2 — stop completion barrier
+
+- RED: `test_stop_is_a_completion_barrier_before_an_immediate_launcher_restart` failed on the prior code because `--stop` returned zero while the acknowledged owner's `runtime.json` still existed.
+- GREEN: stop now records the target instance ID and shutdown token before its authenticated request.  A 200 `stopping` acknowledgement begins a bounded 10-second completion wait; it returns zero only after the same state file has disappeared and a non-destructive `InstanceLock` probe can acquire and release the OS lock.
+- If a different runtime owner appears, stop returns nonzero and records a completion-conflict diagnostic.  If the target remains or a transient atomic-state read never resolves before the deadline, stop returns nonzero with an explicit timeout diagnostic.  No PID is acted upon.
+- The lifecycle suite repeats direct stop → immediate `--launch --port 0` three times and the foreign-CWD Windows `start-platform.cmd` → `stop-platform.cmd` cycle twice.  Cleanup requests authenticated stop before terminating only a directly-owned test process, so background launcher children do not outlive the temporary root.

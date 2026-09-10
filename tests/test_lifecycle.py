@@ -10,7 +10,7 @@ import threading
 import time
 import unittest
 
-from backend.lifecycle import remove_runtime_if_owner, write_runtime
+from backend.lifecycle import InstanceLock, remove_runtime_if_owner, write_runtime
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -79,11 +79,19 @@ class LifecycleTests(unittest.TestCase):
         for process in self.processes:
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=5)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
             if process.stdout:
                 process.stdout.close()
             if process.stderr:
                 process.stderr.close()
+
+    def _runtime_log(self):
+        log = self.log_path / "runtime.log"
+        return log.read_text(encoding="utf-8") if log.exists() else ""
 
     def test_foreground_single_instance_preserves_owner_and_restarts_after_stop(self):
         first = self._start("--port", "0")
@@ -112,6 +120,33 @@ class LifecycleTests(unittest.TestCase):
         replacement_runtime = wait_for_runtime(runtime_path, replacement)
         self.assertTrue(healthy(replacement_runtime))
 
+    def test_stop_is_a_completion_barrier_before_an_immediate_launcher_restart(self):
+        """A 0 stop result must mean its owner cleaned up and released the OS lock."""
+        runtime_path = self.log_path / "runtime.json"
+        for _ in range(3):
+            process = self._start("--port", "0")
+            wait_for_runtime(runtime_path, process)
+            stopped = subprocess.run(
+                [sys.executable, "server.py", "--stop"], cwd=PROJECT_ROOT, env=self.environment,
+                capture_output=True, text=True, timeout=12, check=False,
+            )
+            self.assertEqual(stopped.returncode, 0, stopped.stderr + self._runtime_log())
+            self.assertFalse(runtime_path.exists())
+            probe = InstanceLock(self.log_path)
+            probe.acquire()
+            probe.release()
+            launched = subprocess.run(
+                [sys.executable, "server.py", "--launch", "--port", "0"], cwd=PROJECT_ROOT,
+                env=self.environment, capture_output=True, text=True, timeout=20, check=False,
+            )
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            stopped = subprocess.run(
+                [sys.executable, "server.py", "--stop"], cwd=PROJECT_ROOT, env=self.environment,
+                capture_output=True, text=True, timeout=12, check=False,
+            )
+            self.assertEqual(stopped.returncode, 0, stopped.stderr + self._runtime_log())
+            self.assertFalse(runtime_path.exists())
+
     def test_stale_runtime_is_replaced_and_non_owner_cannot_remove_owner_runtime(self):
         self.log_path.mkdir(parents=True)
         runtime_path = self.log_path / "runtime.json"
@@ -130,18 +165,20 @@ class LifecycleTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows batch behavior")
     def test_batch_launch_and_stop_work_from_an_unrelated_working_directory(self):
         with tempfile.TemporaryDirectory() as other_cwd:
-            started = subprocess.run(
-                ["cmd", "/c", str(PROJECT_ROOT / "start-platform.cmd")], cwd=other_cwd, env=self.environment,
-                capture_output=True, text=True, timeout=20, check=False,
-            )
-            self.assertEqual(started.returncode, 0, started.stderr)
-            runtime = json.loads((self.log_path / "runtime.json").read_text(encoding="utf-8"))
-            self.assertTrue(healthy(runtime))
-            stopped = subprocess.run(
-                ["cmd", "/c", str(PROJECT_ROOT / "stop-platform.cmd")], cwd=other_cwd, env=self.environment,
-                capture_output=True, text=True, timeout=15, check=False,
-            )
-            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            for _ in range(2):
+                started = subprocess.run(
+                    ["cmd", "/c", str(PROJECT_ROOT / "start-platform.cmd")], cwd=other_cwd, env=self.environment,
+                    capture_output=True, text=True, timeout=20, check=False,
+                )
+                self.assertEqual(started.returncode, 0, started.stderr)
+                runtime = json.loads((self.log_path / "runtime.json").read_text(encoding="utf-8"))
+                self.assertTrue(healthy(runtime))
+                stopped = subprocess.run(
+                    ["cmd", "/c", str(PROJECT_ROOT / "stop-platform.cmd")], cwd=other_cwd, env=self.environment,
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+                self.assertEqual(stopped.returncode, 0, stopped.stderr)
+                self.assertFalse((self.log_path / "runtime.json").exists())
 
     def test_launcher_returns_failure_when_child_cannot_bind_requested_port(self):
         holder = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)

@@ -17,6 +17,7 @@ from backend.lifecycle import AlreadyRunningError, InstanceLock, remove_runtime_
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 LAUNCH_TIMEOUT_SECONDS = 15
+STOP_COMPLETION_TIMEOUT_SECONDS = 10
 
 
 def parse_arguments():
@@ -38,6 +39,7 @@ def stop_server():
     runtime_file, _ = _runtime_paths()
     try:
         runtime = json.loads(runtime_file.read_text(encoding="utf-8"))
+        owner = (runtime["instance_id"], runtime["shutdown_token"])
         connection = http.client.HTTPConnection(_local_host(runtime["host"]), int(runtime["port"]), timeout=2)
         connection.request("POST", "/internal/shutdown", headers={"X-Platform-Shutdown-Token": runtime["shutdown_token"]})
         response = connection.getresponse()
@@ -47,7 +49,7 @@ def stop_server():
         _append_runtime_log("stop request failed")
         return 1
     if response.status == 200 and payload.get("ok") and payload.get("data", {}).get("stopping"):
-        return 0
+        return 0 if _wait_for_shutdown_completion(runtime_file, owner) else 1
     _append_runtime_log("stop request rejected")
     return 1
 
@@ -80,6 +82,48 @@ def _read_runtime(runtime_file):
         return json.loads(runtime_file.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _runtime_file_exists(runtime_file):
+    try:
+        runtime_file.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def _lock_is_available():
+    probe = InstanceLock(Config.LOG_PATH)
+    try:
+        probe.acquire()
+    except AlreadyRunningError:
+        return False
+    probe.release()
+    return True
+
+
+def _wait_for_shutdown_completion(runtime_file, owner):
+    """Wait for the acknowledged owner to remove state and release its OS lock."""
+    deadline = time.monotonic() + STOP_COMPLETION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        current = _read_runtime(runtime_file)
+        if current is not None:
+            current_owner = (current.get("instance_id"), current.get("shutdown_token"))
+            if current_owner != owner:
+                _append_runtime_log("stop completion conflict: runtime ownership changed")
+                return False
+        elif not _runtime_file_exists(runtime_file) and _lock_is_available():
+            _append_runtime_log("stop completed")
+            return True
+        time.sleep(0.05)
+    current = _read_runtime(runtime_file)
+    if current is not None and (current.get("instance_id"), current.get("shutdown_token")) != owner:
+        _append_runtime_log("stop completion conflict: runtime ownership changed")
+    else:
+        _append_runtime_log("stop completion timed out waiting for owner cleanup and lock release")
+    return False
 
 
 def _open_when_ready(runtime):
