@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS device_events (
 CREATE TABLE IF NOT EXISTS device_heartbeats (
     id INTEGER PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(id),
+    raw_message_id INTEGER REFERENCES raw_messages(id),
     reported_at TEXT NOT NULL,
     status TEXT NOT NULL,
     actor_id INTEGER,

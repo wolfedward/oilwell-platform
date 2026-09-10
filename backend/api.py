@@ -221,6 +221,8 @@ class AcquisitionApi:
             message_id = self._message_id(path)
             if message_id is not None:
                 if self.handler._require("acquisition.read") is None: return True
+                if parsed.query:
+                    raise AcquisitionValidationError("message detail does not accept query parameters")
                 return self._ok(self.service.message_detail(message_id))
             if path == "/api/data-quality":
                 if self.handler._require("data_quality.read") is None: return True
@@ -236,10 +238,13 @@ class AcquisitionApi:
 
     def post(self, request_target):
         try:
-            event_id = self._repair_event_id(urlsplit(request_target).path)
+            parsed = urlsplit(request_target)
+            event_id = self._repair_event_id(parsed.path)
             if event_id is None: return False
             actor = self.handler._require("data_quality.repair")
             if actor is None: return True
+            if parsed.query:
+                raise AcquisitionValidationError("quality repair does not accept query parameters")
             body = self.handler._json_body()
             if not isinstance(body, dict) or set(body) != {"version"}:
                 raise AcquisitionValidationError("repair body must contain exactly version")

@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 
-from backend.protocol import encode_frame
+from backend.protocol import FrameError, decode_frame, encode_frame
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -174,6 +174,7 @@ class SimulatorRegistry:
         self.database, self.cadence_seconds = database, cadence_seconds
         self._clock = clock or (lambda: datetime.now(SHANGHAI_TIMEZONE))
         self._queue, self._queue_size, self._queue_lock, self._frame_sink = deque(), queue_size, threading.RLock(), None
+        self._delivery_failures = deque()
         self._delivered, self._dropped = 0, 0
         rows = database.query_all("SELECT id, well_id, serial_number, device_type, firmware_version, status FROM devices ORDER BY id")
         self.terminals = {row["id"]: VirtualTerminal(profile_for(row["id"], row)) for row in rows}
@@ -206,7 +207,68 @@ class SimulatorRegistry:
             self._delivered += len(drained)
             return drained
     def frame_stats(self):
-        with self._queue_lock: return {"queued": len(self._queue), "delivered": self._delivered, "dropped": self._dropped}
+        with self._queue_lock:
+            return {
+                "queued": len(self._queue), "capacity": self._queue_size,
+                "delivered": self._delivered, "dropped": self._dropped,
+                "delivery_failures_pending": len(self._delivery_failures),
+            }
+    def drain_delivery_failures(self):
+        with self._queue_lock:
+            notices = list(self._delivery_failures)
+            self._delivery_failures.clear()
+            return notices
+    def summarize_delivery_failure(self, packets, reason, *, detected_at=None):
+        packet_list = list(packets)
+        device_ranges = {}
+        unparsed = 0
+        for packet in packet_list:
+            try:
+                frame = decode_frame(packet)
+            except FrameError:
+                unparsed += 1
+                continue
+            entry = device_ranges.setdefault(
+                frame.device_id,
+                {"device_id": frame.device_id, "first_sequence": frame.sequence, "last_sequence": frame.sequence, "count": 0},
+            )
+            entry["first_sequence"] = min(entry["first_sequence"], frame.sequence)
+            entry["last_sequence"] = max(entry["last_sequence"], frame.sequence)
+            entry["count"] += 1
+        observed = detected_at or self.now()
+        return {
+            "reason": reason,
+            "dropped_frames": len(packet_list),
+            "unparsed_frames": unparsed,
+            "devices": [device_ranges[key] for key in sorted(device_ranges)],
+            "first_detected_at": observed.isoformat(),
+            "last_detected_at": observed.isoformat(),
+        }
+    @staticmethod
+    def _merge_delivery_failure(first, second):
+        device_ranges = {}
+        for item in [*first["devices"], *second["devices"]]:
+            if item["device_id"] not in device_ranges:
+                device_ranges[item["device_id"]] = dict(item)
+                continue
+            entry = device_ranges[item["device_id"]]
+            entry["first_sequence"] = min(entry["first_sequence"], item["first_sequence"])
+            entry["last_sequence"] = max(entry["last_sequence"], item["last_sequence"])
+            entry["count"] += item["count"]
+        return {
+            "reason": "+".join(sorted(set(first["reason"].split("+") + second["reason"].split("+")))),
+            "dropped_frames": first["dropped_frames"] + second["dropped_frames"],
+            "unparsed_frames": first["unparsed_frames"] + second["unparsed_frames"],
+            "devices": [device_ranges[key] for key in sorted(device_ranges)],
+            "first_detected_at": first["first_detected_at"],
+            "last_detected_at": second["last_detected_at"],
+        }
+    def _queue_delivery_failure(self, notice):
+        if notice["dropped_frames"] < 1:
+            return
+        if len(self._delivery_failures) >= self._queue_size:
+            notice = self._merge_delivery_failure(self._delivery_failures.popleft(), notice)
+        self._delivery_failures.append(notice)
     def _publish_frames(self, packets):
         batch = list(packets)
         if not batch: return
@@ -220,10 +282,13 @@ class SimulatorRegistry:
                 with self._queue_lock: self._delivered += len(batch)
                 return
         with self._queue_lock:
+            dropped = []
             for packet in batch:
                 if len(self._queue) == self._queue_size:
-                    self._queue.popleft(); self._dropped += 1
+                    dropped.append(self._queue.popleft()); self._dropped += 1
                 self._queue.append(packet)
+            if dropped:
+                self._queue_delivery_failure(self.summarize_delivery_failure(dropped, "fallback_overflow"))
     def start(self):
         with self._lock:
             if self._thread and self._thread.is_alive(): return

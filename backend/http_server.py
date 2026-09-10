@@ -346,11 +346,15 @@ class PlatformHTTPServer(ThreadingHTTPServer):
             raise
         return super().serve_forever(*args, **kwargs)
     def server_close(self):
-        simulator = getattr(self, "simulator", None)
-        if simulator: simulator.stop()
-        acquisition_worker = getattr(self, "acquisition_worker", None)
-        if acquisition_worker: acquisition_worker.stop()
-        return super().server_close()
+        try:
+            simulator = getattr(self, "simulator", None)
+            if simulator: simulator.stop()
+            acquisition_worker = getattr(self, "acquisition_worker", None)
+            if acquisition_worker: acquisition_worker.stop()
+        finally:
+            # The listening socket must close even if a lifecycle component
+            # reports that it could not meet its shutdown bound.
+            super().server_close()
 
 
 def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServer:

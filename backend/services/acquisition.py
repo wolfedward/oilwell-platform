@@ -142,12 +142,12 @@ class AcquisitionService:
             (device_id, start_sequence, end_sequence),
         )
         event_ids = tuple(row["id"] for row in rows)
-        requested_sequences = sorted({
-            sequence
-            for row in rows
-            for sequence in json.loads(row["missing_sequences"] or "[]")
-            if start_sequence <= sequence <= end_sequence
-        })
+        sequence_events = {}
+        for row in rows:
+            for sequence in json.loads(row["missing_sequences"] or "[]"):
+                if start_sequence <= sequence <= end_sequence:
+                    sequence_events.setdefault(sequence, row["id"])
+        requested_sequences = sorted(sequence_events)
         if not requested_sequences:
             repaired = self.database.scalar(
                 """SELECT 1 FROM data_quality_events WHERE device_id=? AND kind='sequence_gap'
@@ -166,7 +166,7 @@ class AcquisitionService:
             if raw is None:
                 unavailable.append(sequence)
                 continue
-            result = self.ingest(raw, replay_event_id=event_ids[0] if event_ids else None)
+            result = self.ingest(raw, replay_event_id=sequence_events[sequence])
             if result.accepted:
                 restored += 1
         remaining = self.database.scalar(
@@ -215,7 +215,7 @@ class AcquisitionService:
 
     def list_quality(self, filters):
         clauses, values = ["source_type IN ('simulator','virtual_device')"], []
-        for key, column in (("device_id", "device_id"), ("status", "status"), ("kind", "kind")):
+        for key, column in (("device_id", "device_id"), ("status", "status"), ("kind", "COALESCE(kind,event_type)")):
             if filters.get(key):
                 clauses.append(f"{column}=?")
                 values.append(filters[key])
@@ -256,6 +256,30 @@ class AcquisitionService:
                 pass
             result = self.replay(row["device_id"], row["missing_from"], row["missing_to"])
             return result
+
+    def record_delivery_failure(self, notice: dict) -> int:
+        """Persist a bounded simulator/worker handoff-loss summary."""
+        if (
+            not isinstance(notice, dict)
+            or not isinstance(notice.get("dropped_frames"), int)
+            or isinstance(notice.get("dropped_frames"), bool)
+            or notice["dropped_frames"] < 1
+            or not isinstance(notice.get("devices"), list)
+        ):
+            raise AcquisitionValidationError("delivery failure notice is invalid")
+        devices = notice["devices"]
+        device_id = devices[0].get("device_id") if len(devices) == 1 and isinstance(devices[0], dict) else None
+        device = self.database.query_one("SELECT id,well_id FROM devices WHERE id=?", (device_id,)) if device_id else None
+        well_id = device["well_id"] if device else None
+        validated_device_id = device["id"] if device else None
+        details = json.dumps(notice, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self.database.transaction(
+            None, "acquisition.delivery_failure", "acquisition_worker", None,
+            source_type="virtual_device", details_json=details,
+        ) as conn:
+            return self._quality(
+                conn, "delivery_failure", well_id, validated_device_id, None, notice,
+            )
 
     @staticmethod
     def _message(row, *, include_raw):
@@ -317,6 +341,31 @@ class AcquisitionService:
 
             cursor = conn.execute("SELECT last_sequence FROM acquisition_cursors WHERE device_id=?", (frame.device_id,)).fetchone()
             last_sequence = cursor["last_sequence"] if cursor else None
+            if last_sequence is not None and frame.sequence <= last_sequence:
+                gap_rows = conn.execute(
+                    "SELECT missing_sequences FROM data_quality_events "
+                    "WHERE device_id=? AND kind='sequence_gap' AND status='open' "
+                    "AND missing_from<=? AND missing_to>=?",
+                    (frame.device_id, frame.sequence, frame.sequence),
+                ).fetchall()
+                is_known_missing = any(
+                    frame.sequence in json.loads(row["missing_sequences"] or "[]")
+                    for row in gap_rows
+                )
+                if not is_known_missing:
+                    message = "sequence is behind the durable cursor and is not an open gap"
+                    conn.execute(
+                        "UPDATE raw_messages SET status='rejected',rejection_code='stale_sequence',rejection_detail=? WHERE id=?",
+                        (message, raw_id),
+                    )
+                    quality_ids.append(self._quality(
+                        conn, "stale_sequence", device["well_id"], frame.device_id, raw_id,
+                        {"sequence": str(frame.sequence), "last_sequence": last_sequence},
+                    ))
+                    return IngestResult(
+                        False, "rejected", raw_id, frame.device_id, frame.sequence, kind,
+                        tuple(quality_ids), "stale_sequence",
+                    )
             if last_sequence is not None and frame.sequence > last_sequence + 1:
                 gap_size = frame.sequence - last_sequence - 1
                 if gap_size > MAX_GAP_SPAN:
@@ -337,8 +386,8 @@ class AcquisitionService:
 
             if kind == "heartbeat":
                 conn.execute(
-                    "INSERT INTO device_heartbeats(device_id, reported_at, status, source_type) VALUES(?, ?, ?, 'virtual_device')",
-                    (frame.device_id, frame.timestamp.isoformat(), frame.payload["status"]),
+                    "INSERT INTO device_heartbeats(device_id,raw_message_id,reported_at,status,source_type) VALUES(?,?,?,?,'virtual_device')",
+                    (frame.device_id, raw_id, frame.timestamp.isoformat(), frame.payload["status"]),
                 )
             elif kind == "telemetry":
                 for metric, value in frame.payload["telemetry"].items():
@@ -509,7 +558,11 @@ class AcquisitionWorker:
         self._stop.set()
         thread = self._thread
         if thread and thread is not threading.current_thread():
-            thread.join(timeout=10)
+            # Database work is bounded by SQLite's five-second busy timeout.
+            # Allow one in-flight frame and its failure audit to finish, while
+            # the worker abandons the rest of a slow batch with a durable
+            # delivery-failure summary between frames.
+            thread.join(timeout=15)
             if thread.is_alive():
                 raise RuntimeError("acquisition worker did not stop")
 
@@ -518,7 +571,11 @@ class AcquisitionWorker:
 
     def stats(self):
         with self._stats_lock:
-            return dict(self._stats)
+            return {
+                **self._stats,
+                "mailbox_queued": self.mailbox.qsize(),
+                "mailbox_capacity": self.mailbox.maxsize,
+            }
 
     def _run(self):
         while True:
@@ -528,18 +585,33 @@ class AcquisitionWorker:
             except queue.Empty:
                 pass
             if batch:
-                self._process_batch(batch)
-                self.mailbox.task_done()
+                try:
+                    self._process_batch(batch)
+                finally:
+                    self.mailbox.task_done()
             fallback = self.registry.drain_frames()
             if fallback:
                 self._process_batch(fallback)
-            if self._stop.is_set() and self.mailbox.empty() and not self.registry.frame_stats()["queued"]:
+            for notice in self.registry.drain_delivery_failures():
+                self._record_delivery_notice(notice)
+            registry_stats = self.registry.frame_stats()
+            if (
+                self._stop.is_set() and self.mailbox.empty()
+                and not registry_stats["queued"]
+                and not registry_stats["delivery_failures_pending"]
+            ):
                 return
 
     def _process_batch(self, batch):
         with self._stats_lock:
             self._stats["batches"] += 1
-        for raw in batch:
+        for index, raw in enumerate(batch):
+            if self._stop.is_set():
+                notice = self.registry.summarize_delivery_failure(
+                    batch[index:], "worker_shutdown",
+                )
+                self._record_delivery_notice(notice)
+                return
             try:
                 result = self.service.ingest(raw)
             except Exception as error:
@@ -549,6 +621,14 @@ class AcquisitionWorker:
                 continue
             with self._stats_lock:
                 self._stats["accepted" if result.accepted else "rejected"] += 1
+
+    def _record_delivery_notice(self, notice):
+        try:
+            self.service.record_delivery_failure(notice)
+        except Exception as error:
+            with self._stats_lock:
+                self._stats["failed"] += 1
+            self._record_failure(error)
 
     def _record_failure(self, error):
         try:

@@ -12,7 +12,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from backend.database import Database
-from backend.protocol import encode_frame
+from backend.protocol import decode_frame, encode_frame
 from backend.seed import seed_database
 from backend.services.acquisition import AcquisitionService, AcquisitionWorker
 from backend.simulator import SimulatorRegistry
@@ -73,6 +73,7 @@ class AcquisitionMigrationTests(unittest.TestCase):
             self.assertIn("sequence_text", {row[1] for row in database.query_all("PRAGMA table_info(raw_messages)")})
             self.assertIn("kind", {row[1] for row in database.query_all("PRAGMA table_info(data_quality_events)")})
             self.assertIn("raw_message_id", {row[1] for row in database.query_all("PRAGMA table_info(telemetry)")})
+            self.assertIn("raw_message_id", {row[1] for row in database.query_all("PRAGMA table_info(device_heartbeats)")})
             indexes = set(database.column("SELECT name FROM sqlite_master WHERE type='index'"))
             self.assertIn("raw_messages_device_sequence_idx", indexes)
 
@@ -176,6 +177,16 @@ class AcquisitionServiceTests(unittest.TestCase):
         self.assertEqual((event["status"], event["missing_sequences"]), ("repaired", "[]"))
         self.assertEqual(self.database.scalar("SELECT last_sequence FROM acquisition_cursors WHERE device_id='D-001'"), 22)
 
+    def test_non_gap_sequence_behind_cursor_is_rejected_as_stale(self):
+        self.service.ingest(self.frame(20))
+        result = self.service.ingest(self.frame(19))
+
+        self.assertEqual((result.accepted, result.status, result.error_code), (False, "rejected", "stale_sequence"))
+        raw = self.database.query_one("SELECT status,rejection_code FROM raw_messages WHERE id=?", (result.raw_message_id,))
+        self.assertEqual((raw["status"], raw["rejection_code"]), ("rejected", "stale_sequence"))
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM telemetry WHERE raw_message_id=?", (result.raw_message_id,)), 0)
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM data_quality_events WHERE raw_message_id=? AND kind='stale_sequence'", (result.raw_message_id,)), 1)
+
     def test_unknown_device_u64_overflow_and_outlier_are_typed_rejections(self):
         cases = (
             (self.frame(40, device_id="D-UNKNOWN"), "unknown_device"),
@@ -213,6 +224,25 @@ class AcquisitionServiceTests(unittest.TestCase):
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM raw_messages WHERE device_id='D-001' AND sequence_text='2'"), 1)
         self.assertEqual(self.database.scalar("SELECT status FROM data_quality_events WHERE id=?", (gap["id"],)), "repaired")
 
+    def test_replay_across_two_gaps_links_each_raw_to_its_matching_event(self):
+        terminal = self.registry.get("D-001")
+        archived = [*terminal.tick(NOW), *terminal.tick(NOW + timedelta(minutes=1))]
+        raw_by_sequence = {decode_frame(raw).sequence: raw for raw in archived}
+        for sequence in (1, 3, 4, 6):
+            self.service.ingest(raw_by_sequence[sequence])
+        gaps = self.database.query_all("SELECT id,missing_from FROM data_quality_events WHERE kind='sequence_gap' ORDER BY id")
+        self.assertEqual([row["missing_from"] for row in gaps], [2, 5])
+
+        replay = self.service.replay("D-001", 2, 5)
+        self.assertEqual((replay.restored, replay.status), (2, "repaired"))
+        links = self.database.query_all(
+            "SELECT sequence_number,replay_event_id FROM raw_messages WHERE status='replayed' ORDER BY sequence_number"
+        )
+        self.assertEqual(
+            [(row["sequence_number"], row["replay_event_id"]) for row in links],
+            [(2, gaps[0]["id"]), (5, gaps[1]["id"])],
+        )
+
     def test_replay_reports_unavailable_terminal_history_and_leaves_gap_open(self):
         self.service.ingest(self.frame(60))
         self.service.ingest(self.frame(62))
@@ -226,6 +256,12 @@ class AcquisitionServiceTests(unittest.TestCase):
         self.assertEqual([result.kind for result in results], ["heartbeat", "telemetry", "electric_card"])
         self.assertTrue(all(result.accepted for result in results))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM device_heartbeats WHERE source_type='virtual_device'"), 1)
+        heartbeat = self.database.query_one("SELECT raw_message_id FROM device_heartbeats WHERE source_type='virtual_device'")
+        self.assertIsNotNone(heartbeat["raw_message_id"])
+        self.assertEqual(
+            self.database.scalar("SELECT frame_kind FROM raw_messages WHERE id=?", (heartbeat["raw_message_id"],)),
+            "heartbeat",
+        )
         electric = self.database.query_one("SELECT * FROM raw_messages WHERE frame_kind='electric_card' AND source_type='virtual_device'")
         self.assertIsNotNone(electric["raw_frame"])
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM telemetry WHERE raw_message_id=?", (electric["id"],)), 0)
@@ -286,6 +322,13 @@ class AcquisitionServiceTests(unittest.TestCase):
         self.assertEqual(self.database.scalar("SELECT status FROM data_quality_events WHERE id=?", (event["id"],)), "open")
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM raw_messages WHERE source_type='virtual_device' AND sequence_text='2'"), 0)
 
+    def test_legacy_quality_kind_filter_uses_event_type_fallback(self):
+        result = self.service.list_quality({
+            "kind": "completeness_check", "status": "", "device_id": "", "page": 1, "page_size": 100,
+        })
+        self.assertEqual(result["total"], 48)
+        self.assertTrue(all(item["kind"] == "completeness_check" for item in result["items"]))
+
 
 class AcquisitionWorkerTests(unittest.TestCase):
     def setUp(self):
@@ -327,6 +370,44 @@ class AcquisitionWorkerTests(unittest.TestCase):
         self.assertEqual(worker.stats()["accepted"], 143)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM system_events WHERE event_type='acquisition_worker_error'"), 1)
         self.assertFalse(worker.is_alive())
+
+    def test_worker_stop_interrupts_remaining_slow_batch_and_records_delivery_failure(self):
+        original = self.service.ingest
+        started = threading.Event()
+        def slow(raw):
+            started.set(); time.sleep(.1); return original(raw)
+        self.service.ingest = slow
+        worker = AcquisitionWorker(self.service, self.registry, mailbox_size=2, poll_seconds=.01)
+        raw = encode_frame("D-001", 500, telemetry_payload(), timestamp=NOW)
+        worker.start(); worker.mailbox.put(tuple(raw for _ in range(20)))
+        self.assertTrue(started.wait(1))
+        before = time.monotonic(); worker.stop(); elapsed = time.monotonic() - before
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertGreaterEqual(
+            self.database.scalar("SELECT COUNT(*) FROM data_quality_events WHERE kind='delivery_failure'"), 1
+        )
+
+    def test_fallback_overflow_creates_queryable_delivery_failure_and_mailbox_stats(self):
+        registry = SimulatorRegistry(self.database, cadence_seconds=.05, queue_size=1, clock=lambda: NOW)
+        service = AcquisitionService(self.database, registry, clock=lambda: NOW + timedelta(minutes=1))
+        registry.run_once(NOW)
+        registry.run_once(NOW + timedelta(minutes=1))
+        self.assertGreater(registry.frame_stats()["dropped"], 0)
+        worker = AcquisitionWorker(service, registry, mailbox_size=2, poll_seconds=.01)
+        worker.start()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.database.scalar("SELECT COUNT(*) FROM data_quality_events WHERE kind='delivery_failure'") == 0:
+            time.sleep(.02)
+        stats = worker.stats()
+        worker.stop()
+        event = self.database.query_one("SELECT detail FROM data_quality_events WHERE kind='delivery_failure' ORDER BY id DESC")
+        self.assertIsNotNone(event)
+        detail = json.loads(event["detail"])
+        self.assertGreater(detail["dropped_frames"], 0)
+        self.assertIn("devices", detail)
+        self.assertEqual(stats["mailbox_capacity"], 2)
+        self.assertIn("mailbox_queued", stats)
 
 
 class AcquisitionHttpTests(unittest.TestCase):
@@ -373,6 +454,8 @@ class AcquisitionHttpTests(unittest.TestCase):
         self.assertTrue(detail["data"]["raw_frame_base64"])
         status, _ = self._request("GET", "/api/acquisition/messages?unexpected=1", self.admin)
         self.assertEqual(status, 422)
+        status, _ = self._request("GET", f"/api/acquisition/messages/{message_id}?unexpected=1", self.admin)
+        self.assertEqual(status, 422)
 
     def test_reviewer_can_read_but_cannot_repair_and_admin_body_is_exact(self):
         now = self.server.acquisition.now()
@@ -383,6 +466,7 @@ class AcquisitionHttpTests(unittest.TestCase):
         self.assertEqual(self._request("POST", path, self.reviewer, {"version": event["version"]})[0], 403)
         self.assertEqual(self._request("POST", path, self.admin, {"version": event["version"], "extra": True})[0], 422)
         self.assertEqual(self._request("POST", path, self.admin, {"version": event["version"] + 1})[0], 409)
+        self.assertEqual(self._request("POST", path + "?unexpected=1", self.admin, {"version": event["version"]})[0], 422)
         status, payload = self._request("POST", path, self.admin, {"version": event["version"]})
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["status"], "incomplete")

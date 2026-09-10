@@ -110,6 +110,7 @@ class Database:
                 ("frame_kind", "TEXT"), ("rejection_code", "TEXT"),
                 ("rejection_detail", "TEXT"), ("replay_event_id", "INTEGER"),
             ),
+            "device_heartbeats": (("raw_message_id", "INTEGER"),),
             "telemetry": (("raw_message_id", "INTEGER"),),
             "data_quality_events": (
                 ("device_id", "TEXT"), ("raw_message_id", "INTEGER"),
@@ -131,6 +132,7 @@ class Database:
         connection.execute("CREATE INDEX IF NOT EXISTS raw_messages_device_sequence_idx ON raw_messages(device_id, sequence_text, status)")
         connection.execute("CREATE INDEX IF NOT EXISTS data_quality_live_status_idx ON data_quality_events(source_type, device_id, kind, status, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS telemetry_raw_message_idx ON telemetry(raw_message_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS device_heartbeats_raw_message_idx ON device_heartbeats(raw_message_id)")
 
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
