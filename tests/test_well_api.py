@@ -92,6 +92,14 @@ class WellApiTests(unittest.TestCase):
         response, invalid = self.request("GET", "/api/wells?page=0", token=token)
         self.assertEqual((response.status, invalid["error"]["code"]), (422, "validation_error"))
 
+    def test_well_list_rejects_astronomical_page_before_sql_offset(self):
+        """A page beyond the SQL signed-integer domain must remain a JSON client error."""
+        token = self.login()
+        response, payload = self.request(
+            "GET", "/api/wells?page=9223372036854775807&page_size=100", token=token,
+        )
+        self.assertEqual((response.status, payload["error"]["code"]), (422, "validation_error"))
+
     def test_well_detail_links_only_its_business_objects_and_empty_chain_is_null(self):
         token = self.login()
         response, payload = self.request("GET", "/api/wells/W-001", token=token)
@@ -129,6 +137,61 @@ class WellApiTests(unittest.TestCase):
         ):
             response, invalid = self.request("GET", path, token=token)
             self.assertEqual((response.status, invalid["error"]["code"]), (422, "validation_error"))
+
+    def test_daily_energy_is_only_integrated_for_registered_power_metrics(self):
+        """A temperature sample is not energy merely because it shares a daily bucket."""
+        with self.server.database.transaction(1, "test.temperature", "telemetry", "W-001") as connection:
+            connection.execute(
+                """INSERT INTO telemetry(well_id, device_id, channel_id, measured_at, metric_code, value, unit, source_type)
+                   SELECT ?, d.id, c.id, ?, 'temperature_c', 35.0, 'C', 'manual'
+                   FROM devices d JOIN device_channels c ON c.device_id=d.id WHERE d.well_id=? LIMIT 1""",
+                ("W-001", "2026-06-15T12:00:00+08:00", "W-001"),
+            )
+        token = self.login()
+        response, payload = self.request(
+            "GET", "/api/wells/W-001/telemetry?from=2026-06-15T00:00:00%2B08:00&to=2026-06-16T00:00:00%2B08:00&interval=1d",
+            token=token,
+        )
+        self.assertEqual(response.status, 200)
+        temperature = next(item for item in payload["data"]["items"] if item["metric"] == "temperature_c")
+        self.assertNotIn("energy_kwh", temperature)
+
+    def test_daily_power_energy_uses_irregular_sample_durations(self):
+        """Replacing duration integration with value*count changes this 7.0 kWh result."""
+        rows = (
+            ("2026-06-15T00:00:00+08:00", 2.0),
+            ("2026-06-15T00:30:00+08:00", 4.0),
+            ("2026-06-15T02:00:00+08:00", 5.0),
+        )
+        with self.server.database.transaction(1, "test.irregular_power", "telemetry", "W-001") as connection:
+            for measured_at, value in rows:
+                connection.execute(
+                    """INSERT INTO telemetry(well_id, device_id, channel_id, measured_at, metric_code, value, unit, source_type)
+                       SELECT ?, d.id, c.id, ?, 'active_power', ?, 'kW', 'manual'
+                       FROM devices d JOIN device_channels c ON c.device_id=d.id WHERE d.well_id=? LIMIT 1""",
+                    ("W-001", measured_at, value, "W-001"),
+                )
+        token = self.login()
+        response, payload = self.request(
+            "GET", "/api/wells/W-001/telemetry?from=2026-06-15T00:00:00%2B08:00&to=2026-06-15T03:00:00%2B08:00&interval=1d",
+            token=token,
+        )
+        self.assertEqual(response.status, 200)
+        active_power = next(item for item in payload["data"]["items"] if item["metric"] == "active_power")
+        self.assertAlmostEqual(active_power["energy_kwh"], 7.0, places=6)
+
+    def test_well_routes_require_exact_path_segments(self):
+        """Treating nested route suffixes as a well ID hides malformed API requests."""
+        token = self.login()
+        for method, path in (
+            ("GET", "/api/wells/W-001/status"),
+            ("GET", "/api/wells/W-001/telemetry/extra"),
+            ("GET", "/api/wells/W-001/extra/telemetry"),
+            ("PATCH", "/api/wells/W-001/extra/status"),
+        ):
+            with self.subTest(method=method, path=path):
+                response, payload = self.request(method, path, {"status": "stopped", "reason": "检修", "version": 1} if method == "PATCH" else None, token)
+                self.assertEqual((response.status, payload["error"]["code"]), (404, "not_found"))
 
     def test_status_write_is_audited_versioned_permissioned_and_survives_restart(self):
         # Simulate the exact Task 4 manifest projection that included

@@ -18,6 +18,10 @@ ALLOWED_INTERVALS = {"raw", "15m", "1h", "1d"}
 ALLOWED_WELL_STATUSES = {"active", "running", "intermittent", "stopped", "maintenance", "offline"}
 MAX_RANGE = timedelta(days=31)
 MAX_POINTS = {"raw": 2000, "15m": 3000, "1h": 1000, "1d": 100}
+# This registry is intentionally semantic rather than unit-only: a metric
+# becomes eligible for energy integration only after acquisition registers it
+# as active power.  Future metadata may replace this small local registry.
+POWER_METRIC_REGISTRY = {"power_kw": "active_power", "active_power": "active_power"}
 
 
 class WellValidationError(ValueError):
@@ -175,6 +179,48 @@ class WellsService:
     def _iso_utc(value: datetime) -> str:
         return value.isoformat(timespec="seconds")
 
+    @staticmethod
+    def _local_day_bucket(value: datetime) -> tuple[str, datetime]:
+        local = value.astimezone(SHANGHAI_TIMEZONE)
+        bucket_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        return bucket_start.isoformat(), bucket_start.astimezone(UTC)
+
+    def _daily_power_energy(self, well_id: str, start: datetime, end: datetime) -> dict[tuple[str, str], float]:
+        """Integrate registered kW samples as left-held values until next sample.
+
+        The final sample has no observable coverage and therefore contributes no
+        energy; this avoids inventing a cadence for irregular or future
+        high-frequency feeds.  A sample's interval is split at Shanghai day
+        boundaries, allowing one power reading to cover adjacent buckets.
+        """
+        metric_codes = tuple(POWER_METRIC_REGISTRY)
+        placeholders = ", ".join("?" for _ in metric_codes)
+        rows = self.database.query_all(
+            "SELECT metric_code, measured_at, value FROM telemetry "
+            "WHERE well_id=? AND metric_code IN (" + placeholders + ") "
+            "AND datetime(measured_at) >= datetime(?) AND datetime(measured_at) <= datetime(?) "
+            "ORDER BY metric_code, measured_at, id",
+            (well_id, *metric_codes, self._iso_utc(start), self._iso_utc(end)),
+        )
+        by_metric: dict[str, list] = {}
+        for row in rows:
+            by_metric.setdefault(row["metric_code"], []).append(row)
+        energy: dict[tuple[str, str], float] = {}
+        for metric, points in by_metric.items():
+            for current, following in zip(points, points[1:]):
+                interval_start = max(self._parse_time(current["measured_at"], "stored timestamp"), start)
+                interval_end = min(self._parse_time(following["measured_at"], "stored timestamp"), end)
+                while interval_start < interval_end:
+                    bucket, local_bucket_start = self._local_day_bucket(interval_start)
+                    next_bucket = local_bucket_start + timedelta(days=1)
+                    segment_end = min(interval_end, next_bucket)
+                    key = (metric, bucket)
+                    energy[key] = energy.get(key, 0.0) + float(current["value"]) * (
+                        (segment_end - interval_start).total_seconds() / 3600
+                    )
+                    interval_start = segment_end
+        return energy
+
     def telemetry(self, well_id: str, from_value: str | None, to_value: str | None, interval: str) -> dict:
         if interval not in ALLOWED_INTERVALS:
             raise WellValidationError("interval must be raw, 15m, 1h, or 1d")
@@ -208,8 +254,10 @@ class WellsService:
             raise WellValidationError("requested range produces too many points")
         items = [_row(r) for r in rows]
         if interval == "1d":
+            energy_by_bucket = self._daily_power_energy(well_id, start, end)
             for item in items:
-                item["energy_kwh"] = item["value"] * item["count"]
+                if item["metric"] in POWER_METRIC_REGISTRY:
+                    item["energy_kwh"] = energy_by_bucket.get((item["metric"], item["bucket"]), 0.0)
         return {"interval": interval, "timezone": "Asia/Shanghai (+08:00); bucket starts use local calendar boundaries", "range": {"from": start.astimezone(SHANGHAI_TIMEZONE).isoformat(), "to": end.astimezone(SHANGHAI_TIMEZONE).isoformat()}, "items": items}
 
     def update_status(self, actor_id: int, well_id: str, status, reason, version) -> dict:
