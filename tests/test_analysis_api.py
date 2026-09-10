@@ -212,11 +212,23 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(self.database.scalar("SELECT latest_model_run_id FROM dynagraphs WHERE id=?", (dynagraph["id"],)), second["model_run"]["id"])
         self.assertEqual(self.database.scalar("SELECT payload FROM raw_messages WHERE id=?", (dynagraph["raw_message_id"],)), dynagraph["sample_data"])
 
+    def test_abnormal_analysis_automatically_creates_a_traceable_alarm(self):
+        dynagraph = self.ingest_card("supply_shortage")
+        analyzed = self.service.run(dynagraph["id"], self.actor_id)
+        alarm = analyzed["alarm"]
+        self.assertIsNotNone(alarm)
+        self.assertEqual(alarm["diagnosis_id"], analyzed["diagnosis"]["id"])
+        self.assertEqual(alarm["source_object_type"], "diagnosis")
+        self.assertEqual(alarm["source_object_id"], analyzed["diagnosis"]["id"])
+        self.assertEqual(alarm["status"], "new")
+        self.assertEqual(alarm["details"]["model_run_id"], analyzed["model_run"]["id"])
+        self.assertIsNone(self.service.run(self.ingest_card("normal", sequence=101)["id"], self.actor_id)["alarm"])
+
     def test_analysis_audit_failure_rolls_back_every_output(self):
         dynagraph = self.ingest_card()
         before = {
             table: self.database.scalar(f"SELECT COUNT(*) FROM {table}")
-            for table in ("model_runs", "diagnoses", "production_estimates", "dynagraph_features")
+            for table in ("model_runs", "diagnoses", "production_estimates", "dynagraph_features", "alarms")
         }
         self.service.audit.record = Mock(side_effect=RuntimeError("audit unavailable"))
         with self.assertRaisesRegex(RuntimeError, "audit unavailable"):

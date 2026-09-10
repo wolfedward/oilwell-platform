@@ -280,6 +280,23 @@ class SeedDatabaseTests(unittest.TestCase):
             self.database.execute("UPDATE wells SET name='tampered' WHERE id='W-001'")
         self.assertNotEqual(_content_hash(self.database, 202606, ""), before)
 
+    def test_workflow_projection_allows_lifecycle_but_rejects_identity_tampering(self):
+        seed_database(self.database)
+        before = _content_hash(self.database, 202606, "")
+        with self.database.transaction(1, "test.workflow_lifecycle", "work_order", "WO-001") as connection:
+            connection.execute(
+                "UPDATE work_orders SET status='overdue',overdue_from_status=status WHERE id='WO-001'"
+            )
+            connection.execute("UPDATE alarms SET status='escalated' WHERE id='AL-001'")
+        self.assertEqual(_content_hash(self.database, 202606, ""), before)
+        seed_database(self.database)
+
+        with self.database.transaction(1, "test.workflow_identity", "work_order", "WO-001") as connection:
+            connection.execute("UPDATE work_orders SET title='tampered' WHERE id='WO-001'")
+        self.assertNotEqual(_content_hash(self.database, 202606, ""), before)
+        with self.assertRaisesRegex(RuntimeError, "content fingerprint"):
+            seed_database(self.database)
+
     def test_future_device_config_projection_inherits_lifecycle_exclusions(self):
         """A future device-config projection must not silently reintroduce lifecycle fields."""
         seed_database(self.database)

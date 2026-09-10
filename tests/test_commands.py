@@ -133,6 +133,14 @@ class CommandServiceTests(unittest.TestCase):
         alarm = self.database.query_one("SELECT * FROM alarms WHERE command_id=?", (command["id"],))
         self.assertEqual((alarm["strategy_id"], alarm["alarm_type"], alarm["status"]),
                          (strategy["id"], "command_delivery_failed", "new"))
+        self.assertEqual(
+            (alarm["source_object_type"], alarm["source_object_id"]),
+            ("command", command["id"]),
+        )
+        self.assertEqual(self.database.scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='alarm.create' AND object_id=?",
+            (alarm["id"],),
+        ), 1)
         self.commands.process(NOW + timedelta(minutes=3))
         self.assertEqual(self.database.scalar(
             "SELECT COUNT(*) FROM alarms WHERE command_id=?", (command["id"],)

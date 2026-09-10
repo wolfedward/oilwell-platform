@@ -17,6 +17,10 @@ from backend.services.strategies import (
     StrategyNotFound, StrategyService, StrategyValidationError,
     StrategyVersionConflict,
 )
+from backend.services.workflows import (
+    WorkflowNotFound, WorkflowService, WorkflowValidationError,
+    WorkflowVersionConflict,
+)
 from backend.state_machine import InvalidState
 
 
@@ -541,6 +545,176 @@ class CommandApi:
         if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
             raise CommandValidationError("page offset is out of range")
         return page, page_size
+
+
+class WorkflowApi:
+    """Alarm confirmation, assignment, maintenance and trace routes."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.service = WorkflowService(handler.server.database, handler.server.audit)
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        path = parsed.path
+        try:
+            if path == "/api/alarms":
+                if self.handler._require("workflow.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query, {"well_id", "status", "severity", "page", "page_size"},
+                )
+                return self._ok(self.service.list_alarms(self._page(query)))
+            alarm_id = self._match(path, "alarms")
+            if alarm_id is not None:
+                if self.handler._require("workflow.read") is None:
+                    return True
+                if parsed.query:
+                    raise WorkflowValidationError("alarm detail does not accept query parameters")
+                return self._ok(self.service.get_alarm(alarm_id))
+            if path == "/api/work-orders":
+                if self.handler._require("workflow.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query, {"well_id", "status", "assignee_id", "page", "page_size"},
+                )
+                return self._ok(self.service.list_work_orders(self._page(query)))
+            trace_id = self._match(path, "work-orders", "trace")
+            if trace_id is not None:
+                if self.handler._require("workflow.read") is None:
+                    return True
+                if parsed.query:
+                    raise WorkflowValidationError("workflow trace does not accept query parameters")
+                return self._ok(self.service.trace(trace_id))
+            order_id = self._match(path, "work-orders")
+            if order_id is not None:
+                if self.handler._require("workflow.read") is None:
+                    return True
+                if parsed.query:
+                    raise WorkflowValidationError("work-order detail does not accept query parameters")
+                return self._ok(self.service.get_work_order(order_id))
+            return False
+        except WorkflowNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Workflow record not found")
+        except (WorkflowValidationError, WellValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def post(self, request_target):
+        parsed = urlsplit(request_target)
+        path = parsed.path
+        route = None
+        resource_id = None
+        if path == "/api/alarms":
+            route = "create_alarm"
+        elif path == "/api/work-orders":
+            route = "create_order"
+        elif path == "/api/work-orders/evaluate-overdue":
+            route = "overdue"
+        else:
+            resource_id = self._match(path, "alarms", "transition")
+            if resource_id is not None:
+                route = "alarm_transition"
+            else:
+                resource_id = self._match(path, "work-orders", "transition")
+                if resource_id is not None:
+                    route = "order_transition"
+        if route is None:
+            return False
+        try:
+            if route == "order_transition":
+                body = self.handler._json_body()
+                if not isinstance(body, dict):
+                    raise WorkflowValidationError("request body must be an object")
+                permission = "diagnosis.review" if body.get("target") == "closed" else "maintenance.manage"
+                actor = self.handler._require(permission)
+            else:
+                permission = "maintenance.manage" if route == "overdue" else "alarms.ack"
+                actor = self.handler._require(permission)
+                if actor is None:
+                    return True
+                body = self.handler._json_body()
+            if actor is None:
+                return True
+            if parsed.query:
+                raise WorkflowValidationError("workflow mutation does not accept query parameters")
+            if not isinstance(body, dict):
+                raise WorkflowValidationError("request body must be an object")
+            if route == "create_alarm":
+                if set(body) != {"source_type", "source_id", "severity", "details"}:
+                    raise WorkflowValidationError(
+                        "alarm body must contain source_type, source_id, severity and details"
+                    )
+                return self._ok(self.service.create_alarm(
+                    body["source_type"], body["source_id"], body["severity"],
+                    body["details"], actor.id,
+                ), HTTPStatus.CREATED)
+            if route == "alarm_transition":
+                if set(body) != {"target", "comment"}:
+                    raise WorkflowValidationError(
+                        "alarm transition body must contain target and comment"
+                    )
+                return self._ok(self.service.transition_alarm(
+                    resource_id, body["target"], actor.id, body["comment"],
+                ))
+            if route == "create_order":
+                if not {"alarm_id", "kind", "assignee_id"}.issubset(body) or set(body) - {
+                    "alarm_id", "kind", "assignee_id", "due_at",
+                }:
+                    raise WorkflowValidationError(
+                        "work-order body must contain alarm_id, kind and assignee_id"
+                    )
+                return self._ok(self.service.create_work_order(
+                    body["alarm_id"], body["kind"], body["assignee_id"], actor.id,
+                    body.get("due_at"),
+                ), HTTPStatus.CREATED)
+            if route == "order_transition":
+                if set(body) != {"target", "comment"}:
+                    raise WorkflowValidationError(
+                        "work-order transition body must contain target and comment"
+                    )
+                return self._ok(self.service.transition_work_order(
+                    resource_id, body["target"], actor.id, body["comment"],
+                ))
+            if set(body):
+                raise WorkflowValidationError("overdue evaluation body must be an empty object")
+            return self._ok(self.service.evaluate_overdue())
+        except WorkflowNotFound:
+            return self._error(HTTPStatus.NOT_FOUND, "not_found", "Workflow record not found")
+        except WorkflowVersionConflict:
+            return self._error(HTTPStatus.CONFLICT, "version_conflict", "Workflow version is stale")
+        except InvalidState as error:
+            return self._error(HTTPStatus.CONFLICT, "invalid_state", error)
+        except (WorkflowValidationError, ValueError) as error:
+            return self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_error", error)
+
+    def _ok(self, data, status=HTTPStatus.OK):
+        self.handler._send_json(status, {"ok": True, "data": data})
+        return True
+
+    def _error(self, status, code, message):
+        self.handler._send_json(status, self.handler._error(code, str(message)))
+        return True
+
+    @staticmethod
+    def _match(path, resource, action=None):
+        suffix = f"/{action}" if action else ""
+        match = re.fullmatch(
+            rf"/api/{resource}/([A-Za-z0-9][A-Za-z0-9_-]{{0,127}}){suffix}", path,
+        )
+        return unquote(match.group(1)) if match else None
+
+    @staticmethod
+    def _page(query):
+        result = dict(query)
+        result["page"] = WellApi._integer(
+            result.get("page", "1"), "page", 1, WellApi.MAX_PAGE,
+        )
+        result["page_size"] = WellApi._integer(
+            result.get("page_size", "20"), "page_size", 1, 100,
+        )
+        if (result["page"] - 1) * result["page_size"] > WellApi.SQLITE_MAX_INTEGER:
+            raise WorkflowValidationError("page offset is out of range")
+        return result
 
 
 class StrategyApi:

@@ -51,13 +51,13 @@ LOCAL_ACCOUNTS = (
     ("reviewer", "复核评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
-    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "acquisition.read", "data_quality.read", "data_quality.repair"),
-    "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
-    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "reports.read", "devices.read", "acquisition.read", "data_quality.read"),
-    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair"),
-    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read"),
+    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "acquisition.read", "data_quality.read", "data_quality.repair", "alarms.ack", "maintenance.manage", "diagnosis.review", "workflow.read"),
+    "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
+    "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
+    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair", "workflow.read"),
+    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
 }
-AUTH_BOOTSTRAP_VERSION = 4
+AUTH_BOOTSTRAP_VERSION = 6
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -223,7 +223,7 @@ def _content_hash(db: Database, seed: int, namespace: str) -> str:
         return _content_hash_from(connection, seed, namespace)
 
 
-def _content_hash_from(connection, seed: int, namespace: str, *, projection: str = "strategy-recovery-v5") -> str:
+def _content_hash_from(connection, seed: int, namespace: str, *, projection: str = "workflow-lifecycle-v6") -> str:
     profiles = _well_profiles(seed, namespace)
     specs = _workflow_specs(profiles)
     well_ids = [profile["well_id"] for profile in profiles]
@@ -241,6 +241,7 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
         "device-config-v4": "|device-config-projection-v4",
         "device-config-v4-legacy": "|device-config-projection-v4",
         "strategy-recovery-v5": "|strategy-recovery-projection-v5",
+        "workflow-lifecycle-v6": "|workflow-lifecycle-projection-v6",
     }
     if projection not in projection_markers and not (
         projection.startswith("device-config-v")
@@ -276,10 +277,10 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
     # must never invalidate a seed manifest.  Keep this capability-based rather
     # than checking only the current projection name so future vN projections
     # cannot accidentally reintroduce those fields.
-    lifecycle_projection = projection in {"well-lifecycle-v3", "strategy-recovery-v5"} or (projection.startswith("device-config-v") and projection != "device-config-v4-legacy")
+    lifecycle_projection = projection in {"well-lifecycle-v3", "strategy-recovery-v5", "workflow-lifecycle-v6"} or (projection.startswith("device-config-v") and projection != "device-config-v4-legacy")
     well_fields = "'id',id,'group',group_id,'code',code,'name',name,'low',is_low_output,'source',source_type" if lifecycle_projection else "'id',id,'group',group_id,'code',code,'name',name,'status',status,'low',is_low_output,'source',source_type"
     rows_for_ids("wells", "wells", "id", well_ids, well_fields)
-    config_projection = projection.startswith("device-config-v") or projection == "strategy-recovery-v5"
+    config_projection = projection.startswith("device-config-v") or projection in {"strategy-recovery-v5", "workflow-lifecycle-v6"}
     device_fields = "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'source',source_type" if config_projection else "'id',id,'well',well_id,'serial',serial_number,'type',device_type,'firmware',firmware_version,'status',status,'source',source_type"
     channel_fields = "'id',id,'device',device_id,'code',channel_code,'name',name,'source',source_type" if config_projection else "'id',id,'device',device_id,'code',channel_code,'name',name,'status',status,'source',source_type"
     rows_for_ids("devices", "devices", "id", device_ids, device_fields)
@@ -293,13 +294,16 @@ def _content_hash_from(connection, seed: int, namespace: str, *, projection: str
     rows_for_ids("features", "dynagraph_features", "dynagraph_id", dynagraph_ids, "'dynagraph',dynagraph_id,'name',feature_name,'value',feature_value,'status',status,'source',source_type")
     rows_for_ids("models", "model_runs", "id", model_ids, "'id',id,'name',model_name,'version',model_version,'input_type',input_object_type,'input',input_object_id,'status',status,'source',source_type")
     rows_for_ids("diagnoses", "diagnoses", "id", diagnosis_ids, "'id',id,'well',well_id,'dynagraph',dynagraph_id,'model',model_run_id,'type',diagnosis_type,'confidence',confidence,'evidence',evidence,'status',status,'source',source_type")
+    workflow_projection = projection == "workflow-lifecycle-v6"
+    alarm_fields = "'id',id,'well',well_id,'diagnosis',diagnosis_id,'type',alarm_type,'severity',severity,'source',source_type" if workflow_projection else "'id',id,'well',well_id,'diagnosis',diagnosis_id,'type',alarm_type,'severity',severity,'status',status,'source',source_type"
+    order_fields = "'id',id,'well',well_id,'alarm',alarm_id,'title',title,'source',source_type" if workflow_projection else "'id',id,'well',well_id,'alarm',alarm_id,'title',title,'status',status,'source',source_type"
     for label, table, identifier, key, fields in (
         ("recovery", "recovery_tests", "id", "recovery_id", "'id',id,'well',well_id,'at',tested_at,'result',result_data,'status',status,'source',source_type"),
         ("strategies", "energy_strategies", "id", "strategy_id", "'id',id,'well',well_id,'name',name,'status',status,'source',source_type"),
         ("versions", "strategy_versions", "id", "version_id", "'id',id,'strategy',strategy_id,'version',version_number,'configuration',configuration,'status',status,'source',source_type"),
-        ("alarms", "alarms", "id", "alarm_id", "'id',id,'well',well_id,'diagnosis',diagnosis_id,'type',alarm_type,'severity',severity,'status',status,'source',source_type"),
+        ("alarms", "alarms", "id", "alarm_id", alarm_fields),
         ("approvals", "approvals", "id", "approval_id", "'id',id,'object_type',object_type,'object',object_id,'decision',decision,'status',status,'source',source_type"),
-        ("orders", "work_orders", "id", "work_order_id", "'id',id,'well',well_id,'alarm',alarm_id,'title',title,'status',status,'source',source_type"),
+        ("orders", "work_orders", "id", "work_order_id", order_fields),
         ("logs", "work_order_logs", "work_order_id", "work_order_id", "'order',work_order_id,'message',message,'status',status,'source',source_type"),
     ):
         rows_for_ids(label, table, identifier, [spec[key] for spec in specs], fields)
@@ -360,6 +364,36 @@ def _strategy_previous_v4_content_hash(db: Database, seed: int, namespace: str) 
         return _content_hash_from(connection, seed, namespace, projection="device-config-v4")
 
 
+def _strategy_previous_v5_content_hash(db: Database, seed: int, namespace: str) -> str:
+    """Exact strategy/recovery projection before workflow lifecycle became mutable."""
+    with db.connection() as connection:
+        return _content_hash_from(connection, seed, namespace, projection="strategy-recovery-v5")
+
+
+def _expected_strategy_v5_content_hash(db: Database, seed: int, namespace: str) -> str:
+    """Verify a v5 manifest after the first overdue-worker transition.
+
+    The worker records the exact prior state in overdue_from_status.  Restore only
+    that state inside a rolled-back savepoint; all immutable values and any other
+    lifecycle edits remain fail-closed.
+    """
+    with db.connection() as connection:
+        connection.execute("SAVEPOINT workflow_lifecycle_v5_probe")
+        try:
+            connection.execute(
+                """UPDATE work_orders SET status=overdue_from_status
+                   WHERE source_type=? AND status='overdue'
+                     AND overdue_from_status IS NOT NULL""",
+                (SIMULATOR,),
+            )
+            return _content_hash_from(
+                connection, seed, namespace, projection="strategy-recovery-v5",
+            )
+        finally:
+            connection.execute("ROLLBACK TO workflow_lifecycle_v5_probe")
+            connection.execute("RELEASE workflow_lifecycle_v5_probe")
+
+
 def _canonical_json(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -409,6 +443,7 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
             _strategy_previous_v4_content_hash(db, requested_seed, manifest["namespace"]),
             _previous_content_hash(db, requested_seed, manifest["namespace"]),
             _legacy_content_hash(db, requested_seed, manifest["namespace"]),
+            _strategy_previous_v5_content_hash(db, requested_seed, manifest["namespace"]),
         }
         if manifest["content_hash"] not in legacy_candidates:
             raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
@@ -428,10 +463,16 @@ def _validate_manifest(db: Database, manifest, requested_seed: int) -> SeedSumma
     strategy_previous_v4_hash = _strategy_previous_v4_content_hash(
         db, requested_seed, manifest["namespace"],
     )
+    strategy_previous_v5_hash = _strategy_previous_v5_content_hash(
+        db, requested_seed, manifest["namespace"],
+    )
+    expected_strategy_v5_hash = _expected_strategy_v5_content_hash(
+        db, requested_seed, manifest["namespace"],
+    )
     legacy_hash = _legacy_content_hash(db, requested_seed, manifest["namespace"])
     if manifest["content_hash"] not in {
         task1_previous_hash, task1_current_v4_hash, strategy_previous_v4_hash,
-        previous_hash, legacy_hash,
+        strategy_previous_v5_hash, expected_strategy_v5_hash, previous_hash, legacy_hash,
     }:
         raise SeedDataIntegrityError("seed dataset incomplete: content fingerprint")
     _upgrade_manifest_hash(db, manifest["content_hash"], projected_hash)
@@ -452,7 +493,7 @@ def _upgrade_manifest_hash(db: Database, expected_hash: str, projected_hash: str
             connection.execute(
                 """INSERT INTO audit_logs(actor_id, action, object_type, object_id, details_json, source_type)
                    VALUES(NULL, 'seed.upgrade_manifest_hash', 'seed_manifest', ?, ?, ?)""",
-                (MANIFEST_NAME, '{"after":{"projection":"strategy-recovery-v5"},"before":{"projection":"verified-legacy"}}', SIMULATOR),
+                (MANIFEST_NAME, '{"after":{"projection":"workflow-lifecycle-v6"},"before":{"projection":"verified-legacy"}}', SIMULATOR),
             )
             return
         current = connection.execute(
@@ -539,7 +580,7 @@ def _enrich_recovery_observations(
                    actor_id,action,object_type,object_id,details_json,source_type
                ) VALUES(NULL,'seed.enrich_recovery_observations','seed_manifest',?,?,?)""",
             (MANIFEST_NAME,
-             '{"after":{"projection":"strategy-recovery-v5"},"before":{"projection":"device-config-v4"}}',
+             '{"after":{"projection":"workflow-lifecycle-v6"},"before":{"projection":"device-config-v4"}}',
              SIMULATOR),
         )
 
@@ -641,7 +682,20 @@ def bootstrap_local_auth(db: Database) -> None:
                 connection.execute(
                     "UPDATE users SET display_name='复核评审' WHERE username='reviewer' AND display_name='只读评审'"
                 )
-            connection.execute("UPDATE auth_bootstrap_state SET bootstrap_version=? WHERE id=1", (AUTH_BOOTSTRAP_VERSION,))
+            if marker["bootstrap_version"] < 5:
+                for permission in ("alarms.ack", "maintenance.manage", "diagnosis.review"):
+                    connection.execute(
+                        """INSERT OR IGNORE INTO role_permissions(
+                               role_id,permission_id,source_type
+                           ) SELECT role.id,permission.id,'system'
+                               FROM roles AS role CROSS JOIN permissions AS permission
+                              WHERE role.code='administrator' AND permission.code=?""",
+                        (permission,),
+                    )
+            connection.execute(
+                "UPDATE auth_bootstrap_state SET bootstrap_version=? WHERE id=1",
+                (AUTH_BOOTSTRAP_VERSION,),
+            )
 
 
 def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:
@@ -984,12 +1038,21 @@ def _insert_analysis_and_operations(connection, profiles: list[dict], seed: int)
             for profile in profiles
         ],
     )
-    _insert_low_output_workflows(connection, [profile for profile in profiles if profile["low_output"]])
     _insert_users_and_report(connection, profiles[0]["namespace"])
+    _insert_low_output_workflows(connection, [profile for profile in profiles if profile["low_output"]])
 
 
 def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
     specs = _workflow_specs(low_profiles)
+    namespace = low_profiles[0]["namespace"] if low_profiles else ""
+    maintenance_id = connection.execute(
+        "SELECT id FROM users WHERE username=?",
+        (_identifier(namespace, "maintenance_engineer"),),
+    ).fetchone()["id"]
+    reviewer_id = connection.execute(
+        "SELECT id FROM users WHERE username=?",
+        (_identifier(namespace, "reviewer"),),
+    ).fetchone()["id"]
     connection.executemany(
         """
         INSERT INTO recovery_tests(id, well_id, tested_at, result_data, status, source_type, created_at, updated_at)
@@ -1061,12 +1124,15 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
     )
     connection.executemany(
         """
-        INSERT INTO alarms(id, well_id, diagnosis_id, alarm_type, severity, status, source_type, created_at, updated_at)
-        VALUES(?, ?, ?, 'supply_shortage', 'warning', ?, ?, ?, ?)
+        INSERT INTO alarms(
+            id,well_id,diagnosis_id,alarm_type,severity,details_json,
+            source_object_type,source_object_id,status,source_type,created_at,updated_at
+        ) VALUES(?,?,?,'supply_shortage','warning','{}','diagnosis',?,?,?,?,?)
         """,
         [
             (spec["alarm_id"], spec["profile"]["well_id"], spec["profile"]["diagnosis_id"],
-             spec["alarm"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+             spec["profile"]["diagnosis_id"], spec["alarm"], SIMULATOR,
+             GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],
     )
@@ -1083,23 +1149,35 @@ def _insert_low_output_workflows(connection, low_profiles: list[dict]) -> None:
     )
     connection.executemany(
         """
-        INSERT INTO work_orders(id, well_id, alarm_id, title, status, source_type, created_at, updated_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO work_orders(
+            id,well_id,alarm_id,title,kind,assignee_id,due_at,accepted_at,
+            completed_at,closed_at,closed_by,status,source_type,created_at,updated_at
+        ) VALUES(?,?,?,?, 'production_adjustment',?,?,?,?,?,?,?,?,?,?)
         """,
         [
             (spec["work_order_id"], spec["profile"]["well_id"], spec["alarm_id"],
-             f"{spec['profile']['name']} 供液不足处置", spec["work_order"],
+             f"{spec['profile']['name']} 供液不足处置", maintenance_id,
+             "2026-07-01T03:00:00.000+08:00",
+             GENERATED_AT if spec["work_order"] in {"processing", "completed", "closed"} else None,
+             GENERATED_AT if spec["work_order"] in {"completed", "closed"} else None,
+             GENERATED_AT if spec["work_order"] == "closed" else None,
+             reviewer_id if spec["work_order"] == "closed" else None,
+             spec["work_order"],
              SIMULATOR, GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],
     )
     connection.executemany(
         """
-        INSERT INTO work_order_logs(work_order_id, message, status, source_type, created_at, updated_at)
-        VALUES(?, '间抽策略处置记录', ?, ?, ?, ?)
+        INSERT INTO work_order_logs(
+            work_order_id,message,from_status,to_status,comment,changed_at,
+            status,source_type,created_at,updated_at
+        ) VALUES(?, '间抽策略处置记录',NULL,?,
+                 '间抽策略处置记录',?,?,?, ?,?)
         """,
         [
-            (spec["work_order_id"], spec["work_order"], SIMULATOR, GENERATED_AT, GENERATED_AT)
+            (spec["work_order_id"], spec["work_order"], GENERATED_AT,
+             spec["work_order"], SIMULATOR, GENERATED_AT, GENERATED_AT)
             for spec in specs
         ],
     )

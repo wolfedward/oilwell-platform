@@ -15,6 +15,7 @@ from backend.algorithms.dynagraph import (
     convert_electric_card,
 )
 from backend.algorithms.production import PumpParams, estimate_liquid
+from backend.services.workflows import WorkflowService
 
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -91,6 +92,7 @@ class AnalysisService:
     def __init__(self, database, audit):
         self.database = database
         self.audit = audit
+        self.workflows = WorkflowService(database, audit)
 
     def run(self, dynagraph_id: str, actor_id: int):
         self._id(dynagraph_id, "dynagraph id")
@@ -159,6 +161,7 @@ class AnalysisService:
         }
         warnings = [*converted.warnings, *production.warnings]
 
+        alarm_data = None
         try:
             with self.database.transaction(
                 actor_id, "analysis.run", "dynagraph", dynagraph_id,
@@ -208,6 +211,21 @@ class AnalysisService:
                         diagnosis.recommendation, actor_id,
                     ),
                 )
+                if diagnosis.condition != "normal":
+                    alarm_data = self.workflows.create_alarm(
+                        "diagnosis", diagnosis_id,
+                        "critical" if diagnosis.condition in {"pump_leak", "empty_pump"} else "warning",
+                        {
+                            "condition": diagnosis.condition,
+                            "confidence": diagnosis.confidence,
+                            "evidence": list(diagnosis.evidence),
+                            "recommendation": diagnosis.recommendation,
+                            "model_run_id": model_run_id,
+                        },
+                        actor_id=actor_id,
+                        connection=conn,
+                        provenance="algorithm",
+                    )
                 cursor = conn.execute(
                     """INSERT INTO production_estimates(
                            well_id,dynagraph_id,model_run_id,theoretical_m3_day,
@@ -260,6 +278,7 @@ class AnalysisService:
                 "status": "completed",
             },
             "diagnosis": diagnosis_data,
+            "alarm": alarm_data,
             "production": production_data,
         }
 

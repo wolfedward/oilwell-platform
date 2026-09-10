@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
-from backend.api import AcquisitionApi, AnalysisApi, CommandApi, DeviceApi, StrategyApi, WellApi
+from backend.api import AcquisitionApi, AnalysisApi, CommandApi, DeviceApi, StrategyApi, WellApi, WorkflowApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
 from backend.config import Config
 from backend.database import Database
@@ -33,6 +33,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if WorkflowApi(self).get(self.path): return
         if CommandApi(self).get(self.path): return
         if StrategyApi(self).get(self.path): return
         if AnalysisApi(self).get(self.path): return
@@ -49,6 +50,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+        if WorkflowApi(self).post(self.path): return
         if CommandApi(self).post(self.path): return
         if StrategyApi(self).post(self.path): return
         if AnalysisApi(self).post(self.path): return
@@ -347,8 +349,10 @@ class PlatformHTTPServer(ThreadingHTTPServer):
     def serve_forever(self, *args, **kwargs):
         self.acquisition_worker.start()
         try:
+            self.workflow_worker.start()
             self.simulator.start()
         except BaseException:
+            self.workflow_worker.stop()
             self.acquisition_worker.stop()
             raise
         return super().serve_forever(*args, **kwargs)
@@ -356,6 +360,8 @@ class PlatformHTTPServer(ThreadingHTTPServer):
         try:
             simulator = getattr(self, "simulator", None)
             if simulator: simulator.stop()
+            workflow_worker = getattr(self, "workflow_worker", None)
+            if workflow_worker: workflow_worker.stop()
             acquisition_worker = getattr(self, "acquisition_worker", None)
             if acquisition_worker: acquisition_worker.stop()
         finally:
@@ -369,8 +375,10 @@ def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServ
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
+    from backend.services.workflows import WorkflowService, WorkflowWorker
     server.simulator = SimulatorRegistry(database)
     server.acquisition = AcquisitionService(database, server.simulator)
     server.acquisition_worker = AcquisitionWorker(server.acquisition, server.simulator)
+    server.workflow_worker = WorkflowWorker(WorkflowService(database, server.audit))
     server.simulator.acquisition_worker = server.acquisition_worker
     return server

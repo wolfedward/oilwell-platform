@@ -66,6 +66,7 @@ class Database:
                 self._migrate_analysis_columns(connection)
                 self._migrate_strategy_columns(connection)
                 self._migrate_command_columns(connection)
+                self._migrate_workflow_columns(connection)
                 self._normalize_legacy_timestamps(connection)
                 violations = connection.execute("PRAGMA foreign_key_check").fetchall()
                 if violations:
@@ -726,9 +727,9 @@ class Database:
             "ON command_attempts(command_id,attempt_number,state) "
             "WHERE attempt_number IS NOT NULL AND state IS NOT NULL"
         )
+        connection.execute("DROP INDEX IF EXISTS alarms_command_unique")
         connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS alarms_command_unique "
-            "ON alarms(command_id) WHERE command_id IS NOT NULL"
+            "CREATE INDEX IF NOT EXISTS alarms_command_idx ON alarms(command_id)"
         )
         Database._create_command_timestamp_triggers(connection)
 
@@ -837,6 +838,174 @@ class Database:
                         WHERE rowid = NEW.rowid;
                     END"""
             )
+
+    @staticmethod
+    def _migrate_workflow_columns(connection: sqlite3.Connection) -> None:
+        """Upgrade alarm/work-order history without losing seeded evidence."""
+        required = {
+            "alarms": (
+                ("source_object_type", "TEXT"), ("source_object_id", "TEXT"),
+                ("confirmed_at", "TEXT"), ("closed_at", "TEXT"),
+                ("resolution_comment", "TEXT"),
+            ),
+            "work_orders": (
+                ("kind", "TEXT NOT NULL DEFAULT 'inspection'"),
+                ("assignee_id", "INTEGER"), ("due_at", "TEXT"),
+                ("accepted_at", "TEXT"), ("completed_at", "TEXT"),
+                ("closed_at", "TEXT"), ("closed_by", "INTEGER"),
+                ("overdue_from_status", "TEXT"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ),
+            "work_order_logs": (
+                ("from_status", "TEXT"), ("to_status", "TEXT"),
+                ("comment", "TEXT"), ("changed_at", "TEXT"),
+            ),
+        }
+        for table_name, declarations in required.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+            for column_name, declaration in declarations:
+                if column_name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+                    )
+        connection.execute(
+            """UPDATE alarms SET
+                   source_object_type=CASE
+                       WHEN command_id IS NOT NULL THEN 'command'
+                       WHEN diagnosis_id IS NOT NULL THEN 'diagnosis'
+                       WHEN strategy_id IS NOT NULL THEN 'strategy'
+                       ELSE source_object_type END,
+                   source_object_id=CASE
+                       WHEN command_id IS NOT NULL THEN command_id
+                       WHEN diagnosis_id IS NOT NULL THEN diagnosis_id
+                       WHEN strategy_id IS NOT NULL THEN strategy_id
+                       ELSE source_object_id END
+               WHERE source_object_type IS NULL OR source_object_id IS NULL"""
+        )
+        connection.execute(
+            """UPDATE work_order_logs SET
+                   to_status=COALESCE(to_status,status),
+                   comment=COALESCE(comment,message),
+                   changed_at=COALESCE(changed_at,created_at)
+               WHERE to_status IS NULL OR comment IS NULL OR changed_at IS NULL"""
+        )
+        connection.execute(
+            """UPDATE work_orders SET assignee_id=(
+                   SELECT user.id FROM users AS user
+                   JOIN role_permissions AS grant_row ON grant_row.role_id=user.role_id
+                   JOIN permissions AS permission ON permission.id=grant_row.permission_id
+                   WHERE user.status='active' AND grant_row.status='active'
+                     AND permission.status='active' AND permission.code='maintenance.manage'
+                   ORDER BY CASE WHEN user.username='maintenance_engineer' THEN 0 ELSE 1 END,
+                            user.id LIMIT 1
+               ) WHERE assignee_id IS NULL"""
+        )
+        connection.execute(
+            """UPDATE work_orders SET
+                   due_at=COALESCE(due_at,strftime(
+                       '%Y-%m-%dT%H:%M:%f+08:00',substr(created_at,1,19),'+4 hours'
+                   )),
+                   accepted_at=CASE WHEN status IN ('processing','completed','closed')
+                       THEN COALESCE(accepted_at,created_at) ELSE accepted_at END,
+                   completed_at=CASE WHEN status IN ('completed','closed')
+                       THEN COALESCE(completed_at,updated_at) ELSE completed_at END,
+                   closed_at=CASE WHEN status='closed'
+                       THEN COALESCE(closed_at,updated_at) ELSE closed_at END,
+                   closed_by=CASE WHEN status='closed' THEN COALESCE(closed_by,(
+                       SELECT user.id FROM users AS user
+                       JOIN role_permissions AS grant_row ON grant_row.role_id=user.role_id
+                       JOIN permissions AS permission ON permission.id=grant_row.permission_id
+                       WHERE user.status='active' AND grant_row.status='active'
+                         AND permission.status='active' AND permission.code='diagnosis.review'
+                       ORDER BY CASE WHEN user.username='reviewer' THEN 0 ELSE 1 END,
+                                user.id LIMIT 1
+                   )) ELSE closed_by END
+               WHERE 1=1"""
+        )
+        order_foreign_keys = {
+            row[3] for row in connection.execute("PRAGMA foreign_key_list(work_orders)")
+        }
+        if not {"well_id", "alarm_id", "assignee_id", "closed_by"}.issubset(order_foreign_keys):
+            Database._rebuild_work_orders(connection)
+        connection.execute("DROP INDEX IF EXISTS alarms_source_object_unique")
+        connection.execute("DROP INDEX IF EXISTS work_orders_alarm_unique")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS alarms_source_object_idx "
+            "ON alarms(source_object_type,source_object_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS work_orders_alarm_idx ON work_orders(alarm_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS work_orders_due_idx "
+            "ON work_orders(status,due_at,id)"
+        )
+        for table_name in ("work_orders", "work_order_logs"):
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_set_updated_at
+                    AFTER UPDATE ON {table_name}
+                    FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at
+                    BEGIN
+                        UPDATE {table_name} SET updated_at =
+                            strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+            connection.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS {table_name}_normalize_inserted_timestamps
+                    AFTER INSERT ON {table_name}
+                    FOR EACH ROW WHEN NEW.created_at NOT GLOB '*+08:00'
+                                      OR NEW.updated_at NOT GLOB '*+08:00'
+                    BEGIN
+                        UPDATE {table_name} SET
+                            created_at = CASE WHEN NEW.created_at GLOB '*+08:00'
+                                THEN NEW.created_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.created_at,'+8 hours') END,
+                            updated_at = CASE WHEN NEW.updated_at GLOB '*+08:00'
+                                THEN NEW.updated_at ELSE strftime(
+                                    '%Y-%m-%dT%H:%M:%f+08:00',NEW.updated_at,'+8 hours') END
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+
+    @staticmethod
+    def _rebuild_work_orders(connection: sqlite3.Connection) -> None:
+        Database._drop_table_timestamp_triggers(connection, "work_orders")
+        connection.execute("ALTER TABLE work_orders RENAME TO work_orders_workflow_legacy")
+        connection.execute(
+            """CREATE TABLE work_orders (
+                   id TEXT PRIMARY KEY,
+                   well_id TEXT REFERENCES wells(id),
+                   alarm_id TEXT REFERENCES alarms(id),
+                   title TEXT NOT NULL,
+                   kind TEXT NOT NULL DEFAULT 'inspection',
+                   assignee_id INTEGER REFERENCES users(id),
+                   due_at TEXT,
+                   accepted_at TEXT,
+                   completed_at TEXT,
+                   closed_at TEXT,
+                   closed_by INTEGER REFERENCES users(id),
+                   overdue_from_status TEXT,
+                   version INTEGER NOT NULL DEFAULT 1,
+                   status TEXT NOT NULL DEFAULT 'pending',
+                   actor_id INTEGER,
+                   source_type TEXT NOT NULL DEFAULT 'manual',
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours')),
+                   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00','now','+8 hours'))
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO work_orders(
+                   id,well_id,alarm_id,title,kind,assignee_id,due_at,accepted_at,
+                   completed_at,closed_at,closed_by,overdue_from_status,version,status,
+                   actor_id,source_type,created_at,updated_at
+               ) SELECT id,well_id,alarm_id,title,kind,assignee_id,due_at,accepted_at,
+                        completed_at,closed_at,closed_by,overdue_from_status,version,status,
+                        actor_id,source_type,created_at,updated_at
+                   FROM work_orders_workflow_legacy"""
+        )
+        connection.execute("DROP TABLE work_orders_workflow_legacy")
+
     @staticmethod
     def _normalize_legacy_timestamps(connection: sqlite3.Connection) -> None:
         for table_name in TIMESTAMP_TABLES:
@@ -929,7 +1098,8 @@ class Database:
     @contextmanager
     def transaction(
         self, actor_id: int | None, action: str, object_type: str, object_id: str | None,
-        *, source_type: str = "system", details_json: str = '{"after":{},"before":{}}', auto_audit: bool = True,
+        *, source_type: str = "system", details_json: str = '{"after":{},"before":{}}',
+        auto_audit: bool = True, immediate: bool = False,
     ) -> Iterator[sqlite3.Connection]:
         """Commit business changes and their audit entry as one transaction."""
         if source_type not in {"system", "manual", "simulator", "device", "virtual_device", "algorithm"}:
@@ -937,6 +1107,8 @@ class Database:
         with self.connection() as connection:
             token = self._transaction_connection.set(connection)
             try:
+                if immediate:
+                    connection.execute("BEGIN IMMEDIATE")
                 yield connection
                 if auto_audit:
                     connection.execute(

@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 
 from backend.services.strategies import StrategyService, StrategyValidationError, WORKFLOW
+from backend.services.workflows import WorkflowService
 from backend.simulator import (
     SimulatorValidationError,
     TerminalUnavailable,
@@ -42,6 +43,7 @@ class CommandService:
         self.database = database
         self.audit = audit
         self.registry = registry
+        self.workflows = WorkflowService(database, audit, clock=registry.now)
 
     def dispatch_strategy(
         self, strategy_id: str, actor_id: int, now: datetime | None = None,
@@ -447,19 +449,12 @@ class CommandService:
                WHERE id=? AND status IN ('pending_dispatch','effective')""",
             (row["actor_id"], row["strategy_id"]),
         )
-        alarm_id = "AL-CMD-" + uuid.uuid4().hex.upper()
-        connection.execute(
-            """INSERT OR IGNORE INTO alarms(
-                   id,well_id,strategy_id,command_id,alarm_type,severity,details_json,
-                   status,actor_id,source_type
-               ) VALUES(?,?,?,?, 'command_delivery_failed','critical',?,'new',?,'system')""",
-            (alarm_id, row["well_id"], row["strategy_id"], row["id"],
-             _json({"reason": reason, "command_id": row["id"]}), row["actor_id"]),
+        alarm = self.workflows.create_alarm(
+            "command", row["id"], "critical",
+            {"reason": reason, "command_id": row["id"]},
+            actor_id=row["actor_id"], connection=connection, provenance="system",
         )
-        persisted = connection.execute(
-            "SELECT id FROM alarms WHERE command_id=?", (row["id"],),
-        ).fetchone()
-        return persisted["id"]
+        return alarm["id"]
 
     @staticmethod
     def _receipt(connection, command_id, attempt_number, state, now, detail):

@@ -15,7 +15,7 @@ from backend.auth import (
 )
 from backend.database import Database
 from backend.http_server import create_server
-from backend.seed import _legacy_content_hash, seed_database
+from backend.seed import AUTH_BOOTSTRAP_VERSION, _legacy_content_hash, seed_database
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -158,7 +158,10 @@ class AuthenticationTests(unittest.TestCase):
         )
         # Acquisition capabilities are introduced by the explicit Task 2 v3
         # migration; the revoked pre-existing grant still must not reappear.
-        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"), 4)
+        self.assertEqual(
+            self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1"),
+            AUTH_BOOTSTRAP_VERSION,
+        )
 
     def test_v4_bootstrap_separates_machine_run_from_human_review_once(self):
         """The former default self-review grant must migrate exactly once."""
@@ -196,7 +199,10 @@ class AuthenticationTests(unittest.TestCase):
             ), 1,
         )
         self.assertEqual(self.database.scalar("SELECT name FROM roles WHERE code='reviewer'"), "复核评审")
-        self.assertEqual(self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id=1"), 4)
+        self.assertEqual(
+            self.database.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id=1"),
+            AUTH_BOOTSTRAP_VERSION,
+        )
         self.assertEqual(
             self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='auth.bootstrap'"),
             before + 1,

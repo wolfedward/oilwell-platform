@@ -193,7 +193,7 @@ Expected: success, offline queue, timeout retry, unsafe rejection, idempotency, 
 - Produces: WorkflowService.transition_work_order(id: int, target: str, actor_id: int, comment: str) -> WorkOrder
 - Produces: GET/POST /api/alarms and GET/POST /api/work-orders with transition actions
 
-- [ ] **Step 1: Write failing linked-flow test**
+- [x] **Step 1: Write failing linked-flow test**
 
     def test_diagnosis_to_closed_work_order_is_traceable(self):
         diagnosis = run_abnormal_analysis("W-033")
@@ -206,23 +206,23 @@ Expected: success, offline queue, timeout retry, unsafe rejection, idempotency, 
         self.assertEqual(closed.status, "closed")
         self.assertEqual(workflow.trace(order.id)["diagnosis_id"], diagnosis.id)
 
-- [ ] **Step 2: Run test and verify failure**
+- [x] **Step 2: Run test and verify failure**
 
     python -m unittest tests.test_workflows -v
 
 Expected: missing workflow service.
 
-- [ ] **Step 3: Implement alarm and order state machines**
+- [x] **Step 3: Implement alarm and order state machines**
 
 Implement alarm states new, confirmed, assigned, processing, closed, false_positive, and escalated. Implement work-order states pending, accepted, processing, review, closed, and overdue. Require comments for close, false-positive, reject, and rollback actions. Schedule overdue evaluation from due_at and record every transition in work_order_logs and audit_logs.
 
-- [ ] **Step 4: Run linked subsystem tests**
+- [x] **Step 4: Run linked subsystem tests**
 
     python -m unittest tests.test_workflows tests.test_analysis_api tests.test_commands -v
 
 Expected: all linked-flow tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add backend/services/workflows.py backend/services/analysis.py backend/services/commands.py backend/api.py tests/test_workflows.py
     git commit -m "feat: close alarms through work orders"
