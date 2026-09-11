@@ -4,6 +4,11 @@ import * as format from "./frontend/format.js";
 import { router } from "./frontend/router.js";
 import { store } from "./frontend/store.js";
 import { renderLogin } from "./frontend/pages/login.js";
+import { renderDashboard as renderDashboardPage } from "./frontend/pages/dashboard.js";
+import { renderWellList } from "./frontend/pages/wells.js";
+import { renderWellDetail } from "./frontend/pages/well-detail.js";
+import { renderDeviceList } from "./frontend/pages/devices.js";
+import { renderDeviceCommand } from "./frontend/pages/device-command.js";
 
 const NAVIGATION = [
   {
@@ -23,6 +28,7 @@ const NAVIGATION = [
       { id: "acquisition", label: "采集实况", description: "终端报文、序号、校验与接收状态" },
       { id: "data-quality", label: "数据质量", description: "缺测、延迟、漂移与补传处置" },
       { id: "devices", label: "测控终端", description: "设备心跳、通道、寄存器与运行状态" },
+      { id: "device-command", label: "指令详情", description: "签名载荷、执行状态与分阶段回执", hidden: true },
     ],
   },
   {
@@ -135,7 +141,7 @@ function renderChrome() {
     </button>`).join("");
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
-    </div><nav>${context.module.pages.map((page) => `
+    </div><nav>${context.module.pages.filter((page) => !page.hidden).map((page) => `
       <button type="button" data-page="${page.id}" class="${page.id === state.activePage ? "active" : ""}"
         aria-label="${escapeHtml(page.label)}" title="${escapeHtml(page.label)}"
         aria-current="${page.id === state.activePage ? "page" : "false"}">
@@ -145,7 +151,7 @@ function renderChrome() {
     const page = PAGE_INDEX.get(pageId);
     if (!page) return "";
     return `<div class="tab ${pageId === state.activePage ? "active" : ""}">
-      <button type="button" data-page="${pageId}" aria-current="${pageId === state.activePage ? "page" : "false"}">${escapeHtml(page.label)}</button>
+      <button type="button" data-tab-page="${pageId}" aria-current="${pageId === state.activePage ? "page" : "false"}">${escapeHtml(page.label)}</button>
       ${pageId === "dashboard" ? "" : `<button type="button" class="tab-close" data-close-tab="${pageId}" aria-label="关闭${escapeHtml(page.label)}">×</button>`}
     </div>`;
   }).join("");
@@ -156,48 +162,6 @@ function pageHeader(page, suffix = "") {
     <nav class="breadcrumb" aria-label="面包屑"><span>${escapeHtml(page.module.label)}</span><b>/</b><span>${escapeHtml(page.label)}</span></nav>
     <h1 tabindex="-1">${escapeHtml(page.label)}</h1><p>${escapeHtml(page.description)}</p>
   </div>${suffix}</header>`;
-}
-
-async function renderDashboard(page, generation) {
-  const workspace = document.querySelector("#workspace");
-  const data = await api.get("/api/dashboard");
-  if (generation !== renderGeneration) return false;
-  const cards = [
-    ["油井总数", format.number(data.total_wells), "口", "primary"],
-    ["当前开井", format.number(data.active_wells), "口", "success"],
-    ["低产井", format.number(data.low_output_wells), "口", "warning"],
-    ["在线终端", format.number(data.online_devices), "台", "cyan"],
-    ["活动报警", format.number(data.active_alarms), "条", data.active_alarms ? "danger" : "success"],
-    ["当日耗电", format.number(data.power_kwh, 1), "kWh", "purple"],
-  ];
-  workspace.innerHTML = `${pageHeader(page, `<span class="data-time">数据时点 ${escapeHtml(format.dateTime(data.data_timestamp))}</span>`)}
-    <section class="metric-grid" aria-label="生产运行指标">${cards.map(([label, value, unit, tone]) => `
-      <article class="metric-card ${tone}"><p>${label}</p><strong>${value}<small>${unit}</small></strong><span>来源：平台业务库</span></article>`).join("")}</section>
-    <section class="dashboard-layout">
-      <article class="panel production-panel"><header><div><p class="eyebrow">LATEST PRODUCTION DAY</p><h2>最新生产日汇总</h2></div><span>${escapeHtml(data.data_day || "—")}</span></header>
-        <div class="production-values">
-          <div><span>日产液</span><strong>${format.number(data.daily_fluid, 1)}</strong><small>m³</small></div>
-          <div><span>日产油</span><strong>${format.number(data.daily_oil, 1)}</strong><small>t</small></div>
-          <div><span>平均泵效</span><strong>${format.percent(data.pump_efficiency, 1)}</strong><small>全井算术平均</small></div>
-        </div>
-        <p class="source-note">全部指标由服务端从最新生产日明细实时汇总，不在浏览器中独立生成。</p>
-      </article>
-      <article class="panel state-breakdown"><header><div><p class="eyebrow">OPERATING STATE</p><h2>运行状态</h2></div></header>
-        <dl><div><dt>运行 / 间抽</dt><dd>${format.number(data.active_wells)}</dd></div>
-          <div><dt>停机</dt><dd>${format.number(data.stopped_wells)}</dd></div>
-          <div><dt>离线 / 维护</dt><dd>${format.number(data.offline_wells)}</dd></div></dl>
-        <button class="button secondary" type="button" data-page="wells">进入油井台账</button>
-      </article>
-      <article class="panel quick-entry"><header><div><p class="eyebrow">QUICK ACCESS</p><h2>重点业务入口</h2></div></header>
-        <div>${[
-          ["dynagraph-analysis", "功图智能分析", "追溯电功图到诊断结论"],
-          ["strategy-center", "节能策略中心", "查看审批、执行与效果"],
-          ["work-orders", "工单闭环", "跟进处置和独立验证"],
-          ["reports", "服务端报表", "按条件导出可对账明细"],
-        ].map(([id, label, description]) => `<button type="button" data-page="${id}"><strong>${label}</strong><span>${description}</span><b>→</b></button>`).join("")}</div>
-      </article>
-    </section>`;
-  return true;
 }
 
 async function renderModuleLanding(page) {
@@ -213,16 +177,31 @@ async function renderModuleLanding(page) {
 
 async function renderPage(pageId, params = {}) {
   const generation = ++renderGeneration;
+  components.closeAllModals();
   const page = PAGE_INDEX.get(pageId) || PAGE_INDEX.get("dashboard");
   const state = store.getState();
   const tabs = state.tabs.includes(page.id) ? state.tabs : [...state.tabs, page.id];
-  store.setState({ activeModule: page.module.id, activePage: page.id, tabs });
+  const tabParams = { ...(state.tabParams || {}), [page.id]: { ...params } };
+  store.setState({ activeModule: page.module.id, activePage: page.id, tabs, tabParams });
   renderChrome();
   const workspace = document.querySelector("#workspace");
   workspace.setAttribute("aria-busy", "true");
   workspace.innerHTML = `${pageHeader(page)}${components.skeleton(6)}`;
   try {
-    if (page.id === "dashboard") await renderDashboard(page, generation);
+    const context = {
+      api, components, format, escapeHtml, workspace, page, pageHeader, params,
+      permissions: new Set(state.user?.permissions || []),
+      navigate: openPage,
+      isCurrent: () => generation === renderGeneration,
+    };
+    const renderer = ({
+      dashboard: renderDashboardPage,
+      wells: renderWellList,
+      "well-detail": renderWellDetail,
+      devices: renderDeviceList,
+      "device-command": renderDeviceCommand,
+    })[page.id];
+    if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);
     if (generation !== renderGeneration) return;
     document.title = `${page.label}｜合能油井数字智能化管理平台`;
@@ -241,10 +220,10 @@ function registerRoutes() {
   PAGE_INDEX.forEach((page) => router.register(page.id, (params) => renderPage(page.id, params)));
 }
 
-async function openPage(pageId) {
+async function openPage(pageId, params = {}) {
   const destination = PAGE_INDEX.has(pageId) ? pageId : "dashboard";
   try {
-    await router.open(destination);
+    await router.open(destination, params);
   } catch (error) {
     const workspace = document.querySelector("#workspace");
     if (workspace) workspace.innerHTML = components.errorPanel(error, { retry: true });
@@ -260,10 +239,23 @@ function bindShellEvents() {
       await showLogin();
       return;
     }
+    const tabButton = event.target.closest("[data-tab-page]");
+    if (tabButton) {
+      event.preventDefault();
+      const state = store.getState();
+      await openPage(tabButton.dataset.tabPage, state.tabParams?.[tabButton.dataset.tabPage] || {});
+      return;
+    }
     const pageButton = event.target.closest("[data-page]");
     if (pageButton) {
       event.preventDefault();
-      await openPage(pageButton.dataset.page);
+      const params = {};
+      if (pageButton.dataset.id) params.id = pageButton.dataset.id;
+      for (const attribute of pageButton.attributes) {
+        if (!attribute.name.startsWith("data-param-")) continue;
+        params[attribute.name.slice("data-param-".length).replaceAll("-", "_")] = attribute.value;
+      }
+      await openPage(pageButton.dataset.page, params);
       return;
     }
     const moduleButton = event.target.closest("[data-module]");
@@ -277,8 +269,13 @@ function bindShellEvents() {
       const closing = closeButton.dataset.closeTab;
       const state = store.getState();
       const tabs = state.tabs.filter((id) => id !== closing);
-      store.setState({ tabs });
-      if (state.activePage === closing) await openPage(tabs.at(-1) || "dashboard");
+      const tabParams = { ...(state.tabParams || {}) };
+      delete tabParams[closing];
+      store.setState({ tabs, tabParams });
+      if (state.activePage === closing) {
+        const target = tabs.at(-1) || "dashboard";
+        await openPage(target, tabParams[target] || {});
+      }
       else renderChrome();
       return;
     }
@@ -307,6 +304,7 @@ async function showShell(user) {
 async function showLogin() {
   const generation = ++loginGeneration;
   shellReady = false;
+  components.closeAllModals();
   store.reset();
   app.setAttribute("aria-busy", "false");
   await renderLogin(app, {

@@ -1,6 +1,6 @@
 """Deterministic, internally traceable history for the offline acceptance platform."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -55,11 +55,11 @@ LOCAL_ACCOUNTS = (
     ("reviewer", "复核评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
-    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "acquisition.read", "data_quality.read", "data_quality.repair", "alarms.ack", "maintenance.manage", "diagnosis.review", "workflow.read"),
+    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "commands.read", "acquisition.read", "data_quality.read", "data_quality.repair", "alarms.ack", "maintenance.manage", "diagnosis.review", "workflow.read"),
     "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
     "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
-    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair", "workflow.read"),
-    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
+    "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "commands.read", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair", "workflow.read"),
+    "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "commands.read", "acquisition.read", "data_quality.read", "workflow.read"),
 }
 AUTH_BOOTSTRAP_VERSION = 6
 
@@ -705,7 +705,208 @@ def bootstrap_local_auth(db: Database) -> None:
 def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:
     bootstrap_local_auth(db)
     _ensure_effect_history(db)
+    _ensure_device_self_checks(db)
+    _ensure_signed_command_history(db)
     return summary
+
+
+def _ensure_device_self_checks(db: Database) -> None:
+    """Persist one inspectable software-terminal self-check per configured device."""
+    devices = db.query_all(
+        "SELECT id,firmware_version,status FROM devices ORDER BY id"
+    )
+    if not devices:
+        return
+    with db.transaction(
+        None, "device.self_check.bootstrap", "device", "all", source_type="system",
+        details_json=_canonical_json({"device_count": len(devices)}),
+    ) as connection:
+        for device in devices:
+            if connection.execute(
+                "SELECT 1 FROM device_events WHERE device_id=? AND event_type='self_check' LIMIT 1",
+                (device["id"],),
+            ).fetchone():
+                continue
+            channel_count = connection.execute(
+                "SELECT COUNT(*) FROM device_channels WHERE device_id=? AND enabled=1",
+                (device["id"],),
+            ).fetchone()[0]
+            detail = _canonical_json({
+                "firmware_version": device["firmware_version"],
+                "enabled_channels": channel_count,
+                "checks": {
+                    "configuration": "passed",
+                    "data_store": "passed",
+                    "protocol_runtime": "passed",
+                },
+            })
+            connection.execute(
+                "INSERT INTO device_events(device_id,event_type,detail,status,source_type,created_at,updated_at) "
+                "VALUES(?, 'self_check', ?, 'passed', 'system', ?, ?)",
+                (device["id"], detail, GENERATED_AT, GENERATED_AT),
+            )
+
+
+def _ensure_signed_command_history(db: Database) -> None:
+    """Add one complete signed historical command without mutating manifest rows."""
+    manifest = db.query_one(
+        "SELECT seed,namespace FROM seed_manifests WHERE dataset_name=?", (MANIFEST_NAME,)
+    )
+    if manifest is None:
+        return
+    strategy_id = _identifier(manifest["namespace"], "ES-CONTROL-001")
+    version_id = _identifier(manifest["namespace"], "SV-CONTROL-001")
+    approval_id = _identifier(manifest["namespace"], "APR-CONTROL-001")
+    command_id = _identifier(manifest["namespace"], "CMD-CONTROL-001")
+    if db.scalar("SELECT 1 FROM device_commands WHERE id=?", (command_id,)):
+        return
+    target = db.query_one(
+        """SELECT device.id AS device_id,device.well_id,well.name AS well_name
+             FROM devices AS device
+             JOIN wells AS well ON well.id=device.well_id
+            WHERE well.is_low_output=1 AND EXISTS(
+                  SELECT 1 FROM recovery_tests AS recovery
+                   WHERE recovery.well_id=device.well_id AND recovery.status='completed'
+            )
+            ORDER BY device.id LIMIT 1"""
+    )
+    if target is None:
+        return
+    from backend.algorithms.energy import fit_recovery_curve, optimize_cycle
+    from backend.services.strategies import StrategyService
+    from backend.simulator import load_command_signing_key, sign_control_command
+
+    recovery = db.query_one(
+        "SELECT id,tested_at,result_data FROM recovery_tests WHERE well_id=? AND status='completed' ORDER BY tested_at DESC,id DESC LIMIT 1",
+        (target["well_id"],),
+    )
+    if recovery is None:
+        return
+    strategy_service = StrategyService(db, None)
+    points, recovery_payload = strategy_service._recovery_points(recovery["result_data"])
+    constraints, motor_kw, normalized = strategy_service._constraints({
+        "min_on_minutes": 20, "max_on_minutes": 120,
+        "min_off_minutes": 15, "max_off_minutes": 180,
+        "min_liquid_m3_day": 1.0, "max_starts_per_day": 12,
+        "motor_kw": 18.5,
+    })
+    model = fit_recovery_curve(points)
+    feasible = [item for item in optimize_cycle(model, constraints, motor_kw) if item.feasible]
+    if not feasible:
+        raise SeedDataIntegrityError("signed command history has no safe cycle")
+    selected = feasible[0]
+    configuration = {
+        "schema_version": 1,
+        "recovery_test_id": recovery["id"],
+        "recovery_tested_at": recovery["tested_at"],
+        "recovery_observations": recovery_payload["observations"],
+        "recovery_units": recovery_payload["units"],
+        "recovery_model": asdict(model),
+        "constraints": normalized,
+        "selected_candidate": asdict(selected),
+        "ranked_candidates": [asdict(item) for item in feasible[:10]],
+    }
+    strategy_service._assert_safe_configuration(configuration)
+    issued = datetime(2026, 7, 1, 0, 5, tzinfo=SHANGHAI_TIMEZONE)
+    expires = issued + timedelta(minutes=15)
+    completed = issued + timedelta(seconds=8)
+    created = issued - timedelta(minutes=30)
+    submitted = issued - timedelta(minutes=20)
+    decided = issued - timedelta(minutes=10)
+    unsigned = {
+        "schema_version": 1, "command_id": command_id,
+        "device_id": target["device_id"], "strategy_id": strategy_id,
+        "strategy_version_id": version_id, "command_type": "set_intermittent_cycle",
+        "on_minutes": selected.on_minutes, "off_minutes": selected.off_minutes,
+        "issued_at": issued.isoformat(), "expires_at": expires.isoformat(),
+        "nonce": hashlib.sha256(f"{manifest['seed']}:{command_id}".encode()).hexdigest()[:32],
+        "idempotency_key": f"history:{strategy_id}:{version_id}",
+        "reason": "依据审批版本下发自适应间抽周期",
+    }
+    signature = sign_control_command(unsigned, load_command_signing_key(db.path))
+    payload = {**unsigned, "signature": signature}
+    creator_id = db.scalar("SELECT id FROM users WHERE username='production_engineer'")
+    approver_id = db.scalar("SELECT id FROM users WHERE username='reviewer'")
+    operator_id = db.scalar("SELECT id FROM users WHERE username='maintenance_engineer'")
+    with db.transaction(
+        operator_id, "command.history.bootstrap", "device_command", command_id,
+        source_type="system", details_json=_canonical_json({"strategy_id": strategy_id}),
+    ) as connection:
+        connection.execute(
+            """INSERT INTO energy_strategies(
+                   id,well_id,name,version,created_by,submitted_by,decision_by,
+                   submitted_at,decision_at,effective_at,approval_comment,status,
+                   actor_id,source_type,created_at,updated_at
+               ) VALUES(?,?,?,5,?,?,?,?,?,?,?,'effective',?,'system',?,?)""",
+            (strategy_id, target["well_id"], f"{target['well_name']} 自适应间抽控制策略",
+             creator_id, creator_id, approver_id, submitted.isoformat(), decided.isoformat(),
+             completed.isoformat(), "恢复曲线、产量约束及启停次数复核通过",
+             operator_id, created.isoformat(), completed.isoformat()),
+        )
+        connection.execute(
+            """INSERT INTO strategy_versions(
+                   id,strategy_id,version_number,configuration,created_by,submitted_at,
+                   status,actor_id,source_type,created_at,updated_at
+               ) VALUES(?,?,1,?,?,?,'submitted',?,'algorithm',?,?)""",
+            (version_id, strategy_id, _canonical_json(configuration), creator_id,
+             submitted.isoformat(), creator_id, created.isoformat(), submitted.isoformat()),
+        )
+        connection.execute(
+            "UPDATE energy_strategies SET current_version_id=? WHERE id=?",
+            (version_id, strategy_id),
+        )
+        connection.execute(
+            """INSERT INTO approvals(
+                   id,object_type,object_id,object_version,decision,comment,decided_at,
+                   status,actor_id,source_type,created_at,updated_at
+               ) VALUES(?,'energy_strategy',?,2,'approved',?,?,'decided',?,'manual',?,?)""",
+            (approval_id, strategy_id, "恢复曲线、产量约束及启停次数复核通过",
+             decided.isoformat(), approver_id, submitted.isoformat(), decided.isoformat()),
+        )
+        connection.execute(
+            """INSERT INTO device_commands(
+                   id,device_id,strategy_id,strategy_version_id,command_type,payload,signature,
+                   idempotency_key,issued_at,expires_at,attempt_count,max_attempts,completed_at,
+                   status,actor_id,source_type,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,1,3,?,'success',?,'system',?,?)""",
+            (command_id, target["device_id"], strategy_id, version_id,
+             "set_intermittent_cycle", _canonical_json(payload), signature,
+             unsigned["idempotency_key"], issued.isoformat(), expires.isoformat(),
+             completed.isoformat(), operator_id, issued.isoformat(), completed.isoformat()),
+        )
+        for offset, state in enumerate(("sent", "received", "validated", "executing", "success"), 1):
+            recorded = issued + timedelta(seconds=offset)
+            connection.execute(
+                """INSERT INTO command_attempts(
+                       command_id,attempted_at,attempt_number,state,receipt_at,result_detail,
+                       status,actor_id,source_type,created_at,updated_at
+                   ) VALUES(?,?,1,?,?,?,?,?,'system',?,?)""",
+                (command_id, issued.isoformat(), state, recorded.isoformat(),
+                 _canonical_json({"state": state, "on_minutes": selected.on_minutes,
+                                  "off_minutes": selected.off_minutes}),
+                  state, operator_id, recorded.isoformat(), recorded.isoformat()),
+            )
+        audit_rows = (
+            (creator_id, "strategy.optimize", "energy_strategy", strategy_id,
+             {"before": {}, "after": {"well_id": target["well_id"], "strategy_version_id": version_id}}, created),
+            (creator_id, "strategy.submit", "energy_strategy", strategy_id,
+             {"before": {"status": "draft"}, "after": {"status": "pending_approval", "approval_id": approval_id}}, submitted),
+            (approver_id, "strategy.approve", "energy_strategy", strategy_id,
+             {"before": {"status": "pending_approval"}, "after": {"status": "approved", "approval_id": approval_id}}, decided),
+            (operator_id, "command.dispatch", "device_command", command_id,
+             {"before": {}, "after": {"status": "queued", "strategy_version_id": version_id}}, issued),
+            (operator_id, "command.success", "device_command", command_id,
+             {"before": {"status": "queued"}, "after": {"status": "success", "strategy_version_id": version_id}}, completed),
+        )
+        connection.executemany(
+            """INSERT INTO audit_logs(
+                   actor_id,action,object_type,object_id,details_json,status,source_type,
+                   created_at,updated_at
+               ) VALUES(?,?,?,?,?,'recorded','system',?,?)""",
+            [(actor, action, object_type, object_id, _canonical_json(details),
+              at.isoformat(), at.isoformat())
+             for actor, action, object_type, object_id, details, at in audit_rows],
+        )
 
 
 def _ensure_effect_history(db: Database) -> None:

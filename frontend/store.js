@@ -11,6 +11,7 @@ let state = Object.freeze({
   activeModule: "overview",
   activePage: "dashboard",
   tabs: ["dashboard"],
+  tabParams: { dashboard: {} },
   sidebarCollapsed: false,
   loading: false,
 });
@@ -45,6 +46,7 @@ export const store = {
       activeModule: "overview",
       activePage: "dashboard",
       tabs: ["dashboard"],
+      tabParams: { dashboard: {} },
       sidebarCollapsed: false,
       loading: false,
     });

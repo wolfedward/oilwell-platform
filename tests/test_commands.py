@@ -219,7 +219,7 @@ class CommandServiceTests(unittest.TestCase):
         strategy = self.approved_strategy()
         command = self.commands.dispatch_strategy(strategy["id"], self.dispatcher, NOW)
         terminal = self.registry.get("D-001")
-        self.assertIsNone(terminal.control_cycle)
+        baseline_cycle = dict(terminal.control_cycle) if terminal.control_cycle else None
         self.commands.audit.record = Mock(side_effect=RuntimeError("audit unavailable"))
 
         with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
@@ -230,12 +230,13 @@ class CommandServiceTests(unittest.TestCase):
             "SELECT COUNT(*) FROM command_attempts WHERE command_id=?", (command["id"],)
         ), 0)
         self.assertEqual(self.strategies.detail(strategy["id"])["status"], "pending_dispatch")
-        self.assertIsNone(terminal.control_cycle)
+        self.assertEqual(terminal.control_cycle, baseline_cycle)
 
     def test_terminal_commit_failure_never_leaves_persisted_success(self):
         strategy = self.approved_strategy()
         command = self.commands.dispatch_strategy(strategy["id"], self.dispatcher, NOW)
         terminal = self.registry.get("D-001")
+        baseline_cycle = dict(terminal.control_cycle) if terminal.control_cycle else None
         terminal.commit_control_command = Mock(side_effect=RuntimeError("terminal write failed"))
 
         summary = self.commands.process(NOW)
@@ -243,7 +244,7 @@ class CommandServiceTests(unittest.TestCase):
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(self.commands.get(command["id"])["state"], "failed")
         self.assertEqual(self.strategies.detail(strategy["id"])["status"], "failed")
-        self.assertIsNone(terminal.control_cycle)
+        self.assertEqual(terminal.control_cycle, baseline_cycle)
         self.assertEqual(self.database.scalar(
             "SELECT COUNT(*) FROM alarms WHERE command_id=?", (command["id"],)
         ), 1)
@@ -473,7 +474,7 @@ class CommandHttpTests(unittest.TestCase):
         self.assertEqual((status, queued["data"]["state"]), (202, "queued"))
         repeated = self._request("POST", path, self.maintenance, {})[1]
         self.assertEqual(repeated["data"]["id"], queued["data"]["id"])
-        self.assertEqual(self._request("GET", "/api/commands", self.maintenance)[0], 403)
+        self.assertEqual(self._request("GET", "/api/commands", self.maintenance)[0], 200)
 
         status, listing = self._request(
             "GET", "/api/commands?device_id=D-001&state=queued&page_size=5", self.reviewer,

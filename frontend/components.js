@@ -1,7 +1,12 @@
 const STATUS_LABELS = {
   active: "运行中", running: "运行中", online: "在线", success: "成功",
-  completed: "待复核", closed: "已闭环", resolved: "已解决", effective: "已生效",
-  warning: "预警", pending: "待处理", submitted: "待审批", overdue: "已超时",
+  intermittent: "间抽", maintenance: "维护", completed: "待复核", closed: "已闭环",
+  resolved: "已解决", repaired: "已修复", effective: "已生效", approved: "已批准",
+  warning: "预警", pending: "待处理", submitted: "待审批", pending_approval: "待审批",
+  queued: "待发送", sent: "已发送", succeeded: "成功", accepted: "已接收",
+  passed: "通过", received: "已接收", validated: "校验通过", executing: "执行中",
+  acknowledged: "已确认", assigned: "已派发", dispatched: "已派发", in_progress: "处理中",
+  new: "未确认", open: "待处理", unprocessed: "待分析", rolled_back: "已回滚",
   failed: "失败", fault: "故障", offline: "离线", stopped: "停机",
 };
 const TRUSTED_HTML = Symbol("trustedHtml");
@@ -101,6 +106,12 @@ export const components = {
     document.body.append(overlay);
     overlay.querySelector("button")?.focus();
     return { close, element: overlay };
+  },
+
+  closeAllModals() {
+    document.querySelectorAll(".modal-overlay").forEach((overlay) => overlay.remove());
+    const app = document.querySelector("#app");
+    if (app) app.inert = false;
   },
 
   toast(message, kind = "success") {

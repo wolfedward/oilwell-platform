@@ -95,7 +95,7 @@ Expected: all commands exit zero.
 - Produces: renderDashboard, renderWellList, renderWellDetail, renderDeviceList, renderDeviceDetail, renderDeviceCommand
 - Produces: charts.line, charts.bar, charts.gauge, charts.dynagraph
 
-- [ ] **Step 1: Write failing page contract tests**
+- [x] **Step 1: Write failing page contract tests**
 
     def test_dashboard_payload_contains_drilldown_keys(self):
         data = self.client.get("/api/dashboard").json()["data"]
@@ -107,24 +107,24 @@ Expected: all commands exit zero.
         for key in ["心跳", "采集通道", "实时寄存器", "通信报文", "自检记录"]:
             self.assertIn(key, source)
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_page_contracts -v
 
 Expected: missing page modules.
 
-- [ ] **Step 3: Implement operational pages**
+- [x] **Step 3: Implement operational pages**
 
 Dashboard cards link to filtered details. Well list supports unit, group, state, low-output, keyword, pagination, and CSV export. Well detail uses summary, telemetry, power trend, production history, linked device, latest dynagraph, diagnosis, active strategy, alarm, and work-order tabs. Device pages show heartbeat age, firmware, channels, registers, message log, command history, and allowed scenario triggers.
 
-- [ ] **Step 4: Verify contracts and syntax**
+- [x] **Step 4: Verify contracts and syntax**
 
     python -m unittest tests.test_page_contracts -v
     Get-ChildItem frontend -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 
 Expected: tests and syntax checks pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add frontend/charts.js frontend/pages styles.css tests/test_page_contracts.py
     git commit -m "feat: add live well and terminal workspaces"

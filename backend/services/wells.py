@@ -59,8 +59,30 @@ class WellsService:
             FROM wells
             """
         )
-        device = self.database.query_one("SELECT COUNT(*) AS online_devices FROM devices WHERE status = 'online'")
-        alarms = self.database.query_one("SELECT COUNT(*) AS active_alarms FROM alarms WHERE status NOT IN ('closed', 'resolved')")
+        device = self.database.query_one(
+            """SELECT COUNT(*) AS total_devices,
+                      SUM(CASE WHEN status='online' THEN 1 ELSE 0 END) AS online_devices,
+                      SUM(CASE WHEN status!='online' THEN 1 ELSE 0 END) AS unavailable_devices
+               FROM devices"""
+        )
+        alarms = self.database.query_one(
+            """SELECT COUNT(*) AS total_alarms,
+                      SUM(CASE WHEN status NOT IN ('closed','resolved') THEN 1 ELSE 0 END) AS active_alarms,
+                      SUM(CASE WHEN status NOT IN ('closed','resolved') AND severity IN ('high','critical') THEN 1 ELSE 0 END) AS high_alarms
+               FROM alarms"""
+        )
+        quality = self.database.query_one(
+            """SELECT COUNT(*) AS total_events,
+                      SUM(CASE WHEN status NOT IN ('closed','resolved','repaired') THEN 1 ELSE 0 END) AS open_events,
+                      SUM(CASE WHEN status IN ('closed','resolved','repaired') THEN 1 ELSE 0 END) AS resolved_events
+               FROM data_quality_events"""
+        )
+        strategies = self.database.query_one(
+            """SELECT COUNT(*) AS total_strategies,
+                      SUM(CASE WHEN status IN ('active','effective','paused','rollback','rolled_back') THEN 1 ELSE 0 END) AS effective_strategies,
+                      SUM(CASE WHEN status IN ('submitted','pending_approval') THEN 1 ELSE 0 END) AS pending_strategies
+               FROM energy_strategies"""
+        )
         day = self.database.scalar("SELECT MAX(day) FROM production_daily")
         production = self.database.query_one(
             """SELECT COALESCE(SUM(daily_fluid), 0) AS daily_fluid,
@@ -70,13 +92,39 @@ class WellsService:
                FROM production_daily WHERE day = ?""",
             (day,),
         )
+        trends = [dict(row) for row in reversed(self.database.query_all(
+            """SELECT day,ROUND(SUM(daily_fluid),3) AS daily_fluid,
+                      ROUND(SUM(daily_oil),3) AS daily_oil,
+                      ROUND(SUM(power_kwh),3) AS power_kwh,
+                      ROUND(AVG(pump_efficiency),6) AS pump_efficiency
+               FROM production_daily GROUP BY day ORDER BY day DESC LIMIT 14"""
+        ))]
+        from backend.services.reports import ReportService
+        energy = ReportService(self.database).report("energy")["summary"]
         overview_data = dict(overview)
+        device_data, alarm_data = dict(device), dict(alarms)
+        production_data = dict(production)
         return {
-            **overview_data, **dict(device), **dict(alarms), **dict(production),
+            **overview_data, **device_data, **alarm_data, **production_data,
             "total": overview_data["total_wells"], "active": overview_data["active_wells"],
             "stopped": overview_data["stopped_wells"], "offline": overview_data["offline_wells"],
             "data_day": day,
             "data_timestamp": self.database.scalar("SELECT MAX(measured_at) FROM telemetry"),
+            "production": {"day": day, **production_data},
+            "devices": {
+                "total": device_data["total_devices"],
+                "online": device_data["online_devices"],
+                "unavailable": device_data["unavailable_devices"],
+            },
+            "quality": dict(quality),
+            "alarms": {
+                "total": alarm_data["total_alarms"],
+                "active": alarm_data["active_alarms"],
+                "high": alarm_data["high_alarms"],
+            },
+            "strategies": dict(strategies),
+            "energy": energy,
+            "trends": trends,
             "definitions": {
                 "active_wells": "状态为 running、active 或 intermittent 的井数",
                 "offline_wells": "状态为 offline 或 maintenance 的井数",
@@ -92,10 +140,18 @@ class WellsService:
     def list_wells(self, filters: dict) -> dict:
         page, page_size = filters["page"], filters["page_size"]
         clauses, parameters = ["1 = 1"], []
-        for key, column in (("unit_id", "u.id"), ("group_id", "g.id"), ("status", "w.status")):
+        for key, column in (("unit_id", "u.id"), ("group_id", "g.id")):
             if filters.get(key):
                 clauses.append(f"{column} = ?")
                 parameters.append(filters[key])
+        if filters.get("status") == "operating":
+            clauses.append("w.status IN ('running','active','intermittent')")
+        elif filters.get("status"):
+            clauses.append("w.status = ?")
+            parameters.append(filters["status"])
+        if filters.get("low_output") in {"0", "1"}:
+            clauses.append("w.is_low_output = ?")
+            parameters.append(int(filters["low_output"]))
         if filters.get("keyword"):
             clauses.append("(w.id LIKE ? ESCAPE '\\' OR w.code LIKE ? ESCAPE '\\' OR w.name LIKE ? ESCAPE '\\')")
             parameters.extend([self._like_literal(filters["keyword"])] * 3)
@@ -159,10 +215,17 @@ class WellsService:
             "device": device_data,
             "latest_telemetry": _row(self.database.query_one("SELECT * FROM telemetry WHERE well_id=? ORDER BY measured_at DESC, id DESC LIMIT 1", (well_id,))),
             "latest_production": _row(self.database.query_one("SELECT * FROM production_daily WHERE well_id=? ORDER BY day DESC LIMIT 1", (well_id,))),
+            "production_history": [_row(r) for r in self.database.query_all(
+                "SELECT * FROM production_daily WHERE well_id=? ORDER BY day DESC LIMIT 30", (well_id,)
+            )],
+            "latest_dynagraph": _row(self.database.query_one(
+                "SELECT id,well_id,device_id,captured_at,model_version,status,latest_model_run_id,source_type "
+                "FROM dynagraphs WHERE well_id=? ORDER BY captured_at DESC,id DESC LIMIT 1", (well_id,)
+            )),
             "latest_diagnosis": _row(self.database.query_one("SELECT * FROM diagnoses WHERE well_id=? ORDER BY created_at DESC, id DESC LIMIT 1", (well_id,))),
             "active_strategy": _row(self.database.query_one("SELECT * FROM energy_strategies WHERE well_id=? AND status IN ('active', 'effective') ORDER BY updated_at DESC, id DESC LIMIT 1", (well_id,))),
             "active_alarms": [_row(r) for r in self.database.query_all("SELECT * FROM alarms WHERE well_id=? AND status NOT IN ('closed', 'resolved') ORDER BY created_at DESC, id DESC", (well_id,))],
-            "active_work_orders": [_row(r) for r in self.database.query_all("SELECT * FROM work_orders WHERE well_id=? AND status NOT IN ('closed', 'completed') ORDER BY created_at DESC, id DESC", (well_id,))],
+            "active_work_orders": [_row(r) for r in self.database.query_all("SELECT * FROM work_orders WHERE well_id=? AND status != 'closed' ORDER BY created_at DESC, id DESC", (well_id,))],
         }
 
     @staticmethod

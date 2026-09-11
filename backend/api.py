@@ -1,6 +1,8 @@
 """HTTP route adapter for dashboard and well query services."""
 
 from http import HTTPStatus
+import csv
+import io
 import re
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -37,12 +39,18 @@ class WellApi:
         path = parsed.path
         try:
             if path == "/api/dashboard":
+                if parsed.query:
+                    raise WellValidationError("dashboard does not accept query parameters")
                 return self._dashboard()
+            if path == "/api/wells.csv":
+                return self._csv(parsed.query)
             if path == "/api/wells":
                 return self._list(parsed.query)
             segments = self._well_segments(path)
             if segments is not None:
                 if len(segments) == 1:
+                    if parsed.query:
+                        raise WellValidationError("well detail does not accept query parameters")
                     return self._detail(segments[0])
                 if len(segments) == 2 and segments[1] == "telemetry":
                     return self._telemetry(segments[0], parsed.query)
@@ -87,12 +95,47 @@ class WellApi:
     def _list(self, query):
         if self.handler._require("wells.read") is None:
             return True
-        values = self._query(query, {"unit_id", "group_id", "status", "keyword", "page", "page_size"})
+        values = self._query(query, {"unit_id", "group_id", "status", "low_output", "keyword", "page", "page_size"})
+        if "low_output" in values and values["low_output"] not in {"0", "1"}:
+            raise WellValidationError("low_output must be 0 or 1")
         page = self._integer(values.get("page", "1"), "page", 1, self.MAX_PAGE)
         page_size = self._integer(values.get("page_size", "20"), "page_size", 1, 100)
         if (page - 1) * page_size > self.SQLITE_MAX_INTEGER:
             raise WellValidationError("page offset is out of range")
         self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": self.service.list_wells({**values, "page": page, "page_size": page_size})})
+        return True
+
+    def _csv(self, query):
+        if self.handler._require("wells.read") is None:
+            return True
+        values = self._query(query, {"unit_id", "group_id", "status", "low_output", "keyword"})
+        if "low_output" in values and values["low_output"] not in {"0", "1"}:
+            raise WellValidationError("low_output must be 0 or 1")
+        result = self.service.list_wells({**values, "page": 1, "page_size": self.SQLITE_MAX_INTEGER})
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\r\n")
+        writer.writerow(("井号", "油井名称", "单位", "井组", "运行状态", "低产井", "生产日期", "日产液(m3)", "日产油(t)", "最新诊断", "活动报警"))
+        for item in result["items"]:
+            def safe(value):
+                text = "" if value is None else str(value)
+                return "'" + text if text.startswith(("=", "+", "-", "@", "\t", "\r", "\n")) else text
+            production = item.get("latest_production") or {}
+            diagnosis = item.get("latest_diagnosis") or {}
+            writer.writerow(tuple(safe(value) for value in (
+                item["code"], item["name"], item["unit"]["name"], item["group"]["name"],
+                item["status"], "是" if item["low_output"] else "否", production.get("day"),
+                production.get("daily_fluid"), production.get("daily_oil"), diagnosis.get("diagnosis_type"),
+                item["active_alarm_count"],
+            )))
+        body = ("\ufeff" + output.getvalue()).encode("utf-8")
+        self.handler.send_response(HTTPStatus.OK)
+        self.handler.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.handler.send_header("Content-Disposition", 'attachment; filename="well-ledger.csv"')
+        self.handler.send_header("Cache-Control", "no-store")
+        self.handler.send_header("X-Content-Type-Options", "nosniff")
+        self.handler.send_header("Content-Length", str(len(body)))
+        self.handler.end_headers()
+        self.handler.wfile.write(body)
         return True
 
     def _detail(self, well_id):
@@ -162,6 +205,8 @@ class DeviceApi:
             if path == "/api/devices":
                 if self.handler._require("devices.read") is None: return True
                 query = WellApi._query(parsed.query, {"unit", "unit_id", "well", "well_id", "status", "keyword", "page", "page_size"})
+                if {"unit", "unit_id"}.issubset(query) or {"well", "well_id"}.issubset(query):
+                    raise DeviceValidationError("duplicate alias query parameters")
                 if "unit" in query and "unit_id" not in query: query["unit_id"] = query.pop("unit")
                 if "well" in query and "well_id" not in query: query["well_id"] = query.pop("well")
                 page = WellApi._integer(query.get("page", "1"), "page", 1, self.MAX_PAGE); size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
@@ -169,19 +214,26 @@ class DeviceApi:
                 self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": self.service.list_devices({**query, "page": page, "page_size": size})}); return True
             segments = self._segments(path)
             if segments is None: return False
-            if self.handler._require("devices.read") is None: return True
-            if len(segments) == 1: payload = self.service.detail(segments[0])
+            actor = self.handler._require("devices.read")
+            if actor is None: return True
+            if parsed.query: raise DeviceValidationError("device detail does not accept query parameters")
+            if len(segments) == 1:
+                payload = self.service.detail(segments[0], include_commands="commands.read" in actor.permissions)
+                payload["capabilities"]["scenario_control"] = "devices.control" in actor.permissions
+                payload["capabilities"]["channel_configuration"] = "devices.configure" in actor.permissions
             elif len(segments) == 2 and segments[1] == "registers": payload = self.service.registers(segments[0])
             else: return False
             self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": payload}); return True
         except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device not found")); return True
         except DeviceValidationError as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error))); return True
     def post(self, request_target):
-        segments = self._segments(urlsplit(request_target).path)
+        parsed = urlsplit(request_target)
+        segments = self._segments(parsed.path)
         if segments is None or len(segments) != 2 or segments[1] != "scenarios": return False
         actor = self.handler._require("devices.control")
         if actor is None: return True
         try:
+            if parsed.query: raise DeviceValidationError("device scenario does not accept query parameters")
             body = self.handler._json_body()
             if not isinstance(body, dict) or set(body) != {"name", "duration_minutes"}:
                 raise DeviceValidationError("scenario body must contain exactly name and duration_minutes")
@@ -191,11 +243,13 @@ class DeviceApi:
         except (DeviceValidationError, ValueError) as error: self.handler._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self.handler._error("validation_error", str(error)))
         return True
     def patch(self, request_target):
-        segments = self._segments(urlsplit(request_target).path)
+        parsed = urlsplit(request_target)
+        segments = self._segments(parsed.path)
         if segments is None or len(segments) != 3 or segments[1] != "channels": return False
         actor = self.handler._require("devices.configure")
         if actor is None: return True
         try:
+            if parsed.query: raise DeviceValidationError("device channel mutation does not accept query parameters")
             result = self.service.update_channel(actor.id, segments[0], segments[2], self.handler._json_body()); self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": result})
         except DeviceNotFound: self.handler._send_json(HTTPStatus.NOT_FOUND, self.handler._error("not_found", "Device or channel not found"))
         except ChannelVersionConflict: self.handler._send_json(HTTPStatus.CONFLICT, self.handler._error("version_conflict", "Record version is stale"))
@@ -445,7 +499,7 @@ class CommandApi:
         parsed = urlsplit(request_target)
         if parsed.path == "/api/commands":
             try:
-                if self.handler._require("reports.read") is None:
+                if self.handler._require("commands.read") is None:
                     return True
                 query = WellApi._query(
                     parsed.query,
@@ -461,7 +515,7 @@ class CommandApi:
         if command_id is None:
             return False
         try:
-            if self.handler._require("reports.read") is None:
+            if self.handler._require("commands.read") is None:
                 return True
             if parsed.query:
                 raise CommandValidationError("command detail does not accept query parameters")

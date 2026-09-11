@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 
-from backend.simulator import SimulatorValidationError
+from backend.simulator import SCENARIOS, SimulatorValidationError
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -29,11 +29,42 @@ class DevicesService:
         total = self.database.scalar("SELECT COUNT(*) FROM devices d LEFT JOIN wells w ON w.id=d.well_id LEFT JOIN well_groups g ON g.id=w.group_id WHERE " + where, values)
         rows = self.database.query_all("SELECT d.*, w.code AS well_code, w.name AS well_name, g.unit_id FROM devices d LEFT JOIN wells w ON w.id=d.well_id LEFT JOIN well_groups g ON g.id=w.group_id WHERE " + where + " ORDER BY d.id LIMIT ? OFFSET ?", [*values, size, (page - 1) * size])
         return {"items": [self._device(row) for row in rows], "page": page, "page_size": size, "total": total}
-    def detail(self, device_id):
+    def detail(self, device_id, *, include_commands=True):
         row = self._row(device_id)
         data = self._device(row)
         data["channels"] = [self._channel(item) for item in self.database.query_all("SELECT * FROM device_channels WHERE device_id=? ORDER BY channel_code", (device_id,))]
         data["scenario"] = self._scenario(device_id)
+        data["latest_heartbeat"] = self._dict(self.database.query_one(
+            "SELECT id,raw_message_id,reported_at,status,source_type FROM device_heartbeats "
+            "WHERE device_id=? ORDER BY reported_at DESC,id DESC LIMIT 1", (device_id,)
+        ))
+        if data["latest_heartbeat"]:
+            reported = datetime.fromisoformat(data["latest_heartbeat"]["reported_at"].replace("Z", "+00:00"))
+            now = self.registry.now()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=SHANGHAI_TIMEZONE)
+            age = max(0, int((now.astimezone(timezone.utc) - reported.astimezone(timezone.utc)).total_seconds()))
+            data["latest_heartbeat"]["age_seconds"] = age
+            data["latest_heartbeat"]["stale"] = age > 300
+        data["recent_events"] = [self._dict(item) for item in self.database.query_all(
+            "SELECT id,event_type,detail,status,created_at,source_type FROM device_events "
+            "WHERE device_id=? ORDER BY created_at DESC,id DESC LIMIT 20", (device_id,)
+        )]
+        data["recent_messages"] = [self._dict(item) for item in self.database.query_all(
+            "SELECT id,received_at,reported_at,frame_kind,sequence_text,status,rejection_code "
+            "FROM raw_messages WHERE device_id=? ORDER BY id DESC LIMIT 20", (device_id,)
+        )]
+        data["recent_commands"] = [self._dict(item) for item in self.database.query_all(
+            "SELECT id,strategy_id,command_type,issued_at,completed_at,status,attempt_count "
+            "FROM device_commands WHERE device_id=? ORDER BY created_at DESC,id DESC LIMIT 20", (device_id,)
+        )] if include_commands else []
+        data["capabilities"] = {
+            "scenario_control": True,
+            "channel_configuration": True,
+            "allowed_scenarios": sorted(SCENARIOS),
+            "maximum_scenario_minutes": 1440,
+            "heartbeat_stale_seconds": 300,
+        }
         return data
     def registers(self, device_id):
         self._row(device_id)
@@ -106,3 +137,5 @@ class DevicesService:
     def _device(row): return {"id": row["id"], "well_id": row["well_id"], "well_code": row["well_code"], "well_name": row["well_name"], "unit_id": row["unit_id"], "serial_number": row["serial_number"], "device_type": row["device_type"], "firmware_version": row["firmware_version"], "status": row["status"], "connection_mode": "virtual", "hardware_connected": False}
     @staticmethod
     def _channel(row): return {"id": row["id"], "device_id": row["device_id"], "channel_code": row["channel_code"], "name": row["name"], "status": row["status"], "enabled": bool(row["enabled"]), "sample_interval_ms": row["sample_interval_ms"], "scale": row["scale"], "offset": row["offset"], "version": row["version"]}
+    @staticmethod
+    def _dict(row): return dict(row) if row is not None else None
