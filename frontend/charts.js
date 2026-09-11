@@ -2,7 +2,8 @@ import { escapeHtml } from "./components.js";
 
 function numeric(value, fallback = 0) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(-1e12, Math.min(1e12, parsed));
 }
 
 function scale(values, floor = 0) {
@@ -57,11 +58,29 @@ export const charts = {
       <div style="--gauge:${percent.toFixed(1)}deg"><strong>${percent.toFixed(1)}<small>${escapeHtml(unit)}</small></strong></div><figcaption>${escapeHtml(title)}</figcaption></figure>`;
   },
 
-  dynagraph(samples, { title = "示功图" } = {}) {
+  dynagraph(samples, { title = "示功图", xLabel = "位移 (m)", yLabel = "载荷 (kN)", reference = [] } = {}) {
     if (!Array.isArray(samples) || samples.length < 3) return placeholder("暂无功图点集");
+    const width = 560, height = 300, left = 68, right = 24, top = 24, bottom = 58;
+    const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const points = samples.map((item, index) => ({ x: numeric(item.x ?? item.displacement ?? index), y: numeric(item.y ?? item.load ?? item) }));
-    const xs = scale(points.map((item) => item.x)), ys = scale(points.map((item) => item.y));
-    const coords = points.map((item) => `${(24 + (item.x - xs.min) / xs.span * 432).toFixed(1)},${(16 + (ys.max - item.y) / ys.span * 188).toFixed(1)}`).join(" ");
-    return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption><svg viewBox="0 0 480 230" role="img" aria-label="${escapeHtml(title)}"><rect class="plot-frame" x="24" y="16" width="432" height="188" /><polyline class="dynagraph-line" points="${coords}" /></svg></figure>`;
+    const referencePoints = Array.isArray(reference) ? reference.map((item, index) => ({ x: numeric(item.x ?? item.displacement ?? index), y: numeric(item.y ?? item.load ?? item) })) : [];
+    const domainPoints = [...points, ...referencePoints];
+    const xs = scale(domainPoints.map((item) => item.x)), ys = scale(domainPoints.map((item) => item.y));
+    const x = (value) => left + (numeric(value) - xs.min) / xs.span * plotWidth;
+    const y = (value) => top + (ys.max - numeric(value)) / ys.span * plotHeight;
+    const coords = (items) => items.map((item) => `${x(item.x).toFixed(1)},${y(item.y).toFixed(1)}`).join(" ");
+    const divisions = [0, .25, .5, .75, 1];
+    const xTicks = divisions.map((ratio) => {
+      const px = left + ratio * plotWidth;
+      const value = xs.min + ratio * xs.span;
+      return `<g data-axis="x" class="chart-tick"><line x1="${px.toFixed(1)}" y1="${top}" x2="${px.toFixed(1)}" y2="${height - bottom}" /><text x="${px.toFixed(1)}" y="${height - bottom + 19}" text-anchor="middle">${escapeHtml(value.toFixed(2))}</text></g>`;
+    }).join("");
+    const yTicks = divisions.map((ratio) => {
+      const py = top + ratio * plotHeight;
+      const value = ys.max - ratio * ys.span;
+      return `<g data-axis="y" class="chart-tick"><line x1="${left}" y1="${py.toFixed(1)}" x2="${width - right}" y2="${py.toFixed(1)}" /><text x="${left - 10}" y="${(py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(value.toFixed(2))}</text></g>`;
+    }).join("");
+    const tooltips = points.map((item) => `<circle cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="3"><title>${escapeHtml(xLabel)}：${escapeHtml(item.x.toFixed(3))}；${escapeHtml(yLabel)}：${escapeHtml(item.y.toFixed(3))}</title></circle>`).join("");
+    return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}"><rect class="plot-frame" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" /><g class="chart-grid dynagraph-grid">${xTicks}${yTicks}</g>${referencePoints.length ? `<polyline class="dynagraph-reference" points="${coords(referencePoints)}" />` : ""}<polyline class="dynagraph-line" points="${coords(points)}" /><g class="chart-points dynagraph-points">${tooltips}</g><text class="chart-axis-title" x="${left + plotWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(xLabel)}</text><text class="chart-axis-title" x="16" y="${top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${top + plotHeight / 2})">${escapeHtml(yLabel)}</text></svg></figure>`;
   },
 };

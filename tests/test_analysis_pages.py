@@ -61,6 +61,15 @@ class AnalysisPageSourceTests(unittest.TestCase):
         self.assertIn("displacement: item.displacement_m", source)
         self.assertIn("load: item.load_kn", source)
 
+    def test_analysis_page_exposes_end_to_end_workflow_and_liquid_stages(self):
+        source = self.source("dynagraph-analysis.js")
+        self.assertIn(
+            "电功图 → 转矩换算 → 示功图 → 智能诊断 → 产液计量 → 人工复核",
+            source,
+        )
+        for stage in ("机构参数", "有效冲程与充满度", "日产液估算"):
+            self.assertIn(stage, source)
+
     def test_message_deep_link_fetches_detail_without_relying_on_current_stream_page(self):
         source = self.source("acquisition.js")
         self.assertIn("showMessage(params.message_id)", source)

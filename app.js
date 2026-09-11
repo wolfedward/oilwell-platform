@@ -53,8 +53,8 @@ const NAVIGATION = [
   {
     id: "dynagraph", label: "功图智能", icon: "图",
     pages: [
-      { id: "dynagraphs", label: "功图档案", description: "电功图、示功图及来源追溯" },
-      { id: "dynagraph-analysis", label: "智能分析", description: "转换过程、特征参数和诊断依据" },
+      { id: "dynagraphs", label: "功图档案", description: "采集来源、分析状态、诊断工况与功图下钻" },
+      { id: "dynagraph-analysis", label: "智能分析", description: "电功图到人工复核的转换、诊断与产液闭环" },
       { id: "diagnosis-review", label: "诊断复核", description: "机器结论、候选工况与人工复核" },
     ],
   },

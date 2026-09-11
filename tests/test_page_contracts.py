@@ -2,6 +2,7 @@ import http.client
 import csv
 import io
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 import tempfile
@@ -171,6 +172,32 @@ class DashboardPayloadContractTests(unittest.TestCase):
 
 
 class OperationalPageSourceTests(unittest.TestCase):
+    def test_dynagraph_chart_renders_complete_finite_axes(self):
+        script = r"""
+const fs = require('fs');
+let source = fs.readFileSync('frontend/charts.js', 'utf8');
+source = source.replace('import { escapeHtml } from "./components.js";',
+  'const escapeHtml = (value) => String(value ?? "");');
+source = source.replace('export const charts =', 'const charts =');
+source += '\nconsole.log(JSON.stringify({\n' +
+  'normal: charts.dynagraph([{x:0,y:10},{x:1,y:20},{x:2,y:15}], {title:"井A"}),\n' +
+  'hostile: charts.dynagraph([{x:null,y:null},{x:2,y:Infinity},{x:2,y:NaN},{x:1e308,y:-1e308}], {title:"井B"})\n' +
+  '}));';
+const result = eval(source);
+"""
+        completed = subprocess.run(
+            ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
+            capture_output=True, check=True,
+        )
+        rendered = json.loads(completed.stdout)
+        normal = rendered["normal"]
+        self.assertIn("位移 (m)", normal)
+        self.assertIn("载荷 (kN)", normal)
+        self.assertEqual(normal.count('data-axis="x"'), 5)
+        self.assertEqual(normal.count('data-axis="y"'), 5)
+        for invalid in ("NaN", "Infinity", "-Infinity"):
+            self.assertNotIn(invalid, rendered["hostile"])
+
     def test_task_two_page_modules_exist_and_use_shared_api(self):
         paths = (
             "frontend/charts.js", "frontend/pages/dashboard.js", "frontend/pages/wells.js",

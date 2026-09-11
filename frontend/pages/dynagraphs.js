@@ -15,6 +15,10 @@ export async function renderDynagraphList({ api, components, format, workspace, 
   const result = await api.get(`/api/dynagraphs?${queryFor(state)}`);
   if (!isCurrent()) return false;
   const canAnalyze = permissions.has("diagnosis.run");
+  const pageAnalyzed = result.items.filter((item) => item.status === "analyzed").length;
+  const pageDiagnosed = result.items.filter((item) => item.latest_condition).length;
+  const pageAbnormal = result.items.filter((item) => item.latest_condition && item.latest_condition !== "normal").length;
+  const pageTraceable = result.items.filter((item) => item.raw_message_id || item.source_type).length;
   const columns = [
     { key: "id", label: "功图编号", render: (value) => components.trusted(`<button type="button" class="link-button" data-open-id="${escapeHtml(value)}">${escapeHtml(value)}</button>`) },
     { key: "well_id", label: "井号" },
@@ -27,7 +31,7 @@ export async function renderDynagraphList({ api, components, format, workspace, 
     { key: "action", label: "操作", render: (_value, row) => components.trusted(`<div class="header-actions"><button type="button" class="button mini secondary" data-open-id="${escapeHtml(row.id)}">查看链路</button>${canAnalyze ? `<button type="button" class="button mini primary" data-analyze-id="${escapeHtml(row.id)}">${row.status === "analyzed" ? "重新分析" : "运行分析"}</button>` : ""}</div>`) },
   ];
   const pages = Math.max(1, Math.ceil(result.total / result.page_size));
-  workspace.innerHTML = `${pageHeader(page)}<section class="panel filter-panel"><form id="dynagraphFilters" class="filter-grid device-filters">
+  workspace.innerHTML = `${pageHeader(page)}<section class="archive-summary" aria-label="功图档案概览"><article><span>档案总量</span><strong>${escapeHtml(result.total)}</strong><small>当前筛选范围</small></article><article><span>已完成分析</span><strong>${pageAnalyzed}</strong><small>当前页 ${result.items.length} 份</small></article><article><span>已有诊断</span><strong>${pageDiagnosed}</strong><small>异常工况 ${pageAbnormal} 份</small></article><article><span>来源可追溯</span><strong>${pageTraceable}</strong><small>原始报文 / 归档来源</small></article></section><section class="panel filter-panel"><form id="dynagraphFilters" class="filter-grid device-filters">
     <div class="form-field"><label for="dynagraphWell">井号</label><input id="dynagraphWell" name="well_id" value="${escapeHtml(state.well_id)}" placeholder="例如 W-001" /></div>
     <div class="form-field"><label for="dynagraphStatus">分析状态</label><select id="dynagraphStatus" name="status">${STATUS_OPTIONS.map(([value, label]) => `<option value="${value}" ${state.status === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
     <div class="inline-note">档案直接关联采集终端、原始报文、模型运行和诊断结果。</div>

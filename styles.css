@@ -337,7 +337,31 @@ tbody tr:hover { background: #f7fbff; }
 .chart-points circle { fill: #fff; stroke: var(--chart-color); stroke-width: 2; }
 .chart-empty { min-height: 210px; display: grid; place-items: center; color: var(--slate-500); background: repeating-linear-gradient(135deg, #fbfcfd, #fbfcfd 8px, #f7f9fb 8px, #f7f9fb 16px); }
 .plot-frame { fill: #fbfdff; stroke: var(--slate-200); }
+.chart-grid line { stroke-dasharray: 4 4; }
+.chart-axis-title { fill: var(--slate-700); font-size: 12px; font-weight: 700; }
 .dynagraph-line { fill: rgba(30,110,232,0.08); stroke: var(--blue-600); stroke-width: 2.2; stroke-linejoin: round; }
+.dynagraph-reference { fill: none; stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 7 5; }
+.dynagraph-points circle { fill: #fff; stroke: var(--blue-600); stroke-width: 1.4; }
+.electric-points circle.raw { fill: #fff; stroke: #94a3b8; }
+.electric-points circle.smooth { fill: #fff; stroke: var(--blue-600); }
+.archive-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.archive-summary article { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--slate-200); border-radius: 9px; background: #fff; box-shadow: var(--shadow); }
+.archive-summary span, .archive-summary small { color: var(--slate-500); font-size: 12px; }
+.archive-summary strong { color: var(--blue-700); font-size: 25px; }
+.workflow-panel { margin-bottom: 14px; }
+.workflow-panel ol { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin: 0; padding: 18px; list-style: none; }
+.workflow-panel li { position: relative; display: grid; place-items: center; gap: 5px; min-width: 0; text-align: center; }
+.workflow-panel li:not(:last-child)::after { content: ""; position: absolute; left: calc(50% + 19px); right: calc(-50% + 19px); top: 16px; height: 2px; background: var(--slate-200); }
+.workflow-panel li.complete:not(:last-child)::after { background: #8db7f3; }
+.workflow-panel li b { z-index: 1; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: var(--slate-500); background: var(--slate-100); }
+.workflow-panel li.complete b { color: #fff; background: var(--blue-600); }
+.workflow-panel li span { font-weight: 700; }
+.workflow-panel li small { color: var(--slate-500); }
+.production-flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 12px; padding: 17px; border-bottom: 1px solid var(--slate-200); background: #f8fbff; }
+.production-flow > div { display: grid; grid-template-columns: auto 1fr; gap: 3px 9px; align-items: center; }
+.production-flow b { grid-row: 1 / 3; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--cyan-500); }
+.production-flow span { color: var(--slate-500); font-size: 12px; }
+.production-flow i { color: var(--slate-500); font-size: 20px; font-style: normal; }
 .bar-chart { display: grid; gap: 10px; margin: 0; padding: 15px; }
 .bar-chart > div { display: grid; grid-template-columns: 100px 1fr 70px; gap: 9px; align-items: center; }
 .bar-chart i { height: 9px; overflow: hidden; border-radius: 5px; background: var(--slate-100); }
@@ -462,6 +486,10 @@ tbody tr:hover { background: #f7fbff; }
   .topnav button { min-width: 53px; }
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
   .evidence-grid { grid-template-columns: 1fr; }
+  .archive-summary { grid-template-columns: repeat(2, 1fr); }
+  .workflow-panel ol { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }
+  .production-flow { grid-template-columns: 1fr; }
+  .production-flow > i { display: none; }
 }
 
 @media print {

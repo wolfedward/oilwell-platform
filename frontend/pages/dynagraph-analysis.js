@@ -11,11 +11,12 @@ const FEATURE_LABELS = {
 
 function finite(value, fallback = 0) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(-1e12, Math.min(1e12, parsed));
 }
 
 function electricCurve(raw, intermediate, { smoothedOnly = false } = {}) {
-  const width = 720, height = 250, left = 48, right = 20, top = 22, bottom = 34;
+  const width = 720, height = 290, left = 66, right = 22, top = 24, bottom = 56;
   const rawItems = Array.isArray(raw) ? raw : [];
   const smoothItems = Array.isArray(intermediate) ? intermediate : [];
   if (!rawItems.length && !smoothItems.length) return '<div class="chart-empty">暂无电功图点集</div>';
@@ -25,14 +26,18 @@ function electricCurve(raw, intermediate, { smoothedOnly = false } = {}) {
   const points = [...rawPoints, ...smoothPoints];
   const minY = Math.min(...points.map((item) => item.y), 0);
   const maxY = Math.max(...points.map((item) => item.y), minY + 1);
-  const x = (value) => left + Math.max(0, Math.min(360, value)) / 360 * (width - left - right);
+  const plotWidth = width - left - right, plotHeight = height - top - bottom;
+  const x = (value) => left + Math.max(0, Math.min(360, finite(value))) / 360 * plotWidth;
   const y = (value) => top + (maxY - value) / (maxY - minY) * (height - top - bottom);
   const line = (items) => items.map((item) => `${x(item.x).toFixed(1)},${y(item.y).toFixed(1)}`).join(" ");
-  return `<figure class="chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="电功图原始与滤波功率曲线"><rect class="plot-frame" x="${left}" y="${top}" width="${width - left - right}" height="${height - top - bottom}" />
+  const divisions = [0, .25, .5, .75, 1];
+  const xTicks = divisions.map((ratio) => { const px = left + ratio * plotWidth; return `<g data-axis="x" class="chart-tick"><line x1="${px.toFixed(1)}" y1="${top}" x2="${px.toFixed(1)}" y2="${height - bottom}" /><text x="${px.toFixed(1)}" y="${height - bottom + 19}" text-anchor="middle">${(ratio * 360).toFixed(0)}</text></g>`; }).join("");
+  const yTicks = divisions.map((ratio) => { const py = top + ratio * plotHeight; return `<g data-axis="y" class="chart-tick"><line x1="${left}" y1="${py.toFixed(1)}" x2="${width - right}" y2="${py.toFixed(1)}" /><text x="${left - 10}" y="${(py + 4).toFixed(1)}" text-anchor="end">${(maxY - ratio * (maxY - minY)).toFixed(2)}</text></g>`; }).join("");
+  const pointTitles = (items, kind) => items.map((item) => `<circle class="electric-point ${kind}" cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="2.7"><title>${kind === "raw" ? "原始" : "滤波"}：曲柄角 ${item.x.toFixed(1)}°，有功功率 ${item.y.toFixed(3)} kW</title></circle>`).join("");
+  return `<figure class="chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="电功图原始与滤波功率曲线"><desc>曲柄角(°)与有功功率(kW)坐标</desc><rect class="plot-frame" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" /><g class="chart-grid electric-grid">${xTicks}${yTicks}</g>
     ${smoothedOnly ? "" : `<polyline points="${line(rawPoints)}" fill="none" stroke="#94a3b8" stroke-width="1.6" />`}
     ${smoothPoints.length ? `<polyline points="${line(smoothPoints)}" fill="none" stroke="#1e6ee8" stroke-width="2.4" />` : ""}
-    <text x="${left}" y="${height - 9}" fill="#64748b" font-size="11">0°</text><text x="${width - right}" y="${height - 9}" text-anchor="end" fill="#64748b" font-size="11">360°</text>
-    <text x="${left}" y="14" fill="#64748b" font-size="11">有功功率 kW</text></svg></figure>`;
+    <g class="chart-points electric-points">${smoothedOnly ? "" : pointTitles(rawPoints, "raw")}${pointTitles(smoothPoints, "smooth")}</g><text class="chart-axis-title" x="${left + plotWidth / 2}" y="${height - 10}" text-anchor="middle">曲柄角 (°)</text><text class="chart-axis-title" x="16" y="${top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${top + plotHeight / 2})">有功功率 (kW)</text></svg></figure>`;
 }
 
 function definitionTable(components, rows, emptyText) {
@@ -77,14 +82,20 @@ function analysisMarkup(data, runs, context) {
     displacement: item.displacement_m,
     load: item.load_kn,
   }));
+  const workflow = [
+    ["电功图", raw.length ? "已采集" : "待采集"], ["转矩换算", intermediate.length ? "已转换" : "待转换"],
+    ["示功图", dynagraphPoints.length ? "已生成" : "待生成"], ["智能诊断", diagnosis ? "已诊断" : "待诊断"],
+    ["产液计量", production ? "已估算" : "待估算"], ["人工复核", data.reviews?.length ? "已复核" : "待复核"],
+  ];
   return `<section class="detail-hero panel"><div><span class="object-code">${escapeHtml(data.id)}</span><h2>${escapeHtml(data.well_name)} · ${escapeHtml(data.well_id)}</h2><p>终端 ${escapeHtml(data.device_id || "历史归档")} · 原始报文 ${escapeHtml(data.raw_message_id ? `#${data.raw_message_id}` : "归档记录")}</p></div><dl><div><dt>分析状态</dt><dd>${components.statusTag(data.status).html}</dd></div><div><dt>采集时间</dt><dd>${escapeHtml(format.dateTime(data.captured_at))}</dd></div><div><dt>模型版本</dt><dd>${escapeHtml(run?.model_version || data.model_version || "待运行")}</dd></div><div><dt>模型运行</dt><dd>${escapeHtml(run?.id || "—")}</dd></div></dl></section>
+    <section class="panel workflow-panel"><header><div><p class="eyebrow">OPERATIONS CHAIN</p><h2>采集到复核闭环</h2></div><span>电功图 → 转矩换算 → 示功图 → 智能诊断 → 产液计量 → 人工复核</span></header><ol>${workflow.map(([label, status], index) => `<li class="${status.startsWith("已") ? "complete" : "pending"}"><b>${index + 1}</b><span>${label}</span><small>${status}</small></li>`).join("")}</ol></section>
     <section class="detail-grid"><article class="panel chart-panel wide"><header><div><p class="eyebrow">RAW ELECTRIC CARD</p><h2>原始电功图</h2></div><span>${raw.length} 个采样点</span></header>${electricCurve(raw, [], {})}</article><article class="panel info-panel"><header><div><p class="eyebrow">TRACEABILITY</p><h2>模型版本与审计记录</h2></div></header><dl><div><dt>功图模型</dt><dd>${escapeHtml(run?.component_versions?.dynagraph || run?.model_version || "—")}</dd></div><div><dt>诊断模型</dt><dd>${escapeHtml(run?.component_versions?.diagnosis || "—")}</dd></div><div><dt>模板版本</dt><dd>${escapeHtml(run?.component_versions?.template || diagnosis?.template_version || "—")}</dd></div><div><dt>产量模型</dt><dd>${escapeHtml(run?.component_versions?.production || production?.model_version || "—")}</dd></div></dl><button type="button" class="button secondary full" data-audit-link>查看审计记录</button></article></section>
     <section class="detail-grid"><article class="panel chart-panel wide"><header><div><p class="eyebrow">FILTERED POWER</p><h2>滤波结果</h2></div><span>灰色原始 · 蓝色五点平滑</span></header>${electricCurve(raw, intermediate)}</article><article class="panel info-panel"><header><div><p class="eyebrow">ENERGY CHECK</p><h2>能量一致性</h2></div></header><dl>${Object.entries(conversion.energy || {}).map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(format.number(value, 4))}</dd></div>`).join("") || "<div><dt>状态</dt><dd>待分析</dd></div>"}</dl></article></section>
     <section class="panel list-panel" style="margin-bottom:14px"><header><div><p class="eyebrow">TORQUE CONVERSION</p><h2>转矩换算</h2></div><span>抽样展示 ${torqueRows.length} / ${intermediate.length} 点</span></header><div class="panel-body">${components.table([{ key: "phase", label: "曲柄角" }, { key: "power", label: "功率 kW" }, { key: "motor", label: "电机转矩 N·m" }, { key: "crank", label: "曲柄转矩 N·m" }, { key: "balance", label: "平衡转矩 N·m" }, { key: "net", label: "净转矩 N·m" }, { key: "inferred", label: "载荷换算" }], torqueRows, { emptyText: "运行分析后显示转矩换算过程" })}</div></section>
-    <section class="detail-grid"><article class="panel chart-panel wide"><header><div><p class="eyebrow">SURFACE DYNAGRAPH</p><h2>示功图</h2></div><span>位移 m / 载荷 kN</span></header>${charts.dynagraph(dynagraphPoints, { title: `${data.well_id} 示功图` })}</article><article class="panel list-panel"><header><div><p class="eyebrow">FEATURE VECTOR</p><h2>特征参数</h2></div></header><div class="panel-body">${definitionTable(components, featureRows, "运行分析后显示特征参数")}</div></article></section>
+    <section class="detail-grid"><article class="panel chart-panel wide"><header><div><p class="eyebrow">SURFACE DYNAGRAPH</p><h2>示功图</h2></div><span>位移 m / 载荷 kN</span></header>${charts.dynagraph(dynagraphPoints, { title: `${data.well_id} 示功图`, xLabel: "位移 (m)", yLabel: "载荷 (kN)" })}</article><article class="panel list-panel"><header><div><p class="eyebrow">FEATURE VECTOR</p><h2>特征参数</h2></div></header><div class="panel-body">${definitionTable(components, featureRows, "运行分析后显示特征参数")}</div></article></section>
     <section class="detail-grid"><article class="panel list-panel wide"><header><div><p class="eyebrow">EXPLAINABLE DIAGNOSIS</p><h2>诊断依据</h2></div><span>${diagnosis ? `${CONDITION_LABELS[diagnosis.condition] || diagnosis.condition} · ${format.percent(diagnosis.confidence)}` : "待分析"}</span></header><div class="panel-body"><h3>规则命中</h3>${components.table([{ key: "description", label: "判据" }, { key: "condition", label: "指向工况", render: (value) => CONDITION_LABELS[value] || value }, { key: "observed", label: "观测值", render: (value) => format.number(value, 4) }, { key: "threshold", label: "阈值", render: (value) => format.number(value, 4) }, { key: "severity", label: "强度", render: (value) => format.percent(value) }], rules, { emptyText: "暂无命中规则" })}<h3>候选工况</h3>${components.table([{ key: "condition", label: "候选工况", render: (value) => CONDITION_LABELS[value] || value }, { key: "combined_score", label: "综合得分", render: (value) => format.percent(value) }, { key: "template_score", label: "模板相似度", render: (value) => format.percent(value) }, { key: "rule_score", label: "规则得分", render: (value) => format.percent(value) }, { key: "template_version", label: "模板版本" }], candidates, { emptyText: "运行分析后显示候选工况" })}</div></article><article class="panel info-panel"><header><div><p class="eyebrow">RECOMMENDATION</p><h2>诊断结论</h2></div></header><dl><div><dt>机器结论</dt><dd>${escapeHtml(CONDITION_LABELS[diagnosis?.condition] || diagnosis?.condition || "待分析")}</dd></div><div><dt>可信度</dt><dd>${escapeHtml(diagnosis ? format.percent(diagnosis.confidence) : "—")}</dd></div><div><dt>模板</dt><dd>${escapeHtml(diagnosis?.template_version || "—")}</dd></div><div><dt>复核版本</dt><dd>${escapeHtml(diagnosis?.review_version || "—")}</dd></div></dl><p class="source-note">${escapeHtml(diagnosis?.recommendation || "分析完成后生成可解释建议。")}</p></article></section>
     <section class="panel chart-panel" style="margin-bottom:14px"><header><div><p class="eyebrow">TEMPLATE SIMILARITY</p><h2>模板相似度对比</h2></div><span>服务端候选工况模板评分</span></header>${charts.bar(templateComparison, { title: "候选工况模板相似度对比", unit: "%" })}</section>
-    <section class="panel list-panel" style="margin-bottom:14px"><header><div><p class="eyebrow">LIQUID ESTIMATE</p><h2>产液量计算</h2></div><span>${production ? `估算 ${format.number(production.estimated_m3_day, 2)} m³/d` : "待分析"}</span></header><div class="panel-body">${definitionTable(components, productionRows, "运行分析后显示公式因子")}</div></section>`;
+    <section class="panel list-panel" style="margin-bottom:14px"><header><div><p class="eyebrow">LIQUID ESTIMATE</p><h2>产液量计算</h2></div><span>${production ? `估算 ${format.number(production.estimated_m3_day, 2)} m³/d` : "待分析"}</span></header><div class="production-flow"><div><b>1</b><strong>机构参数</strong><span>泵径、冲程、冲次</span></div><i>→</i><div><b>2</b><strong>有效冲程与充满度</strong><span>${production ? `${format.number(production.effective_stroke_m, 3)} m · ${format.percent(production.fillage)}` : "等待功图特征"}</span></div><i>→</i><div><b>3</b><strong>日产液估算</strong><span>${production ? `${format.number(production.estimated_m3_day, 3)} m³/d` : "等待模型计算"}</span></div></div><div class="panel-body">${definitionTable(components, productionRows, "运行分析后显示公式因子")}</div></section>`;
 }
 
 export async function renderDynagraphAnalysis(context) {
