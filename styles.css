@@ -411,6 +411,56 @@ tbody tr:hover { background: #f7fbff; }
 .archive-summary article { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--slate-200); border-radius: 9px; background: #fff; box-shadow: var(--shadow); }
 .archive-summary span, .archive-summary small { color: var(--slate-500); font-size: 12px; }
 .archive-summary strong { color: var(--blue-700); font-size: 25px; }
+.dynagraph-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.dynagraph-archive-card { min-width: 0; overflow: hidden; }
+.dynagraph-archive-card > header { padding: 14px 16px 11px; }
+.dynagraph-archive-card h3 { margin: 2px 0 0; font-size: 16px; }
+.dynagraph-card-identity { display: flex; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--slate-200); background: #f8fbff; }
+.dynagraph-card-identity span { color: var(--slate-500); font-size: 12px; }
+.dynagraph-card-parameters { display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: 8px 16px; }
+.dynagraph-card-parameters > div { min-width: 0; padding: 8px 5px; border-bottom: 1px dashed var(--slate-200); }
+.dynagraph-card-parameters dt { color: var(--slate-500); font-size: 11px; }
+.dynagraph-card-parameters dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 700; }
+.dynagraph-archive-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px 14px; color: var(--slate-500); font-size: 12px; }
+.dynagraph-comparison-panel { min-width: 0; margin-bottom: 14px; overflow: hidden; }
+.dynagraph-status-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 18px; color: #fff; background: linear-gradient(110deg, #102e50, #174f78); }
+.dynagraph-status-head > div { display: grid; gap: 3px; }
+.dynagraph-status-head .right { justify-items: end; text-align: right; }
+.dynagraph-status-head span, .dynagraph-status-head small { color: #bdd2e5; font-size: 11px; }
+.dynagraph-status-head strong:not(.status-tag) { font-size: 18px; }
+.dynagraph-status-head .status-tag.active { color: #bdf4d5; background: rgba(24,154,84,.28); }
+.dynagraph-status-head .status-tag.warning { color: #ffe0a3; background: rgba(196,107,0,.32); }
+.dynagraph-status-head .status-tag.failed { color: #ffd0d0; background: rgba(200,55,55,.32); }
+.dynagraph-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border-bottom: 1px solid var(--slate-200); }
+.dynagraph-chart-head h2 { margin: 3px 0 4px; font-size: 19px; }
+.dynagraph-chart-head p:not(.eyebrow) { margin: 0; color: var(--slate-500); font-size: 12px; }
+.dynagraph-toggles { display: flex; gap: 14px; margin: 0; padding: 8px 12px; border: 1px solid var(--slate-200); border-radius: 8px; background: #f8fafc; }
+.dynagraph-toggles legend { padding: 0 5px; color: var(--slate-500); font-size: 11px; }
+.dynagraph-toggles label { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; font-weight: 700; cursor: pointer; }
+.dynagraph-toggles input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue-600); }
+.dynagraph-toggles i { width: 22px; height: 3px; display: inline-block; border-radius: 3px; background: var(--blue-600); }
+.dynagraph-toggles .legend-measured i { height: 0; border-top: 2px dashed #64748b; background: transparent; }
+.dynagraph-operating-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; border-bottom: 1px solid var(--slate-200); background: var(--slate-200); }
+.dynagraph-operating-strip > div { min-width: 0; padding: 11px 13px; background: #fff; }
+.dynagraph-operating-strip span, .dynagraph-operating-strip small { display: block; color: var(--slate-500); font-size: 11px; }
+.dynagraph-operating-strip strong { display: inline-block; margin: 5px 4px 0 0; color: var(--blue-700); font-size: 18px; }
+.dynagraph-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 1px; background: var(--slate-200); }
+.dynagraph-plot { min-width: 0; padding: 6px 14px 8px; background: #fff; }
+.dynagraph-plot .chart { min-height: 390px; }
+.dynagraph-side-metrics { min-width: 0; padding: 15px 17px; background: #f8fafc; }
+.dynagraph-side-metrics > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dynagraph-side-metrics > p { margin: 10px 0 8px; color: var(--slate-500); font-size: 11px; line-height: 1.55; }
+.dynagraph-side-metrics dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 0; }
+.dynagraph-side-metrics dl > div { padding: 9px 10px; border: 1px solid var(--slate-200); border-radius: 6px; background: #fff; }
+.dynagraph-side-metrics dt { color: var(--slate-500); font-size: 10px; }
+.dynagraph-side-metrics dd { margin: 4px 0 0; color: var(--slate-700); font-weight: 800; }
+.dynagraph-side-metrics dd small { color: var(--slate-500); font-weight: 400; }
+.dynagraph-side-metrics > footer { margin-top: 10px; color: var(--slate-500); font-family: Consolas, monospace; font-size: 10px; }
+.dynagraph-result-footer { display: grid; grid-template-columns: repeat(5, minmax(90px, .75fr)) minmax(260px, 2fr); gap: 1px; border-top: 1px solid var(--slate-200); background: var(--slate-200); }
+.dynagraph-result-footer > div { min-width: 0; padding: 12px 14px; background: #fff; }
+.dynagraph-result-footer span { display: block; color: var(--slate-500); font-size: 11px; }
+.dynagraph-result-footer strong { display: block; margin-top: 5px; overflow-wrap: anywhere; font-size: 13px; }
+.dynagraph-result-footer .advice strong { color: var(--slate-700); font-size: 12px; line-height: 1.55; }
 .workflow-panel { margin-bottom: 14px; }
 .workflow-panel ol { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin: 0; padding: 18px; list-style: none; }
 .workflow-panel li { position: relative; display: grid; place-items: center; gap: 5px; min-width: 0; text-align: center; }
@@ -540,6 +590,10 @@ tbody tr:hover { background: #f7fbff; }
   .topnav button { min-width: 57px; padding-inline: 5px; font-size: 12px; }
   .metric-card { padding: 15px 13px; }
   .metric-card strong { font-size: 24px; }
+  .dynagraph-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dynagraph-operating-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .dynagraph-result-footer { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dynagraph-result-footer .advice { grid-column: span 2; }
 }
 
 @media (max-width: 1260px) {
@@ -552,6 +606,9 @@ tbody tr:hover { background: #f7fbff; }
   .dashboard-trends, .dashboard-results, .dashboard-actions { grid-template-columns: minmax(0, 1fr); }
   .evidence-grid { grid-template-columns: 1fr; }
   .archive-summary { grid-template-columns: repeat(2, 1fr); }
+  .dynagraph-chart-head { align-items: flex-start; flex-direction: column; }
+  .dynagraph-chart-body { grid-template-columns: minmax(0, 1fr); }
+  .dynagraph-side-metrics dl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .workflow-panel ol { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }
   .workflow-panel li:nth-child(3n)::after { display: none; }
   .production-flow { grid-template-columns: 1fr; }

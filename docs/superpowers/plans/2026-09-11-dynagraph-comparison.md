@@ -39,6 +39,7 @@
 **Interfaces:** `PROFILE_DEFINITIONS` contains the 20 stable codes and labels; `build_profile_card()` returns `profile_code`, `profile_label`, `sensor_samples`; `compare_dynagraphs(inferred, measured)` returns `mae_kn`, `max_error_kn`, `rmse_kn`, `area_error_percent`, `stroke_error_m`, `correlation`, `upstroke_rmse_kn`, `downstroke_rmse_kn`.
 
 - [ ] Add failing literal tests for exactly 20 codes, distinct rounded feature vectors, normal load difference `20..35 kN`, legal sensor samples and deterministic output.
+- [ ] Add failing tests proving condition-specific electric-card power signatures are distinct and remain coherent with each inferred dynagraph.
 - [ ] Add failing analysis test that persists both point sets and eight finite comparison metrics in detail/model-run payloads.
 - [ ] Implement condition-specific upper/lower branch modifiers, sensor error generation and strict payload validation.
 - [ ] Align sensor points by phase, calculate comparison metrics, and persist them inside existing JSON snapshots.
@@ -74,4 +75,3 @@
 - [ ] Run focused algorithm/auth/API/page regression tests.
 - [ ] Restart the platform; analyze one normal and one fault profile; assert normal load difference `20..35 kN` and dual comparison fields.
 - [ ] Run `python acceptance_smoke.py`, visually inspect dashboard/dynagraph archive/analysis, and record exact evidence.
-
