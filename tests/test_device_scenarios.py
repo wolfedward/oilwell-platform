@@ -102,7 +102,10 @@ class DeviceScenarioAtomicityTests(unittest.TestCase):
         terminal = restart.get(self.device_id)
         self.assertEqual((terminal.scenario.name, terminal.scenario.duration_minutes, terminal.state), ("offline", 30, "offline"))
         expired = SimulatorRegistry(self.database, clock=lambda: now + timedelta(minutes=31))
-        self.assertEqual((expired.get(self.device_id).scenario.name, expired.get(self.device_id).state), ("normal", "online"))
+        # D-001 has a persisted successful control cycle. Once the temporary
+        # offline scenario expires, restart restores that effective cycle and
+        # therefore the terminal resumes in running rather than idle-online.
+        self.assertEqual((expired.get(self.device_id).scenario.name, expired.get(self.device_id).state), ("normal", "running"))
         row = self.database.query_one("SELECT name, duration_minutes, expires_at FROM device_scenarios WHERE device_id=?", (self.device_id,))
         self.assertEqual((row["name"], row["duration_minutes"], row["expires_at"]), ("normal", 0, None))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM device_events WHERE device_id=? AND event_type='scenario_expired'", (self.device_id,)), 1)
@@ -131,7 +134,7 @@ class DeviceScenarioAtomicityTests(unittest.TestCase):
             expired = list(workers.map(lambda _unused: SimulatorRegistry(self.database, clock=lambda: now + timedelta(minutes=2)), range(2)))
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM device_events WHERE device_id=? AND event_type='scenario_expired'", (self.device_id,)), 1)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE object_id=? AND action='simulator.scenario_expired'", (self.device_id,)), 1)
-        self.assertEqual([(registry.get(self.device_id).scenario.name, registry.get(self.device_id).state) for registry in expired], [("normal", "online"), ("normal", "online")])
+        self.assertEqual([(registry.get(self.device_id).scenario.name, registry.get(self.device_id).state) for registry in expired], [("normal", "running"), ("normal", "running")])
 
         runner = SimulatorRegistry(self.database, clock=lambda: now)
         DevicesService(self.database, self.audit, runner).apply_scenario(self.actor_id, self.device_id, "offline", 1)

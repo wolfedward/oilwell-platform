@@ -31,7 +31,7 @@ class SeedDatabaseTests(unittest.TestCase):
         self.assertGreaterEqual(self.database.scalar("SELECT COUNT(*) FROM telemetry"), 48 * 30 * 24)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM alarms"), 16)
         self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM work_orders"), 16)
-        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM energy_strategies"), 16)
+        self.assertEqual(self.database.scalar("SELECT COUNT(*) FROM energy_strategies"), 17)
         self.assertEqual(
             self.database.scalar(
                 """SELECT COUNT(*) FROM energy_strategies
