@@ -13,7 +13,7 @@ from backend.algorithms.dynagraph import MechanismParams
 
 
 PROFILE_DEFINITIONS = {
-    "normal": {"label": "正常", "diagnosis_code": "normal"},
+    "normal": {"label": "泵工作正常", "diagnosis_code": "normal"},
     "traveling_valve_leak": {"label": "游动凡尔漏失", "diagnosis_code": "pump_leak"},
     "standing_valve_leak": {"label": "固定凡尔漏失", "diagnosis_code": "pump_leak"},
     "double_valve_leak": {"label": "双凡尔漏失", "diagnosis_code": "pump_leak"},
