@@ -256,6 +256,36 @@ const result = eval(source);
         self.assertIn('from "./frontend/pages/wells.js"', app)
         self.assertIn('from "./frontend/pages/devices.js"', app)
 
+    def test_dashboard_exposes_live_three_layer_operations_overview(self):
+        """Dropping a live metric, queue or shortcut must break the overview contract."""
+        source = (PROJECT_ROOT / "frontend/pages/dashboard.js").read_text(encoding="utf-8")
+
+        for key in (
+            "data_timestamp", "daily_fluid", "daily_oil", "power_kwh", "pump_efficiency",
+            "alarms.active", "alarms.high", "quality.open_events",
+            "strategies.pending_strategies",
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, source)
+
+        for label in (
+            "日产液趋势", "日产油趋势", "日耗电趋势", "平均泵效趋势",
+            "异常待办", "活动报警", "高危报警", "数据质量", "待审批策略",
+            "最新生产汇总", "节能成效",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, source)
+
+        for target in (
+            "acquisition", "dynagraph-analysis", "data-quality",
+            "strategy-center", "work-orders", "reports",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(f'"{target}"', source)
+
+        self.assertNotIn("Math.random", source)
+        self.assertNotIn("Date.now", source)
+
     def test_device_detail_contains_live_and_control_sections(self):
         source = (PROJECT_ROOT / "frontend/pages/device-detail.js").read_text(encoding="utf-8")
         for key in ("心跳", "采集通道", "实时寄存器", "通信报文", "自检记录"):
