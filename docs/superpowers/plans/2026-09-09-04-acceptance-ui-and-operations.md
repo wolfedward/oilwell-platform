@@ -292,7 +292,7 @@ Expected: all commands exit zero.
 **Files:**
 - Create: backend/backup.py
 - Create: tests/test_restart_and_backup.py
-- Create: scripts/acceptance_smoke.py
+- Create: acceptance_smoke.py
 - Create: docs/验收操作手册.md
 - Create: docs/系统启动与恢复.md
 - Modify: server.py
@@ -302,9 +302,9 @@ Expected: all commands exit zero.
 **Interfaces:**
 - Produces: backup_database(db: Database, destination: Path) -> BackupResult
 - Produces: restore_database(source: Path, destination: Path) -> None
-- Produces: python scripts/acceptance_smoke.py -> exit zero and a timestamped JSON report
+- Produces: python acceptance_smoke.py -> exit zero and a timestamped JSON report
 
-- [ ] **Step 1: Write failing restart and backup tests**
+- [x] **Step 1: Write failing restart and backup tests**
 
     def test_restart_preserves_strategy_and_audit(self):
         strategy_id = create_effective_strategy()
@@ -320,20 +320,20 @@ Expected: all commands exit zero.
         self.assertEqual(restored.scalar("PRAGMA integrity_check"), "ok")
         self.assertEqual(restored.scalar("SELECT count(*) FROM wells"), 48)
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_restart_and_backup -v
 
 Expected: missing backup module or restart helper.
 
-- [ ] **Step 3: Implement backup, smoke script, and operator documentation**
+- [x] **Step 3: Implement backup, smoke script, and operator documentation**
 
 Use sqlite3 Connection.backup into backups/platform-YYYYMMDD-HHMMSS.db, retain the latest ten, and verify integrity before reporting success. The smoke script starts a temporary server, checks health, login, dashboard, well detail, analysis, strategy optimization, approval, dispatch, command success, report CSV, audit trace, restart persistence, and shutdown. The Chinese operator guide lists accounts, the 15 to 20 minute main flow, four backup failure demonstrations, reset procedure, and recovery commands.
 
 - [ ] **Step 4: Run final automated verification**
 
     python -m unittest discover -s tests -v
-    python scripts/acceptance_smoke.py
+    python acceptance_smoke.py
     node --check app.js
     Get-ChildItem frontend -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 
@@ -345,5 +345,5 @@ Start through start-platform.cmd. In Chrome and Edge at 1366 by 768, complete lo
 
 - [ ] **Step 6: Commit**
 
-    git add backend/backup.py server.py start-platform.cmd stop-platform.cmd scripts/acceptance_smoke.py tests/test_restart_and_backup.py docs/验收操作手册.md docs/系统启动与恢复.md
+    git add backend/backup.py server.py start-platform.cmd stop-platform.cmd backup-platform.cmd acceptance_smoke.py tests/test_restart_and_backup.py docs/验收操作手册.md docs/系统启动与恢复.md
     git commit -m "test: verify offline acceptance package"

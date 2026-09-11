@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import subprocess
 import sys
 import time
@@ -11,6 +12,8 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 
 from backend.config import Config
+from backend.backup import backup_database, restore_database
+from backend.database import Database
 from backend.http_server import create_server
 from backend.lifecycle import AlreadyRunningError, InstanceLock, remove_runtime_if_owner, write_runtime
 
@@ -26,6 +29,8 @@ def parse_arguments():
     parser.add_argument("--port", type=int, default=Config.DEFAULT_PORT)
     parser.add_argument("--open", action="store_true", dest="open_browser")
     parser.add_argument("--stop", action="store_true")
+    parser.add_argument("--backup", action="store_true", help="create and verify a database backup")
+    parser.add_argument("--restore", type=Path, metavar="BACKUP", help="restore a verified backup while the service is stopped")
     parser.add_argument("--launch", action="store_true", help="start a hidden child and wait until it is healthy")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -33,6 +38,41 @@ def parse_arguments():
 
 def _runtime_paths():
     return Config.LOG_PATH / "runtime.json", Config.LOG_PATH / "runtime.log"
+
+
+def backup_server():
+    result = backup_database(Database(Config.DATABASE_PATH), Config.PROJECT_ROOT / "backups")
+    print(json.dumps({
+        "ok": True, "path": str(result.path), "integrity": result.integrity,
+        "size_bytes": result.size_bytes, "created_at": result.created_at,
+    }, ensure_ascii=False))
+    return 0
+
+
+def restore_server(source):
+    lock = InstanceLock(Config.LOG_PATH)
+    try:
+        lock.acquire()
+    except AlreadyRunningError:
+        print("请先停止平台，再执行恢复。", file=sys.stderr)
+        return 1
+    try:
+        live = Database(Config.DATABASE_PATH)
+        if Config.DATABASE_PATH.is_file():
+            backup_database(live, Config.PROJECT_ROOT / "backups")
+        restore_database(source, Config.DATABASE_PATH)
+        check = Database(Config.DATABASE_PATH)
+        check.migrate()
+        print(json.dumps({
+            "ok": True, "restored_from": str(Path(source).resolve()),
+            "integrity": check.scalar("PRAGMA integrity_check"),
+        }, ensure_ascii=False))
+        return 0
+    except (OSError, sqlite3.Error, ValueError) as error:
+        print(f"恢复失败：{error}", file=sys.stderr)
+        return 1
+    finally:
+        lock.release()
 
 
 def stop_server():
@@ -210,6 +250,10 @@ def main():
     arguments = parse_arguments()
     if arguments.stop:
         return stop_server()
+    if arguments.backup:
+        return backup_server()
+    if arguments.restore:
+        return restore_server(arguments.restore)
     if arguments.launch:
         return launch_server(arguments.host, arguments.port, arguments.open_browser)
     return run_server(arguments.host, arguments.port, arguments.open_browser)
