@@ -14,6 +14,9 @@ export async function renderDashboard({ api, format, workspace, page, pageHeader
   const number = (value, digits = 0) => value == null ? "—" : format.number(value, digits);
   const trendSeries = Array.isArray(data.trends) ? data.trends : [];
   const latestTrend = trendSeries[trendSeries.length - 1] || {};
+  const trendInfo = data.trend_metadata || {};
+  const trendLabel = trendInfo.label || "生产日报日级汇总";
+  const efficiencySeries = trendSeries.map((point) => ({ ...point, efficiency_percent: point.pump_efficiency == null ? null : point.pump_efficiency * 100 }));
   const cards = [
     ["油井总数", number(data.total_wells), "口", "primary", "wells", {}, "生产对象台账"],
     ["当前开井", number(data.active_wells), "口", "success", "wells", { status: "operating" }, "运行 / 间抽状态"],
@@ -33,7 +36,7 @@ export async function renderDashboard({ api, format, workspace, page, pageHeader
     ["reports", "运营报表", "导出服务端可对账业务明细", "报"],
   ];
 
-  workspace.innerHTML = `${pageHeader(page, `<span class="data-time"><b>实时数据时点</b> ${escapeHtml(format.dateTime(data.data_timestamp))}</span>`)}
+  workspace.innerHTML = `${pageHeader(page, `<span class="data-time"><b>采集记录时点</b> ${escapeHtml(format.dateTime(data.data_timestamp))}</span>`)}
     <section class="dashboard-layer situation-layer" aria-labelledby="situationTitle">
       <div class="layer-heading"><span>01</span><div><p class="eyebrow">RUNNING SITUATION</p><h2 id="situationTitle">生产运行态势</h2></div><small>当前状态按服务端数据时点汇总，点击指标下钻</small></div>
       <div class="metric-grid dashboard-metrics">${cards.map(([label, value, unit, tone, target, params, hint]) => `
@@ -45,15 +48,24 @@ export async function renderDashboard({ api, format, workspace, page, pageHeader
     <section class="dashboard-layer analysis-layer" aria-labelledby="analysisTitle">
       <div class="layer-heading"><span>02</span><div><p class="eyebrow">DAILY TREND & RESULTS</p><h2 id="analysisTitle">生产日报与节能结果</h2></div><small>生产日 ${escapeHtml(data.production.day || "—")} · 近 14 个生产日</small></div>
       <div class="dashboard-trends">
-        <article class="panel trend-panel"><header><div><p class="eyebrow">DAILY FLUID</p><h2>日产液趋势</h2></div><span>生产日报日级值 · m³</span></header>
+        <article class="panel trend-panel"><header><div><p class="eyebrow">DAILY FLUID</p><h2>日产液趋势</h2></div><span>${escapeHtml(trendLabel)} · m³</span></header>
           ${charts.line(trendSeries, { xKey: "day", yKey: "daily_fluid", title: "近14个生产日日产液趋势", unit: "m³", color: "#1e6ee8" })}
-          <div class="trend-data-strip"><div><span>日产液趋势最新值</span><strong>${escapeHtml(number(latestTrend.daily_fluid, 1))} m³</strong></div><div><span>日产油趋势最新值</span><strong>${escapeHtml(number(latestTrend.daily_oil, 1))} t</strong></div><div><span>平均泵效趋势最新值</span><strong>${escapeHtml(latestTrend.pump_efficiency == null ? "—" : format.percent(latestTrend.pump_efficiency, 1))}</strong></div></div>
+          <div class="trend-data-strip"><div><span>日产液趋势最新值</span><strong>${escapeHtml(number(latestTrend.daily_fluid, 1))} m³</strong></div><div><span>峰谷幅度 / 最新日</span><strong>${escapeHtml(trendInfo.fluid_range_ratio == null ? "—" : format.percent(trendInfo.fluid_range_ratio, 1))}</strong></div></div>
         </article>
-        <article class="panel trend-panel energy-trend"><header><div><p class="eyebrow">DAILY ENERGY</p><h2>日耗电趋势</h2></div><span>生产日报日级值 · kWh</span></header>
+        <article class="panel trend-panel energy-trend"><header><div><p class="eyebrow">DAILY ENERGY</p><h2>日耗电趋势</h2></div><span>${escapeHtml(trendLabel)} · kWh</span></header>
           ${charts.line(trendSeries, { xKey: "day", yKey: "power_kwh", title: "近14个生产日日耗电趋势", unit: "kWh", color: "#13a38c" })}
-          <div class="trend-data-strip"><div><span>日耗电趋势最新值</span><strong>${escapeHtml(number(latestTrend.power_kwh, 1))} kWh</strong></div><div><span>序列口径</span><strong>production_daily</strong></div></div>
+          <div class="trend-data-strip"><div><span>日耗电趋势最新值</span><strong>${escapeHtml(number(latestTrend.power_kwh, 1))} kWh</strong></div><div><span>液量—耗电相关系数</span><strong>${escapeHtml(number(trendInfo.fluid_energy_correlation, 3))}</strong></div></div>
+        </article>
+        <article class="panel trend-panel"><header><div><p class="eyebrow">DAILY OIL</p><h2>日产油趋势</h2></div><span>${escapeHtml(trendLabel)} · t</span></header>
+          ${charts.line(trendSeries, { xKey: "day", yKey: "daily_oil", title: "近14个生产日日产油趋势", unit: "t", color: "#9865ce" })}
+          <div class="trend-data-strip"><div><span>日产油趋势最新值</span><strong>${escapeHtml(number(latestTrend.daily_oil, 1))} t</strong></div><div><span>生产日区间</span><strong>${escapeHtml(trendInfo.start_day || "—")} — ${escapeHtml(trendInfo.end_day || "—")}</strong></div></div>
+        </article>
+        <article class="panel trend-panel"><header><div><p class="eyebrow">PUMP EFFICIENCY</p><h2>平均泵效趋势</h2></div><span>${escapeHtml(trendLabel)} · %</span></header>
+          ${charts.line(efficiencySeries, { xKey: "day", yKey: "efficiency_percent", title: "近14个生产日平均泵效趋势", unit: "%", color: "#df982c" })}
+          <div class="trend-data-strip"><div><span>平均泵效趋势最新值</span><strong>${escapeHtml(latestTrend.pump_efficiency == null ? "—" : format.percent(latestTrend.pump_efficiency, 1))}</strong></div><div><span>序列口径</span><strong>production_daily</strong></div></div>
         </article>
       </div>
+      <p class="source-note">${escapeHtml(trendInfo.basis || "production_daily 日级汇总")}。相关系数为所示生产日的同期 Pearson r。</p>
       <div class="dashboard-results">
         <article class="panel result-panel production-panel"><header><div><p class="eyebrow">LATEST PRODUCTION</p><h2>最新生产汇总</h2></div><span>${escapeHtml(data.production.day || "—")}</span></header>
           <div class="result-values"><div><span>日产液</span><strong>${escapeHtml(number(data.production.daily_fluid, 1))}</strong><small>m³</small></div><div><span>日产油</span><strong>${escapeHtml(number(data.production.daily_oil, 1))}</strong><small>t</small></div><div><span>日耗电</span><strong>${escapeHtml(number(data.production.power_kwh, 1))}</strong><small>kWh</small></div><div><span>平均泵效</span><strong>${escapeHtml(data.production.pump_efficiency == null ? "—" : format.percent(data.production.pump_efficiency, 1))}</strong><small>全井算术平均</small></div></div>

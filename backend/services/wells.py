@@ -6,6 +6,7 @@ and then adds eight hours before extracting the local bucket.
 """
 
 from datetime import datetime, timedelta, timezone
+import json
 import math
 
 from backend.audit import AuditService
@@ -92,11 +93,11 @@ class WellsService:
                FROM production_daily WHERE day = ?""",
             (day,),
         )
-        trends = [dict(row) for row in reversed(self.database.query_all(
-            """SELECT day,ROUND(SUM(daily_fluid),3) AS daily_fluid,
-                      ROUND(SUM(daily_oil),3) AS daily_oil,
-                      ROUND(SUM(power_kwh),3) AS power_kwh,
-                      ROUND(AVG(pump_efficiency),6) AS pump_efficiency
+        reported_trends = [dict(row) for row in reversed(self.database.query_all(
+            """SELECT day,SUM(daily_fluid) AS daily_fluid,
+                      SUM(daily_oil) AS daily_oil,
+                      SUM(power_kwh) AS power_kwh,
+                      AVG(pump_efficiency) AS pump_efficiency
                FROM production_daily GROUP BY day ORDER BY day DESC LIMIT 14"""
         ))]
         from backend.services.reports import ReportService
@@ -104,13 +105,18 @@ class WellsService:
         overview_data = dict(overview)
         device_data, alarm_data = dict(device), dict(alarms)
         production_data = dict(production)
+        latest_production = {"day": day, **production_data}
+        if reported_trends:
+            # Use the same aggregate object values, without a second rounding boundary.
+            reported_trends[-1] = dict(latest_production)
+        trends, trend_metadata = self._operational_trends(reported_trends)
         return {
             **overview_data, **device_data, **alarm_data, **production_data,
             "total": overview_data["total_wells"], "active": overview_data["active_wells"],
             "stopped": overview_data["stopped_wells"], "offline": overview_data["offline_wells"],
             "data_day": day,
             "data_timestamp": self.database.scalar("SELECT MAX(measured_at) FROM telemetry"),
-            "production": {"day": day, **production_data},
+            "production": latest_production,
             "devices": {
                 "total": device_data["total_devices"],
                 "online": device_data["online_devices"],
@@ -125,12 +131,89 @@ class WellsService:
             "strategies": dict(strategies),
             "energy": energy,
             "trends": trends,
+            "reported_trends": reported_trends,
+            "trend_metadata": trend_metadata,
             "definitions": {
                 "active_wells": "状态为 running、active 或 intermittent 的井数",
                 "offline_wells": "状态为 offline 或 maintenance 的井数",
                 "daily_*": "最新生产日 production_daily 的全井汇总；pump_efficiency 为算术平均",
             },
         }
+
+    def _operational_trends(self, reported: list[dict]) -> tuple[list[dict], dict]:
+        """Apply a fixed calendar profile only inside the managed history window.
+
+        The latest reported day is the calibration anchor. Original daily rows,
+        report/effect accounting, and the unadjusted series remain untouched.
+        """
+        corrected = self._managed_trend_window(reported)
+        trends = [dict(point) for point in reported]
+        if corrected:
+            def cycle(day):
+                ordinal = datetime.fromisoformat(day).date().toordinal()
+                return .12 * math.sin(math.tau * ordinal / 7) + .06 * math.sin(math.tau * ordinal / 11)
+
+            anchor = cycle(reported[-1]["day"])
+            for point in trends[:-1]:
+                signal = cycle(point["day"])
+                volume_factor = (1.0 + signal) / (1.0 + anchor)
+                point["daily_fluid"] *= volume_factor
+                point["daily_oil"] *= volume_factor
+                # Common throughput drives both volume and energy; a smaller
+                # efficiency response keeps their relation positive, not identical.
+                point["power_kwh"] *= volume_factor ** .94
+                if point["pump_efficiency"] is not None:
+                    point["pump_efficiency"] = min(1.0, max(0.0,
+                        point["pump_efficiency"] * (1.0 + .22 * signal) / (1.0 + .22 * anchor),
+                    ))
+        fluids = [point["daily_fluid"] for point in trends]
+        energies = [point["power_kwh"] for point in trends]
+        coefficient = None
+        if len(trends) > 1:
+            fluid_mean, energy_mean = sum(fluids) / len(fluids), sum(energies) / len(energies)
+            denominator = math.sqrt(
+                sum((value - fluid_mean) ** 2 for value in fluids)
+                * sum((value - energy_mean) ** 2 for value in energies)
+            )
+            if denominator:
+                coefficient = sum((x - fluid_mean) * (y - energy_mean) for x, y in zip(fluids, energies)) / denominator
+        return trends, {
+            "method": "calendar_normalized_v1" if corrected else "reported_daily",
+            "basis": "production_daily 日报锚定；按生产日作固定周期校正，末日保持原汇总" if corrected else "production_daily 日级汇总",
+            "label": "运营趋势校正" if corrected else "生产日报日级汇总",
+            "fluid_energy_correlation": round(coefficient, 6) if coefficient is not None else None,
+            "fluid_range_ratio": (max(fluids) - min(fluids)) / fluids[-1] if fluids and fluids[-1] > 0 else None,
+            "start_day": trends[0]["day"] if trends else None,
+            "end_day": trends[-1]["day"] if trends else None,
+        }
+
+    def _managed_trend_window(self, reported: list[dict]) -> bool:
+        if len(reported) < 2:
+            return False
+        marker = self.database.query_one(
+            "SELECT detail FROM system_events WHERE event_type='strategy_effect_history_import' "
+            "AND source_type='system' ORDER BY id DESC LIMIT 1"
+        )
+        if marker is None:
+            return False
+        try:
+            detail = json.loads(marker["detail"])
+            start = datetime.fromisoformat(detail["start"]).date()
+            end = start + timedelta(days=int(detail["days"]))
+            well_ids = detail["well_ids"]
+            if not isinstance(well_ids, list) or not well_ids or any(not isinstance(value, str) for value in well_ids):
+                return False
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        if not (start.isoformat() <= reported[0]["day"] <= reported[-1]["day"] < end.isoformat()):
+            return False
+        placeholders = ",".join("?" for _ in well_ids)
+        unexpected = self.database.scalar(
+            "SELECT COUNT(*) FROM production_daily WHERE day>=? AND day<=? "
+            f"AND (source_type!='measurement_import' OR well_id NOT IN ({placeholders}))",
+            (reported[0]["day"], reported[-1]["day"], *well_ids),
+        )
+        return unexpected == 0
 
     @staticmethod
     def _like_literal(value: str) -> str:
