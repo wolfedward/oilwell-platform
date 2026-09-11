@@ -172,6 +172,49 @@ class DashboardPayloadContractTests(unittest.TestCase):
 
 
 class OperationalPageSourceTests(unittest.TestCase):
+    def test_electric_curve_preserves_valid_nonuniform_phase_values(self):
+        script = r"""
+const fs = require('fs');
+let source = fs.readFileSync('frontend/pages/dynagraph-analysis.js', 'utf8');
+source = source.replace('import { charts } from "../charts.js";', 'const charts = {};');
+source = source.replace('import { escapeHtml } from "../components.js";',
+  'const escapeHtml = (value) => String(value ?? "");');
+source = source.replace('export async function renderDynagraphAnalysis',
+  'async function renderDynagraphAnalysis');
+source += '\nconsole.log(electricCurve([' +
+  '{phase:0,power:1},{phase:0.5,power:2},{phase:1.4,power:3},' +
+  '{phase:2.2,power:4},{phase:3.8,power:5},{phase:5.5,power:6}' +
+  '], []));';
+eval(source);
+"""
+        completed = subprocess.run(
+            ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
+            capture_output=True, check=True,
+        )
+        self.assertIn("原始：曲柄角 0.5°", completed.stdout)
+        self.assertIn("原始：曲柄角 5.5°", completed.stdout)
+
+    def test_electric_curve_maps_legacy_indices_like_backend(self):
+        script = r"""
+const fs = require('fs');
+let source = fs.readFileSync('frontend/pages/dynagraph-analysis.js', 'utf8');
+source = source.replace('import { charts } from "../charts.js";', 'const charts = {};');
+source = source.replace('import { escapeHtml } from "../components.js";',
+  'const escapeHtml = (value) => String(value ?? "");');
+source = source.replace('export async function renderDynagraphAnalysis',
+  'async function renderDynagraphAnalysis');
+source += '\nconsole.log(electricCurve([' +
+  '{phase:0,power:1},{phase:1,power:2},{phase:2,power:3},{phase:3,power:4}' +
+  '], []));';
+eval(source);
+"""
+        completed = subprocess.run(
+            ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
+            capture_output=True, check=True,
+        )
+        self.assertIn("原始：曲柄角 270.0°", completed.stdout)
+        self.assertNotIn("原始：曲柄角 360.0°", completed.stdout)
+
     def test_dynagraph_chart_renders_complete_finite_axes(self):
         script = r"""
 const fs = require('fs');

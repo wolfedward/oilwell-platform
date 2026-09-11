@@ -488,6 +488,7 @@ tbody tr:hover { background: #f7fbff; }
   .evidence-grid { grid-template-columns: 1fr; }
   .archive-summary { grid-template-columns: repeat(2, 1fr); }
   .workflow-panel ol { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }
+  .workflow-panel li:nth-child(3n)::after { display: none; }
   .production-flow { grid-template-columns: 1fr; }
   .production-flow > i { display: none; }
 }

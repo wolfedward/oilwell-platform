@@ -20,8 +20,11 @@ function electricCurve(raw, intermediate, { smoothedOnly = false } = {}) {
   const rawItems = Array.isArray(raw) ? raw : [];
   const smoothItems = Array.isArray(intermediate) ? intermediate : [];
   if (!rawItems.length && !smoothItems.length) return '<div class="chart-empty">暂无电功图点集</div>';
-  const rawMaxPhase = Math.max(0, ...rawItems.map((item) => finite(item.phase)));
-  const rawPoints = rawItems.map((item, index) => ({ x: rawMaxPhase <= rawItems.length ? index / Math.max(1, rawItems.length - 1) * 360 : finite(item.phase), y: finite(item.power) }));
+  const legacySequentialPhase = rawItems.length > 0 && rawItems.every((item, index) => {
+    const phase = Number(item.phase);
+    return Number.isFinite(phase) && Math.abs(phase - index) <= 1e-9;
+  });
+  const rawPoints = rawItems.map((item, index) => ({ x: legacySequentialPhase ? index / rawItems.length * 360 : finite(item.phase), y: finite(item.power) }));
   const smoothPoints = smoothItems.map((item, index) => ({ x: finite(item.phase_deg, index), y: finite(item.power_kw) }));
   const points = [...rawPoints, ...smoothPoints];
   const minY = Math.min(...points.map((item) => item.y), 0);
