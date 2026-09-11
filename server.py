@@ -20,7 +20,11 @@ from backend.lifecycle import AlreadyRunningError, InstanceLock, remove_runtime_
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 LAUNCH_TIMEOUT_SECONDS = 15
-STOP_COMPLETION_TIMEOUT_SECONDS = 10
+# Server close may finish one bounded SQLite write from each worker before it
+# releases the process lock.  Ten seconds was shorter than the combined worker
+# contract on a busy acceptance laptop, causing a successful shutdown to be
+# reported as failed even though cleanup completed moments later.
+STOP_COMPLETION_TIMEOUT_SECONDS = 30
 
 
 def parse_arguments():
