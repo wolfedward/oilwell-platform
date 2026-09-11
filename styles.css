@@ -271,6 +271,7 @@ a { color: inherit; }
 .result-values small { margin-top: 5px; font-size: 10px; }
 .energy-result { background: linear-gradient(145deg, #fff, #f4fbfa); }
 .dashboard-actions { grid-template-columns: minmax(310px, 0.75fr) minmax(0, 1.25fr); }
+.dashboard-actions > * { min-width: 0; }
 .exception-list { display: grid; padding: 8px 15px 15px; }
 .exception-list button { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 11px; padding: 12px 4px; text-align: left; color: inherit; border: 0; border-bottom: 1px solid var(--slate-200); background: transparent; }
 .exception-list button:last-child { border-bottom: 0; }
@@ -537,6 +538,8 @@ tbody tr:hover { background: #f7fbff; }
   .brand { width: 230px; min-width: 230px; }
   .topnav button { min-width: 53px; }
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
+  .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-trends, .dashboard-results, .dashboard-actions { grid-template-columns: minmax(0, 1fr); }
   .evidence-grid { grid-template-columns: 1fr; }
   .archive-summary { grid-template-columns: repeat(2, 1fr); }
   .workflow-panel ol { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }

@@ -286,6 +286,18 @@ const result = eval(source);
         self.assertNotIn("Math.random", source)
         self.assertNotIn("Date.now", source)
 
+    def test_dashboard_has_narrow_viewport_layout(self):
+        """Dashboard-specific grids must not override the narrow-screen column rules."""
+        source = (PROJECT_ROOT / "styles.css").read_text(encoding="utf-8")
+        narrow = source[source.index("@media (max-width: 1260px)"):source.index("@media print")]
+
+        self.assertIn(".dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }", narrow)
+        self.assertIn(
+            ".dashboard-trends, .dashboard-results, .dashboard-actions { grid-template-columns: minmax(0, 1fr); }",
+            narrow,
+        )
+        self.assertIn(".dashboard-actions > * { min-width: 0; }", source)
+
     def test_device_detail_contains_live_and_control_sections(self):
         source = (PROJECT_ROOT / "frontend/pages/device-detail.js").read_text(encoding="utf-8")
         for key in ("心跳", "采集通道", "实时寄存器", "通信报文", "自检记录"):
