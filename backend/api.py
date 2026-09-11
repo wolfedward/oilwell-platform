@@ -374,6 +374,19 @@ class AnalysisApi:
     def get(self, request_target):
         parsed = urlsplit(request_target)
         try:
+            if parsed.path == "/api/diagnoses/review-catalog":
+                if self.handler._require("reports.read") is None:
+                    return True
+                if parsed.query:
+                    raise AnalysisValidationError(
+                        "review catalog does not accept query parameters"
+                    )
+                return self._ok({
+                    "items": [
+                        {"code": code, "label": label}
+                        for code, label in self.service.review_catalog()
+                    ] + [{"code": "custom", "label": "自定义工况"}],
+                })
             if parsed.path == "/api/dynagraphs":
                 if self.handler._require("reports.read") is None:
                     return True
@@ -448,13 +461,27 @@ class AnalysisApi:
             if actor is None:
                 return True
             body = self.handler._json_body()
-            if set(body) != {"condition", "comment", "version"}:
+            allowed_review_fields = {"condition", "comment", "version", "custom_condition"}
+            if set(body) - allowed_review_fields:
+                raise AnalysisValidationError("review body contains unknown fields")
+            required_review_fields = {"condition", "comment", "version"}
+            if not required_review_fields.issubset(body):
                 raise AnalysisValidationError(
-                    "review body must contain exactly condition, comment and version"
+                    "review body must contain condition, comment and version"
+                )
+            if body.get("condition") == "custom":
+                if set(body) != required_review_fields | {"custom_condition"}:
+                    raise AnalysisValidationError(
+                        "custom review body must contain exactly condition, custom_condition, comment and version"
+                    )
+            elif set(body) != required_review_fields:
+                raise AnalysisValidationError(
+                    "standard review body must contain exactly condition, comment and version"
                 )
             return self._ok(self.service.review(
                 unquote(review.group(1)), actor.id, body["condition"],
                 body["comment"], body["version"],
+                custom_condition=body.get("custom_condition"),
             ))
         except AnalysisNotFound:
             self.handler._send_json(

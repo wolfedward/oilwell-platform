@@ -23,6 +23,32 @@ from backend.services.workflows import WorkflowService
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 CONDITION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 CONDITIONS = {"normal", "supply_shortage", "intermittent", "pump_leak", "empty_pump"}
+REVIEW_CONDITION_CATALOG = (
+    ("normal", "泵工作正常"),
+    ("traveling_valve_leak", "游动凡尔漏失"),
+    ("standing_valve_leak", "固定凡尔漏失"),
+    ("double_valve_leak", "双凡尔漏失"),
+    ("rod_break", "抽油杆断脱"),
+    ("tubing_leak", "油管漏失"),
+    ("supply_shortage", "供液不足"),
+    ("gas_interference", "气体影响"),
+    ("gas_lock", "气锁"),
+    ("discharge_blockage", "出油管线部分蜡堵"),
+    ("filter_blockage", "滤沙器及其它附件堵塞"),
+    ("high_water_cut", "油井高含水"),
+    ("tight_packing", "盘根盒过紧"),
+    ("sand_obstruction", "砂阻"),
+    ("partial_plunger_exit", "活塞部分脱出工作筒"),
+    ("upstroke_hang", "上挂"),
+    ("downstroke_hang", "下挂"),
+    ("stuck_plunger", "活塞被卡"),
+    ("loose_liner", "衬套松动"),
+    ("flowing_well", "连抽带喷"),
+)
+REVIEW_CONDITION_CODES = frozenset(code for code, _ in REVIEW_CONDITION_CATALOG)
+CUSTOM_CONDITION_DANGEROUS = re.compile(
+    r"[\x00-\x1f\x7f<>]|(?i:javascript:|data:text/html|on[a-z]+\s*=)"
+)
 FEATURE_NAMES = tuple(field.name for field in fields(DynagraphFeatures))
 
 
@@ -487,9 +513,33 @@ class AnalysisService:
         return {"items": [self._model_run_item(row) for row in rows],
                 "page": page, "page_size": page_size, "total": total}
 
-    def review(self, diagnosis_id, actor_id, condition, comment, version):
+    @staticmethod
+    def review_catalog():
+        return REVIEW_CONDITION_CATALOG
+
+    def review(self, diagnosis_id, actor_id, condition, comment, version, *, custom_condition=None):
         self._id(diagnosis_id, "diagnosis id")
-        if not isinstance(condition, str) or not CONDITION_PATTERN.fullmatch(condition) or condition not in CONDITIONS:
+        if not isinstance(condition, str) or not CONDITION_PATTERN.fullmatch(condition):
+            raise AnalysisValidationError("condition is not a supported stable code")
+        if condition == "custom":
+            if not isinstance(custom_condition, str):
+                raise AnalysisValidationError("custom_condition is required for custom reviews")
+            custom_condition = custom_condition.strip()
+            if not 2 <= len(custom_condition) <= 40:
+                raise AnalysisValidationError("custom_condition must contain 2-40 characters")
+            if CUSTOM_CONDITION_DANGEROUS.search(custom_condition):
+                raise AnalysisValidationError("custom_condition contains unsafe characters")
+            reviewer_condition = custom_condition
+        elif condition in REVIEW_CONDITION_CODES:
+            if custom_condition is not None:
+                raise AnalysisValidationError("custom_condition is only valid for custom reviews")
+            reviewer_condition = condition
+        elif condition in CONDITIONS:
+            # Keep legacy machine diagnosis classes readable in existing review history.
+            if custom_condition is not None:
+                raise AnalysisValidationError("custom_condition is only valid for custom reviews")
+            reviewer_condition = condition
+        else:
             raise AnalysisValidationError("condition is not a supported stable code")
         if not isinstance(comment, str) or not 2 <= len(comment.strip()) <= 500:
             raise AnalysisValidationError("comment must contain 2-500 characters")
@@ -513,7 +563,7 @@ class AnalysisService:
                            diagnosis_id,diagnosis_version,reviewer_condition,comment,
                            status,actor_id,source_type
                        ) VALUES(?,?,?,?,'recorded',?,'manual')""",
-                    (diagnosis_id, version, condition, comment.strip(), actor_id),
+                    (diagnosis_id, version, reviewer_condition, comment.strip(), actor_id),
                 )
             except sqlite3.IntegrityError:
                 raise AnalysisVersionConflict() from None
@@ -525,7 +575,7 @@ class AnalysisService:
                 actor_id, "diagnosis.review", "diagnosis", diagnosis_id,
                 {"before": {"review_version": version},
                  "after": {"review_version": version + 1,
-                           "reviewer_condition": condition, "comment": comment.strip()},
+                           "reviewer_condition": reviewer_condition, "comment": comment.strip()},
                  "machine_result_unchanged": {"condition": before["diagnosis_type"],
                                               "confidence": before["confidence"]}},
                 conn, source_type="manual",

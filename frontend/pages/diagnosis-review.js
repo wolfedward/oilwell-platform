@@ -1,12 +1,26 @@
 import { escapeHtml } from "../components.js";
 
-const CONDITIONS = [["normal", "正常"], ["supply_shortage", "供液不足"], ["intermittent", "间歇供液"], ["pump_leak", "泵阀漏失"], ["empty_pump", "抽空"]];
-const conditionLabel = (value) => CONDITIONS.find(([code]) => code === value)?.[1] || value || "—";
+const CONDITIONS = [
+  ["normal", "泵工作正常"], ["traveling_valve_leak", "游动凡尔漏失"],
+  ["standing_valve_leak", "固定凡尔漏失"], ["double_valve_leak", "双凡尔漏失"],
+  ["rod_break", "抽油杆断脱"], ["tubing_leak", "油管漏失"],
+  ["supply_shortage", "供液不足"], ["gas_interference", "气体影响"],
+  ["gas_lock", "气锁"], ["discharge_blockage", "出油管线部分蜡堵"],
+  ["filter_blockage", "滤沙器及其它附件堵塞"], ["high_water_cut", "油井高含水"],
+  ["tight_packing", "盘根盒过紧"], ["sand_obstruction", "砂阻"],
+  ["partial_plunger_exit", "活塞部分脱出工作筒"], ["upstroke_hang", "上挂"],
+  ["downstroke_hang", "下挂"], ["stuck_plunger", "活塞被卡"],
+  ["loose_liner", "衬套松动"], ["flowing_well", "连抽带喷"],
+];
+const REVIEW_OPTIONS = [...CONDITIONS, ["custom", "自定义工况"]];
+const MACHINE_CONDITION_LABELS = { intermittent: "间歇供液", pump_leak: "泵阀漏失", empty_pump: "抽空" };
+const conditionLabel = (value) => CONDITIONS.find(([code]) => code === value)?.[1] || MACHINE_CONDITION_LABELS[value] || value || "—";
 
 function reviewModal(components, diagnosis) {
   return components.trusted(`<form id="diagnosisReviewForm" class="modal-form">
     <div class="inline-note">人工复核记录独立保存，不覆盖机器诊断结论、可信度或模型运行结果。</div>
-    <div class="form-field"><label for="reviewCondition">复核工况</label><select id="reviewCondition" name="condition" required>${CONDITIONS.map(([value, label]) => `<option value="${value}" ${diagnosis.condition === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+    <div class="form-field"><label for="reviewCondition">复核工况</label><select id="reviewCondition" name="condition" required>${REVIEW_OPTIONS.map(([value, label]) => `<option value="${value}" ${diagnosis.condition === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+    <div id="customConditionField" class="form-field" hidden><label for="customCondition">自定义工况名称</label><input id="customCondition" name="custom_condition" minlength="2" maxlength="40" autocomplete="off" placeholder="请输入 2—40 个字符的工况名称" /><small>不能包含控制字符或 HTML/脚本内容。</small></div>
     <div class="form-field"><label for="reviewComment">复核意见</label><textarea id="reviewComment" name="comment" rows="5" minlength="2" maxlength="500" required placeholder="说明曲线特征、现场依据及判断理由"></textarea><small>2—500 个字符，提交后形成不可覆盖的审计记录。</small></div>
     <input type="hidden" name="version" value="${escapeHtml(diagnosis.review_version)}" />
     <p id="reviewProgress" class="muted">当前复核版本 ${escapeHtml(diagnosis.review_version)}</p>
@@ -40,7 +54,7 @@ export async function renderDiagnosisReview({ api, components, format, workspace
     <section class="panel list-panel"><header><div><p class="eyebrow">MANUAL REVIEW HISTORY</p><h2>人工复核记录</h2></div><span>机器结论保持不变</span></header><div class="panel-body">${components.table(reviewColumns, data.reviews || [], { emptyText: canReview ? "尚无人工复核记录，可提交首条意见" : "尚无人工复核记录" })}</div></section>`;
   workspace.querySelector("#reviewBack").addEventListener("click", () => navigate("dynagraph-analysis", { id: data.id }));
   workspace.querySelector("#createReview")?.addEventListener("click", () => {
-    components.modal({
+    const modal = components.modal({
       title: `复核诊断 ${diagnosis.id}`,
       content: reviewModal(components, diagnosis),
       actions: [
@@ -49,12 +63,20 @@ export async function renderDiagnosisReview({ api, components, format, workspace
           const form = overlay.querySelector("#diagnosisReviewForm");
           if (!form.reportValidity()) return;
           const values = Object.fromEntries(new FormData(form));
+          const reviewPayload = {
+            condition: values.condition,
+            comment: values.comment.trim(),
+            version: Number(values.version),
+          };
+          if (values.condition === "custom") {
+            reviewPayload.custom_condition = values.custom_condition.trim();
+          }
           const action = overlay.querySelector(".button.primary");
           action.disabled = true;
           action.textContent = "提交中…";
           overlay.querySelector("#reviewProgress").textContent = "正在校验版本并写入独立复核记录。";
           try {
-            await api.post(`/api/diagnoses/${encodeURIComponent(diagnosis.id)}/review`, { condition: values.condition, comment: values.comment.trim(), version: Number(values.version) });
+            await api.post(`/api/diagnoses/${encodeURIComponent(diagnosis.id)}/review`, reviewPayload);
             components.toast("人工复核已记录，机器结论未被覆盖");
             close();
             navigate("diagnosis-review", { id: data.id });
@@ -66,6 +88,19 @@ export async function renderDiagnosisReview({ api, components, format, workspace
         } },
       ],
     });
+    const form = modal.element.querySelector("#diagnosisReviewForm");
+    const condition = form.querySelector("#reviewCondition");
+    const customField = form.querySelector("#customConditionField");
+    const customInput = form.querySelector("#customCondition");
+    const syncCustomField = () => {
+      const isCustom = condition.value === "custom";
+      customField.hidden = !isCustom;
+      customInput.required = isCustom;
+      if (!isCustom) customInput.value = "";
+    };
+    condition.addEventListener("change", syncCustomField);
+    syncCustomField();
+    form.dataset.reviewPayloadReady = "true";
   });
   return true;
 }
