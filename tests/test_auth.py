@@ -163,6 +163,27 @@ class AuthenticationTests(unittest.TestCase):
             AUTH_BOOTSTRAP_VERSION,
         )
 
+    def test_administrator_effective_permissions_cover_every_business_role(self):
+        """The administrator API surface must be the union of all business roles."""
+        administrator_id = self.database.scalar("SELECT id FROM roles WHERE code = 'administrator'")
+        expected = set(self.database.column(
+            """SELECT DISTINCT p.code
+               FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+              WHERE r.code <> 'administrator'"""
+        )) | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read"}
+        actual = set(self.database.column(
+            """SELECT p.code
+               FROM role_permissions rp
+               JOIN permissions p ON p.id = rp.permission_id
+              WHERE rp.role_id = ?""",
+            (administrator_id,),
+        ))
+
+        self.assertEqual(actual, expected)
+        self.assertTrue({"diagnosis.run", "strategy.create", "strategy.submit"}.issubset(actual))
+
     def test_v4_bootstrap_separates_machine_run_from_human_review_once(self):
         """The former default self-review grant must migrate exactly once."""
         with self.database.transaction(1, "test.auth_v3", "database", "platform") as conn:

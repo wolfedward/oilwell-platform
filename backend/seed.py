@@ -56,13 +56,20 @@ LOCAL_ACCOUNTS = (
     ("reviewer", "复核评审", "reviewer", "Review@2026"),
 )
 ROLE_PERMISSIONS = {
-    "administrator": ("users.read", "users.manage", "roles.read", "roles.manage", "reports.read", "audit.read", "strategy.approve", "wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "commands.read", "acquisition.read", "data_quality.read", "data_quality.repair", "alarms.ack", "maintenance.manage", "diagnosis.review", "workflow.read"),
     "production_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "alarms.ack", "strategy.create", "strategy.submit", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
     "algorithm_engineer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.run", "reports.read", "devices.read", "acquisition.read", "data_quality.read", "workflow.read"),
     "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "commands.read", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair", "workflow.read"),
     "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "commands.read", "acquisition.read", "data_quality.read", "workflow.read"),
 }
-AUTH_BOOTSTRAP_VERSION = 6
+ROLE_PERMISSIONS["administrator"] = tuple(sorted(
+    {
+        permission
+        for permissions in ROLE_PERMISSIONS.values()
+        for permission in permissions
+    }
+    | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read"}
+))
+AUTH_BOOTSTRAP_VERSION = 7
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -603,7 +610,22 @@ def bootstrap_local_auth(db: Database) -> None:
     permission_codes = sorted({permission for values in ROLE_PERMISSIONS.values() for permission in values})
     current_permissions = set(db.column("SELECT code FROM permissions"))
     marker = db.query_one("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1")
-    if marker is not None and marker["bootstrap_version"] >= AUTH_BOOTSTRAP_VERSION and not (set(permission_codes) - current_permissions):
+    administrator = db.query_one("SELECT id FROM roles WHERE code = 'administrator'")
+    missing_administrator_permissions = set(ROLE_PERMISSIONS["administrator"])
+    if administrator is not None:
+        missing_administrator_permissions -= set(db.column(
+            """SELECT p.code
+                 FROM role_permissions rp
+                 JOIN permissions p ON p.id = rp.permission_id
+                WHERE rp.role_id = ?""",
+            (administrator["id"],),
+        ))
+    if (
+        marker is not None
+        and marker["bootstrap_version"] >= AUTH_BOOTSTRAP_VERSION
+        and not (set(permission_codes) - current_permissions)
+        and not missing_administrator_permissions
+    ):
         return
 
     with db.transaction(
@@ -616,6 +638,16 @@ def bootstrap_local_auth(db: Database) -> None:
                 (permission, permission),
             )
         new_permission_codes = set(permission_codes) - current_permissions
+        administrator = connection.execute(
+            "SELECT id FROM roles WHERE code = 'administrator'"
+        ).fetchone()
+        if administrator is not None:
+            for permission in ROLE_PERMISSIONS["administrator"]:
+                connection.execute(
+                    """INSERT OR IGNORE INTO role_permissions(role_id, permission_id, source_type)
+                       SELECT ?, id, 'system' FROM permissions WHERE code = ?""",
+                    (administrator["id"], permission),
+                )
         if marker is None:
             # Default grants are a one-time bootstrap/migration action.  Later
             # restarts may add permission definitions but must honor revocations.

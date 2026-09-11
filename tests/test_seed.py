@@ -101,6 +101,42 @@ class SeedDatabaseTests(unittest.TestCase):
             0,
         )
 
+    def test_restart_repairs_missing_administrator_permission_without_expanding_other_roles(self):
+        """Bootstrap restores administrator grants while preserving another role's revocation."""
+        seed_database(self.database)
+        with self.database.transaction(1, "test.revoke", "role", "administrator") as connection:
+            connection.execute(
+                """DELETE FROM role_permissions
+                   WHERE role_id = (SELECT id FROM roles WHERE code = 'administrator')
+                     AND permission_id = (SELECT id FROM permissions WHERE code = 'diagnosis.run')"""
+            )
+            connection.execute(
+                """DELETE FROM role_permissions
+                   WHERE role_id = (SELECT id FROM roles WHERE code = 'reviewer')
+                     AND permission_id = (SELECT id FROM permissions WHERE code = 'audit.read')"""
+            )
+
+        seed_database(self.database)
+
+        self.assertEqual(
+            self.database.scalar(
+                """SELECT COUNT(*) FROM role_permissions rp
+                   JOIN roles r ON r.id = rp.role_id
+                   JOIN permissions p ON p.id = rp.permission_id
+                  WHERE r.code = 'administrator' AND p.code = 'diagnosis.run'"""
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.database.scalar(
+                """SELECT COUNT(*) FROM role_permissions rp
+                   JOIN roles r ON r.id = rp.role_id
+                   JOIN permissions p ON p.id = rp.permission_id
+                  WHERE r.code = 'reviewer' AND p.code = 'audit.read'"""
+            ),
+            0,
+        )
+
     def test_effect_history_upgrade_preserves_later_business_imports_and_restart(self):
         seed_database(self.database)
         marker = self.database.query_one(
