@@ -15,6 +15,14 @@ import { renderRoles } from "./frontend/pages/roles.js";
 import { renderAudit } from "./frontend/pages/audit.js";
 import { renderSystemHealth } from "./frontend/pages/system-health.js";
 import { renderAcceptanceCenter } from "./frontend/pages/acceptance-center.js";
+import { renderEnergyOverview } from "./frontend/pages/energy-overview.js";
+import { renderRecoveryAnalysis } from "./frontend/pages/recovery-analysis.js";
+import { renderStrategyEditor } from "./frontend/pages/strategy-editor.js";
+import { renderStrategyCenter } from "./frontend/pages/strategy-center.js";
+import { renderApprovals } from "./frontend/pages/approvals.js";
+import { renderCommands } from "./frontend/pages/commands.js";
+import { renderAlarms } from "./frontend/pages/alarms.js";
+import { renderWorkOrders } from "./frontend/pages/work-orders.js";
 
 const NAVIGATION = [
   {
@@ -51,6 +59,7 @@ const NAVIGATION = [
       { id: "energy-overview", label: "节能总览", description: "低产井识别、节能量与产量保持" },
       { id: "recovery-analysis", label: "渗流分析", description: "关井恢复曲线拟合与候选制度" },
       { id: "strategy-center", label: "策略中心", description: "策略版本、审批、执行与效果" },
+      { id: "strategy-editor", label: "策略编辑", description: "约束优化、候选周期和版本提交", hidden: true },
     ],
   },
   {
@@ -212,6 +221,14 @@ async function renderPage(pageId, params = {}) {
       audit: renderAudit,
       "system-health": renderSystemHealth,
       "acceptance-center": renderAcceptanceCenter,
+      "energy-overview": renderEnergyOverview,
+      "recovery-analysis": renderRecoveryAnalysis,
+      "strategy-editor": renderStrategyEditor,
+      "strategy-center": renderStrategyCenter,
+      approvals: renderApprovals,
+      commands: renderCommands,
+      alarms: renderAlarms,
+      "work-orders": renderWorkOrders,
     })[page.id];
     if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);

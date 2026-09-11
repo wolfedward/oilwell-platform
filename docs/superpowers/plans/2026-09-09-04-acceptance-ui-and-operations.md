@@ -198,7 +198,7 @@ Expected: all commands exit zero.
 - Consumes: energy, strategies, approvals, commands, alarms, and work-order APIs
 - Produces: the full abnormal-well to measured-effect interaction flow
 
-- [ ] **Step 1: Write failing acceptance-flow test**
+- [x] **Step 1: Write failing acceptance-flow test**
 
     def test_acceptance_flow_reaches_effective_strategy(self):
         login_as("engineer")
@@ -214,24 +214,24 @@ Expected: all commands exit zero.
         self.assertEqual(get_command(command.id)["state"], "success")
         self.assertEqual(trace_alarm(alarm.id)["strategy_id"], draft.id)
 
-- [ ] **Step 2: Run test and verify failure**
+- [x] **Step 2: Run test and verify failure**
 
     python -m unittest tests.test_acceptance_flow -v
 
 Expected: UI or flow contract is incomplete.
 
-- [ ] **Step 3: Implement the end-to-end workflow UI**
+- [x] **Step 3: Implement the end-to-end workflow UI**
 
 Recovery page shows observations, fitted curve, tau, fit quality, constraints, ranked candidate table, and rejected-candidate reasons. Strategy editor validates and saves drafts. Center shows status history and immutable versions. Approval requires comment. Dispatch modal shows device, payload, expiry, safety check, and expected result. Command detail streams receipt stages. Alarm and order pages expose legal actions only and show a unified trace timeline.
 
-- [ ] **Step 4: Run workflow tests and syntax checks**
+- [x] **Step 4: Run workflow tests and syntax checks**
 
     python -m unittest tests.test_acceptance_flow tests.test_strategies tests.test_commands tests.test_workflows -v
     Get-ChildItem frontend -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add frontend/pages styles.css tests/test_acceptance_flow.py
     git commit -m "feat: complete adaptive control acceptance flow"

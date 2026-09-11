@@ -383,6 +383,29 @@ tbody tr:hover { background: #f7fbff; }
 .evidence-list small { overflow: hidden; color: var(--slate-500); text-overflow: ellipsis; white-space: nowrap; }
 .evidence-card footer { padding: 0 17px 16px; }
 .acceptance-note { margin-bottom: 14px; }
+.button.danger { color: #fff; background: var(--red-600); }
+.button.danger:hover { filter: brightness(0.92); }
+.form-stack { display: grid; gap: 16px; }
+.form-stack fieldset { margin: 0; padding: 14px; border: 1px solid var(--slate-200); border-radius: 8px; }
+.form-stack legend { padding: 0 7px; color: var(--slate-700); font-weight: 700; }
+.form-actions, .table-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px 18px; }
+.table-actions { padding: 0; }
+.input-unit { display: flex; align-items: stretch; }
+.input-unit input { border-radius: 7px 0 0 7px; }
+.input-unit span { display: grid; place-items: center; min-width: 54px; padding: 0 9px; border: 1px solid var(--slate-300); border-left: 0; border-radius: 0 7px 7px 0; color: var(--slate-500); background: var(--slate-100); font-size: 12px; }
+.detail-list { display: grid; gap: 0; margin: 12px 0 0; }
+.detail-list > div { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px dashed var(--slate-200); }
+.detail-list dt { color: var(--slate-500); }
+.detail-list dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.check-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.check-list li { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 6px; color: var(--green-600); background: var(--green-100); }
+.check-list li.failed { color: var(--red-600); background: var(--red-100); }
+.trace-timeline { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.trace-timeline li { position: relative; display: grid; grid-template-columns: 120px 1fr; gap: 14px; min-height: 52px; padding: 5px 0 13px 21px; border-left: 2px solid var(--slate-200); }
+.trace-timeline li::before { content: ""; position: absolute; width: 10px; height: 10px; left: -6px; top: 8px; border-radius: 50%; background: var(--blue-600); box-shadow: 0 0 0 4px var(--blue-100); }
+.trace-timeline li.success::before { background: var(--green-600); box-shadow: 0 0 0 4px var(--green-100); }
+.trace-timeline li.failed::before { background: var(--red-600); box-shadow: 0 0 0 4px var(--red-100); }
+.trace-timeline time, .trace-timeline small { color: var(--slate-500); font-size: 12px; }
 
 .login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(520px, 1.15fr) minmax(440px, 0.85fr); background: #eef3f8; }
 .login-brand { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; padding: 9vw; color: #fff; background: linear-gradient(145deg, rgba(4,25,47,0.97), rgba(10,55,88,0.93)); }
