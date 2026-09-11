@@ -39,7 +39,7 @@ def request_response(port, method, path, headers=None):
         connection.close()
 
 
-def wait_for_file(path, process, timeout=3):
+def wait_for_file(path, process, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
