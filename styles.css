@@ -387,7 +387,6 @@ tbody tr:hover { background: #f7fbff; }
 .chart-tooltip strong { color: #bdddff; }
 .chart-tooltip span:empty { display: none; }
 .chart-points [data-chart-point] { cursor: crosshair; pointer-events: all; }
-.chart-points [data-chart-point]:focus, .chart-points [data-chart-point].is-active { outline: none; fill: #ffe7a0; stroke: #c46b00; stroke-width: 3; r: 6; }
 .chart-guides { pointer-events: none; }
 .chart-guide { stroke: #64748b; stroke-width: 1; stroke-dasharray: 4 3; }
 .chart [data-series][hidden] { display: none; }
@@ -407,6 +406,8 @@ tbody tr:hover { background: #f7fbff; }
 .dynagraph-points circle { fill: #fff; stroke: var(--blue-600); stroke-width: 1.4; }
 .electric-points circle.raw { fill: #fff; stroke: #94a3b8; }
 .electric-points circle.smooth { fill: #fff; stroke: var(--blue-600); }
+.chart .chart-points [data-chart-point] { opacity: 0; cursor: crosshair; pointer-events: all; }
+.chart .chart-points [data-chart-point]:focus, .chart .chart-points [data-chart-point].is-active { opacity: 1; outline: none; fill: #ffe7a0; stroke: #c46b00; stroke-width: 3; r: 7; }
 .archive-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 .archive-summary article { display: grid; gap: 5px; padding: 16px 18px; border: 1px solid var(--slate-200); border-radius: 9px; background: #fff; box-shadow: var(--shadow); }
 .archive-summary span, .archive-summary small { color: var(--slate-500); font-size: 12px; }

@@ -70,6 +70,8 @@ try {
   bindChartInteractions(root);
   bindChartInteractions(root);
   let point = root.querySelector('[data-chart-point]');
+  check(getComputedStyle(point).opacity === '0', 'sample markers are hidden at rest');
+  check(getComputedStyle(point).pointerEvents === 'all', 'hidden sample markers retain hit targets');
   point.dispatchEvent(new PointerEvent('pointerover', {bubbles:true,clientX:999,clientY:999}));
   let tooltip = root.querySelector('.chart-tooltip');
   check(tooltip && !tooltip.hidden, 'pointer shows tooltip');
@@ -77,11 +79,12 @@ try {
   check(tooltip.textContent.includes('1.25') && tooltip.textContent.includes('kW'), 'tooltip contains values and units');
   check(root.querySelectorAll('.chart-tooltip').length === 1, 'binding is idempotent');
   check(point.classList.contains('is-active'), 'active point is highlighted');
+  check(getComputedStyle(point).opacity === '1', 'only the active marker becomes visible');
   check(root.querySelectorAll('.chart-guide').length === 2, 'two crosshair guides are present');
   const figure = point.closest('figure'), outer = figure.getBoundingClientRect(), box = tooltip.getBoundingClientRect();
   check(box.left >= outer.left && box.right <= outer.right + 1 && box.top >= outer.top && box.bottom <= outer.bottom + 1, 'tooltip stays inside figure');
   point.dispatchEvent(new PointerEvent('pointerout', {bubbles:true,relatedTarget:root}));
-  check(tooltip.hidden && !point.classList.contains('is-active'), 'pointerout clears tooltip and highlight');
+  check(tooltip.hidden && !point.classList.contains('is-active') && getComputedStyle(point).opacity === '0', 'pointerout clears tooltip and highlight');
   point.focus();
   check(!tooltip.hidden && point.classList.contains('is-active'), 'keyboard focus shows tooltip');
   point.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true,key:'Escape'}));
