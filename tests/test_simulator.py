@@ -130,8 +130,8 @@ class VirtualTerminalTests(unittest.TestCase):
             areas.append(area(terminal.tick(now)[2]))
         self.assertEqual(len({round(value, 1) for value in areas}), 6)
         self.assertGreater(areas[0], 50.0)
-        self.assertLess(areas[-1], 5.0)
-        terminal = VirtualTerminal(profile_for("D-006"))
+        self.assertLess(areas[4], 5.0)
+        terminal = VirtualTerminal(profile_for("D-005"))
         terminal.apply_scenario("pump_leak", 1, now=now)
         self.assertGreater(area(terminal.tick(now)[2]), 20.0)
         self.assertLess(area(terminal.tick(now + timedelta(minutes=2))[2]), 5.0)
@@ -156,8 +156,9 @@ class VirtualTerminalTests(unittest.TestCase):
                 result = service.ingest(card)
                 self.assertTrue(result.accepted, result)
                 payload = decode_frame(card).payload
-                self.assertEqual(set(payload), {"kind", "status", "connection_mode", "hardware_connected", "electric_samples", "mechanism"})
-                self.assertEqual(set(payload["mechanism"]), {"stroke_m", "strokes_per_minute"})
+                self.assertEqual(set(payload), {"kind", "status", "connection_mode", "hardware_connected", "electric_samples", "mechanism", "profile_code", "profile_label", "sensor_samples"})
+                self.assertEqual(len(payload["sensor_samples"]), 120)
+                self.assertEqual(payload["mechanism"]["static_rod_load_kn"], 36)
             payload["electric_samples"][0]["power"] = -100.0
             self.assertTrue(service.ingest(encode_frame("D-006", 4, payload, timestamp=now)).accepted)
             payload["electric_samples"][0]["power"] = -100.001

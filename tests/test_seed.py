@@ -5,6 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from backend.algorithms.dynagraph_profiles import PROFILES
 from backend.database import Database
 from backend.seed import SeedSummary, _content_hash, _content_hash_from, _previous_content_hash, _task1_current_v4_content_hash, _upgrade_manifest_hash, seed_database
 
@@ -31,7 +32,7 @@ class SeedDatabaseTests(unittest.TestCase):
             self.assertEqual(payload["kind"], "electric_card")
             self.assertEqual(len(payload["electric_samples"]), 120)
             profiles.add(payload["profile"])
-        self.assertEqual(profiles, {"normal", "supply_shortage", "intermittent", "pump_leak", "empty_pump", "rod_break"})
+        self.assertEqual(profiles, set(PROFILES))
         actor_id = self.database.scalar("SELECT id FROM users WHERE username='algorithm_engineer'")
         service = AnalysisService(self.database, AuditService(self.database))
         for row in rows[:6]:

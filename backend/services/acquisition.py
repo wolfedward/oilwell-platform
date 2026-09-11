@@ -12,6 +12,8 @@ import threading
 
 from backend.protocol import FrameChecksumError, FrameError, decode_frame
 from backend.simulator import SimulatorValidationError
+from backend.algorithms.dynagraph import MechanismParams, _validate_params, DynagraphValidationError
+from backend.algorithms.dynagraph_profiles import PROFILE_DEFINITIONS
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -514,6 +516,9 @@ class AcquisitionService:
         kind = self._payload_kind(payload)
         common = {"kind", "status", "connection_mode", "hardware_connected"}
         expected = common | ({"telemetry"} if kind == "telemetry" else {"electric_samples", "mechanism"} if kind == "electric_card" else set())
+        dual_card = kind == "electric_card" and bool(set(payload) & {"profile_code", "profile_label", "sensor_samples"})
+        if dual_card:
+            expected |= {"profile_code", "profile_label", "sensor_samples"}
         if set(payload) != expected:
             raise _RejectedFrame("schema_error", "payload fields do not match frame kind")
         if payload["status"] not in TERMINAL_STATES or payload["connection_mode"] != "virtual" or payload["hardware_connected"] is not False:
@@ -528,8 +533,15 @@ class AcquisitionService:
             samples, mechanism = payload["electric_samples"], payload["mechanism"]
             if not isinstance(samples, list) or not 8 <= len(samples) <= 512:
                 raise _RejectedFrame("schema_error", "electric sample count is invalid")
-            if not isinstance(mechanism, dict) or set(mechanism) != {"stroke_m", "strokes_per_minute"}:
+            if not isinstance(mechanism, dict) or set(mechanism) not in (
+                {"stroke_m", "strokes_per_minute"}, set(MechanismParams.__dataclass_fields__),
+            ):
                 raise _RejectedFrame("schema_error", "mechanism fields are invalid")
+            if len(mechanism) > 2:
+                try:
+                    _validate_params(MechanismParams(**mechanism))
+                except (TypeError, DynagraphValidationError) as error:
+                    raise _RejectedFrame("range_outlier", str(error)) from None
             self._finite_range(mechanism["stroke_m"], .1, 10, "stroke_m")
             self._finite_range(mechanism["strokes_per_minute"], .1, 20, "strokes_per_minute")
             for sample in samples:
@@ -539,6 +551,27 @@ class AcquisitionService:
                 self._finite_range(sample["current"], 0, 200, "current")
                 self._finite_range(sample["voltage"], 200, 500, "voltage")
                 self._finite_range(sample["power"], -100, 100, "power")
+            if dual_card:
+                code = payload["profile_code"]
+                if not isinstance(code, str) or code not in PROFILE_DEFINITIONS or payload["profile_label"] != PROFILE_DEFINITIONS[code]["label"]:
+                    raise _RejectedFrame("schema_error", "profile code and label must match the profile library")
+                measured = payload["sensor_samples"]
+                if not isinstance(measured, list) or not 8 <= len(measured) <= 512:
+                    raise _RejectedFrame("schema_error", "sensor sample count is invalid")
+                last_phase = -1
+                phases = []
+                for point in measured:
+                    if not isinstance(point, dict) or set(point) != {"phase", "displacement", "load"}:
+                        raise _RejectedFrame("schema_error", "sensor sample fields are invalid")
+                    self._finite_range(point["phase"], 0, 359.999999, "sensor phase")
+                    self._finite_range(point["displacement"], -.1, 10.2, "sensor displacement")
+                    self._finite_range(point["load"], -100, 1000, "sensor load")
+                    if point["phase"] <= last_phase:
+                        raise _RejectedFrame("schema_error", "sensor phases must be strictly increasing")
+                    last_phase = point["phase"]
+                    phases.append(last_phase)
+                if max(b - a for a, b in zip(phases, [*phases[1:], phases[0] + 360])) > max(60, 900 / len(phases)):
+                    raise _RejectedFrame("schema_error", "sensor samples must cover one cycle")
         return kind
 
     @staticmethod

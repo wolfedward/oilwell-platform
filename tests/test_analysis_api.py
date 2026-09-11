@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, timezone
 import http.client
 import json
+import math
+import copy
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -24,6 +26,8 @@ from backend.services.analysis import (
     AnalysisVersionConflict,
 )
 from backend.simulator import SimulatorRegistry
+from backend.algorithms.dynagraph_profiles import build_profile_card
+from backend.services import analysis
 from tests.test_dynagraph import fixture
 
 
@@ -55,6 +59,74 @@ def electric_payload(name="normal", *, legacy_phase=False):
 
 
 class AnalysisServiceTests(unittest.TestCase):
+    def test_comparison_aligns_phase_and_reports_known_load_bias(self):
+        compare = getattr(analysis, "compare_dynagraphs", None)
+        self.assertTrue(callable(compare))
+        inferred = [{"phase_deg": p, "displacement_m": x, "load_kn": y}
+                    for p, x, y in ((0, 0, 10), (90, 1, 20), (180, 2, 10), (270, 1, 5), (360, 0, 10))]
+        measured = [{**p, "load_kn": p["load_kn"] + 2} for p in inferred[:-1]]
+        result = compare(inferred, measured)
+        for metric in ("mae_kn", "max_error_kn", "rmse_kn", "upstroke_rmse_kn", "downstroke_rmse_kn"):
+            self.assertAlmostEqual(result[metric], 2)
+        self.assertAlmostEqual(result["correlation"], 1)
+        self.assertAlmostEqual(result["stroke_error_m"], 0)
+        self.assertAlmostEqual(result["area_error_percent"], 0)
+        dense = []
+        for index, point in enumerate(measured):
+            following = measured[(index + 1) % len(measured)]
+            dense.extend([point, {"phase_deg": point["phase_deg"] + 45,
+                                  "displacement_m": (point["displacement_m"] + following["displacement_m"]) / 2,
+                                  "load_kn": (point["load_kn"] + following["load_kn"]) / 2}])
+        self.assertEqual(compare(inferred, dense), result)
+
+    def test_dual_card_payload_persists_comparison_and_calibration(self):
+        card = build_profile_card("normal", {"stroke_m": 2.8, "strokes_per_minute": 4.2,
+                                               "static_rod_load_kn": 40.0})
+        self.assertIn("sensor_samples", card)
+        payload = {key: value for key, value in card.items() if key != "profile"}
+        payload.update(status="online", connection_mode="virtual", hardware_connected=False)
+        ingested = self.acquisition.ingest(encode_frame("D-001", 711, payload, timestamp=NOW))
+        self.assertTrue(ingested.accepted, ingested.error_code)
+        row = self.database.query_one("SELECT id FROM dynagraphs WHERE raw_message_id=?", (ingested.raw_message_id,))
+        result = self.service.run(row["id"], self.actor_id)
+        detail = self.service.detail(row["id"])
+        expected_metrics = {"mae_kn", "max_error_kn", "rmse_kn", "area_error_percent", "stroke_error_m",
+                            "correlation", "upstroke_rmse_kn", "downstroke_rmse_kn"}
+        for output in (result, detail, detail["conversion"], detail["latest_model_run"]["output_snapshot"]):
+            self.assertEqual(set(output["comparison"]), expected_metrics)
+            self.assertTrue(all(math.isfinite(v) for v in output["comparison"].values()))
+            self.assertEqual(len(output["sensor_points"]), 120)
+            self.assertEqual(len(output["aligned_points"]), 120)
+            self.assertEqual(output["profile_code"], "normal")
+            self.assertEqual(output["parameters"]["static_rod_load_kn"], 40.0)
+        self.assertEqual(detail["sample_data"]["sensor_samples"], card["sensor_samples"])
+        self.assertGreater(result["features"]["min_load_kn"], 39)
+        self.assertGreater(result["features"]["load_difference_kn"], 20)
+        self.assertLess(result["comparison"]["rmse_kn"], 3)
+        summary = next(item for item in self.service.list_dynagraphs({"well_id": detail["well_id"], "page_size": 100})["items"] if item["id"] == row["id"])
+        self.assertEqual(summary["features"], result["features"])
+        self.assertEqual(summary.get("latest_production"), detail["latest_production"])
+
+    def test_dual_card_rejects_invalid_sensor_metadata(self):
+        card = build_profile_card("normal", {"stroke_m": 2.8, "strokes_per_minute": 4.2})
+        self.assertIn("sensor_samples", card)
+        payload = {key: value for key, value in card.items() if key != "profile"}
+        payload.update(status="online", connection_mode="virtual", hardware_connected=False)
+        invalid = []
+        for field, value in (("profile_code", "fake"), ("profile_label", "fake"), ("sensor_samples", [])):
+            invalid.append({**payload, field: value})
+        for key, value in (("phase", -1), ("displacement", True), ("load", 10001)):
+            bad = copy.deepcopy(payload)
+            bad["sensor_samples"][0][key] = value
+            invalid.append(bad)
+        bad = copy.deepcopy(payload)
+        bad["sensor_samples"][1]["phase"] = 0
+        invalid.append(bad)
+        for index, bad in enumerate(invalid):
+            with self.subTest(index=index):
+                result = self.acquisition.ingest(encode_frame("D-001", 720 + index, bad, timestamp=NOW))
+                self.assertFalse(result.accepted)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

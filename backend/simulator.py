@@ -309,7 +309,8 @@ class VirtualTerminal:
                 {"kind": "heartbeat", "status": self.state, "connection_mode": "virtual", "hardware_connected": False},
                 {"kind": "telemetry", "status": self.state, "telemetry": registers, "connection_mode": "virtual", "hardware_connected": False},
                 {"kind": card["kind"], "electric_samples": card["electric_samples"],
-                 "mechanism": {"stroke_m": registers["stroke"], "strokes_per_minute": registers["strokes_per_minute"]},
+                 "mechanism": card["mechanism"], "profile_code": card["profile_code"],
+                 "profile_label": card["profile_label"], "sensor_samples": card["sensor_samples"],
                  "status": self.state, "connection_mode": "virtual", "hardware_connected": False},
             ]
             frames = []

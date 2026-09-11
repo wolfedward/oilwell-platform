@@ -7,10 +7,19 @@ import unittest
 
 from backend.algorithms.dynagraph import ElectricalSample, MechanismParams, convert_electric_card
 from backend.algorithms.dynagraph_profiles import build_profile_card, profile_condition
+from backend.algorithms import dynagraph_profiles
+from backend.services.analysis import compare_dynagraphs
 
 
 CONDITIONS = ("normal", "supply_shortage", "intermittent", "pump_leak", "empty_pump", "rod_break")
 MECHANISM = {"stroke_m": 2.8, "strokes_per_minute": 4.2}
+PROFILE_CODES = (
+    "normal", "traveling_valve_leak", "standing_valve_leak", "double_valve_leak",
+    "rod_break", "tubing_leak", "supply_shortage", "gas_interference", "gas_lock",
+    "discharge_blockage", "filter_blockage", "high_water_cut", "tight_packing",
+    "sand_obstruction", "partial_plunger_exit", "upstroke_hang", "downstroke_hang",
+    "stuck_plunger", "loose_liner", "flowing_well",
+)
 
 
 def convert(card):
@@ -21,6 +30,35 @@ def convert(card):
 
 
 class DynagraphProfileTests(unittest.TestCase):
+    def test_twenty_profiles_have_unique_features_and_sensor_samples(self):
+        self.assertEqual(tuple(getattr(dynagraph_profiles, "PROFILE_DEFINITIONS", {})), PROFILE_CODES)
+        vectors = set()
+        for code in PROFILE_CODES:
+            card = build_profile_card(code, MECHANISM, variation=.3)
+            self.assertEqual(card["profile_code"], code)
+            self.assertTrue(any("\u4e00" <= c <= "\u9fff" for c in card["profile_label"]))
+            self.assertEqual(card, build_profile_card(code, MECHANISM, variation=.3))
+            self.assertEqual(len(card["sensor_samples"]), 120)
+            for point in card["sensor_samples"]:
+                self.assertEqual(set(point), {"phase", "displacement", "load"})
+                self.assertTrue(all(math.isfinite(v) for v in point.values()))
+            vectors.add(tuple(round(v, 3) for v in asdict(convert(card).features).values()))
+            self.assertLess(compare_dynagraphs(convert(card).points, card["sensor_samples"])["rmse_kn"], 3, code)
+        self.assertEqual(len(vectors), 20)
+        normal = convert(build_profile_card("normal", MECHANISM)).features
+        self.assertGreaterEqual(normal.load_difference_kn, 20)
+        self.assertLessEqual(normal.load_difference_kn, 35)
+        self.assertGreater(normal.fillage, .8)
+
+    def test_electrical_profiles_have_distinct_shape_not_only_power_scale(self):
+        vectors = set()
+        for code in PROFILE_CODES:
+            card = build_profile_card(code, MECHANISM)
+            powers = [p["power"] for p in card["electric_samples"]]
+            scale = max(abs(p) for p in powers)
+            vectors.add(tuple(round(p / scale, 3) for p in powers[::5]))
+        self.assertEqual(len(vectors), 20)
+
     def test_profiles_produce_complete_closed_engineering_cards(self):
         """Wrong inverse torque direction or a missing static load breaks physical bounds."""
         for condition in CONDITIONS:
@@ -68,7 +106,7 @@ class DynagraphProfileTests(unittest.TestCase):
 
     def test_allocation_and_variation_are_stable_without_global_random_state(self):
         """Random profile allocation would make refreshes change the assigned condition."""
-        self.assertEqual([profile_condition(f"D-{index:03d}") for index in range(1, 7)], list(CONDITIONS))
+        self.assertEqual([profile_condition(f"D-{index:03d}") for index in range(1, 21)], list(PROFILE_CODES))
         self.assertEqual(profile_condition("NS-D-001"), "normal")
         self.assertEqual(profile_condition("controller-west"), profile_condition("controller-west"))
         before = random.getstate()

@@ -1,8 +1,10 @@
 """Transactional, traceable dynagraph analysis application service."""
 
 from dataclasses import asdict, fields
+from bisect import bisect_right
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import uuid
@@ -86,6 +88,83 @@ def _plain(value):
     return value
 
 
+def _comparison_points(points):
+    """Normalize raw sensor or converted point names without changing samples."""
+    if not isinstance(points, (list, tuple)) or len(points) < 3:
+        raise AnalysisValidationError("comparison requires at least three points")
+    normalized = []
+    for point in points:
+        data = _plain(point)
+        if not isinstance(data, dict):
+            raise AnalysisValidationError("comparison points must be objects")
+        values = [data.get(full, data.get(short)) for full, short in (
+            ("phase_deg", "phase"), ("displacement_m", "displacement"), ("load_kn", "load"),
+        )]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in values):
+            raise AnalysisValidationError("comparison points must be finite numeric data")
+        phase, displacement, load = values
+        if not 0 <= phase <= 360 or not -1000 <= displacement <= 1000 or not -10000 <= load <= 10000:
+            raise AnalysisValidationError("comparison point outside engineering range")
+        if normalized and phase <= normalized[-1]["phase_deg"]:
+            raise AnalysisValidationError("comparison phases must be strictly increasing")
+        normalized.append(dict(phase_deg=phase, displacement_m=displacement, load_kn=load))
+    return normalized
+
+
+def align_sensor_points(inferred, measured):
+    """Periodically interpolate measured displacement/load at inferred phases."""
+    target = _comparison_points(inferred)
+    source = [p for p in _comparison_points(measured) if p["phase_deg"] < 360]
+    if len(source) < 3:
+        raise AnalysisValidationError("comparison requires a complete sensor cycle")
+    phases = [source[-1]["phase_deg"] - 360, *[p["phase_deg"] for p in source], source[0]["phase_deg"] + 360]
+    extended = [source[-1], *source, source[0]]
+    aligned = []
+    for point in target:
+        phase = point["phase_deg"] % 360
+        left = bisect_right(phases, phase) - 1
+        fraction = (phase - phases[left]) / (phases[left + 1] - phases[left])
+        aligned.append({"phase_deg": point["phase_deg"], **{
+            key: extended[left][key] * (1 - fraction) + extended[left + 1][key] * fraction
+            for key in ("displacement_m", "load_kn")
+        }})
+    return aligned
+
+
+def compare_dynagraphs(inferred, measured):
+    """Eight finite engineering metrics; positive area error means overestimate.
+
+    For zero measured work, use 1e-9 kN·m as the percentage denominator.
+    Constant-load correlation is one only for identical load series, else zero.
+    """
+    inferred = _comparison_points(inferred)
+    aligned = align_sensor_points(inferred, measured)
+    pairs = [(a, b) for a, b in zip(inferred, aligned) if a["phase_deg"] < 360]
+    errors = [a["load_kn"] - b["load_kn"] for a, b in pairs]
+    def rms(values):
+        return math.sqrt(sum(v * v for v in values) / len(values)) if values else 0.0
+    def area(points):
+        return abs(sum(a["displacement_m"] * b["load_kn"] - b["displacement_m"] * a["load_kn"]
+                       for a, b in zip(points, [*points[1:], points[0]]))) / 2
+    def stroke(points):
+        return max(p["displacement_m"] for p in points) - min(p["displacement_m"] for p in points)
+    actual = [a["load_kn"] for a, _ in pairs]
+    expected = [b["load_kn"] for _, b in pairs]
+    mean_a, mean_b = sum(actual) / len(actual), sum(expected) / len(expected)
+    covariance = sum((a - mean_a) * (b - mean_b) for a, b in zip(actual, expected))
+    denominator = math.sqrt(sum((a - mean_a) ** 2 for a in actual) * sum((b - mean_b) ** 2 for b in expected))
+    correlation = max(-1.0, min(1.0, covariance / denominator)) if denominator > 1e-12 else float(actual == expected)
+    sensor_area = area(aligned)
+    return {
+        "mae_kn": sum(abs(e) for e in errors) / len(errors),
+        "max_error_kn": max(abs(e) for e in errors), "rmse_kn": rms(errors),
+        "area_error_percent": 100 * (area(inferred) - sensor_area) / max(sensor_area, 1e-9),
+        "stroke_error_m": stroke(inferred) - stroke(aligned), "correlation": correlation,
+        "upstroke_rmse_kn": rms([a["load_kn"] - b["load_kn"] for a, b in pairs if a["phase_deg"] < 180]),
+        "downstroke_rmse_kn": rms([a["load_kn"] - b["load_kn"] for a, b in pairs if a["phase_deg"] >= 180]),
+    }
+
+
 class AnalysisService:
     """Run conversion, diagnosis and production estimation as one unit."""
 
@@ -124,6 +203,16 @@ class AnalysisService:
         features = _plain(converted.features)
         energy = _plain(converted.energy)
         parameters_data = _plain(parameters)
+        sensor_points = _comparison_points(payload["sensor_samples"]) if payload.get("sensor_samples") else []
+        comparison_data = {
+            "profile_code": payload.get("profile_code"),
+            "profile_label": payload.get("profile_label"),
+            "sensor_points": sensor_points,
+            "aligned_points": align_sensor_points(converted_points, sensor_points) if sensor_points else [],
+            "comparison": compare_dynagraphs(converted_points, sensor_points) if sensor_points else None,
+            "parameters": parameters_data,
+            "comparison_model_version": "dual-dynagraph-1.0",
+        }
         diagnosis_data = {
             "id": diagnosis_id,
             "condition": diagnosis.condition,
@@ -142,6 +231,7 @@ class AnalysisService:
         }
         production_data = _plain(production)
         output_snapshot = {
+            **comparison_data,
             "converted_points": converted_points,
             "intermediate": intermediate,
             "features": features,
@@ -158,6 +248,10 @@ class AnalysisService:
             "raw_message_id": row["raw_message_id"],
             "captured_at": row["captured_at"],
             "electric_samples": [_plain(item) for item in converted.raw_samples],
+            "sensor_samples": payload.get("sensor_samples", []),
+            "profile_code": payload.get("profile_code"),
+            "profile_label": payload.get("profile_label"),
+            "mechanism": payload["mechanism"],
         }
         warnings = [*converted.warnings, *production.warnings]
 
@@ -242,7 +336,7 @@ class AnalysisService:
                            model_version=?,latest_model_run_id=?,status='analyzed',
                            actor_id=?,source_type='algorithm',version=version+1 WHERE id=?""",
                     (
-                        _json({"points": converted_points, "intermediate": intermediate,
+                        _json({**comparison_data, "points": converted_points, "intermediate": intermediate,
                                "energy": energy, "warnings": list(converted.warnings),
                                "units": dict(converted.units)}),
                         _json(features), converted.model_version, model_run_id,
@@ -264,6 +358,7 @@ class AnalysisService:
             raise AnalysisValidationError(f"analysis persistence rejected: {error}") from None
 
         return {
+            **comparison_data,
             "dynagraph_id": dynagraph_id,
             "converted_points": converted_points,
             "intermediate": intermediate,
@@ -305,10 +400,13 @@ class AnalysisService:
         total = self.database.scalar("SELECT COUNT(*) FROM dynagraphs d WHERE " + where, values)
         rows = self.database.query_all(
             """SELECT d.*,w.name AS well_name,dev.serial_number,
-                      dx.diagnosis_type AS latest_condition,dx.confidence AS latest_confidence
+                      dx.diagnosis_type AS latest_condition,dx.confidence AS latest_confidence,
+                      pe.id AS production_id,pe.factors_json AS production_factors,
+                      pe.status AS production_status,pe.created_at AS production_created_at
                FROM dynagraphs d JOIN wells w ON w.id=d.well_id
                LEFT JOIN devices dev ON dev.id=d.device_id
                LEFT JOIN diagnoses dx ON dx.model_run_id=d.latest_model_run_id
+               LEFT JOIN production_estimates pe ON pe.model_run_id=d.latest_model_run_id
                WHERE """ + where +
             " ORDER BY d.captured_at DESC,d.id DESC LIMIT ? OFFSET ?",
             [*values, page_size, (page - 1) * page_size],
@@ -354,6 +452,10 @@ class AnalysisService:
             "latest_model_run": self._model_run_item(model_run) if model_run else None,
             "reviews": reviews,
         })
+        conversion = item["conversion"] or {}
+        for key in ("profile_code", "profile_label", "sensor_points", "aligned_points", "comparison", "parameters"):
+            if key in conversion:
+                item[key] = conversion[key]
         return item
 
     def model_runs(self, filters):
@@ -501,6 +603,8 @@ class AnalysisService:
             raise AnalysisValidationError("mechanism parameters are required")
         try:
             stroke = mechanism["stroke_m"]
+            if set(mechanism) - {"stroke_m", "strokes_per_minute"}:
+                return MechanismParams(**mechanism)
             return MechanismParams(
                 stroke_m=stroke,
                 strokes_per_minute=mechanism["strokes_per_minute"],
@@ -519,7 +623,22 @@ class AnalysisService:
 
     @staticmethod
     def _dynagraph_summary(row):
+        payload = _loads(row["sample_data"], {})
+        conversion = _loads(row["conversion_json"], {})
+        production = None
+        if "production_id" in row.keys() and row["production_id"] is not None:
+            production = _loads(row["production_factors"], {})
+            production.update(id=row["production_id"], model_run_id=row["latest_model_run_id"],
+                              status=row["production_status"], created_at=row["production_created_at"])
         return {
+            "latest_production": production,
+            "profile_code": payload.get("profile_code"),
+            "profile_label": payload.get("profile_label"),
+            "parameters": conversion.get("parameters", payload.get("mechanism", {})),
+            "features": _loads(row["features_json"], {}),
+            "converted_points": conversion.get("points", []),
+            "sensor_points": conversion.get("sensor_points", []),
+            "comparison": conversion.get("comparison"),
             "id": row["id"], "well_id": row["well_id"], "well_name": row["well_name"],
             "device_id": row["device_id"], "device_serial_number": row["serial_number"],
             "raw_message_id": row["raw_message_id"], "captured_at": row["captured_at"],
