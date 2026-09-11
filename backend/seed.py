@@ -8,6 +8,7 @@ import math
 import random
 
 from backend.database import Database
+from backend.algorithms.dynagraph_profiles import build_profile_card, profile_condition
 
 
 SIMULATOR = "simulator"
@@ -1666,9 +1667,7 @@ def _json_payload(profile: dict, seed: int) -> str:
 
 
 def _dynagraph_sample(profile: dict) -> str:
-    samples = [
-        {"position_m": round(profile["stroke_m"] * phase / 7, 3),
-         "load_kn": round((22 + profile["power_kw"] * 3) * (0.82 + 0.18 * math.sin(phase)), 3)}
-        for phase in range(8)
-    ]
-    return json.dumps(samples, ensure_ascii=False, separators=(",", ":"))
+    card = build_profile_card(profile_condition(profile["device_id"]), {
+        "stroke_m": profile["stroke_m"], "strokes_per_minute": 4.2,
+    }, variation=.2 * math.sin(profile["index"]))
+    return json.dumps(card, ensure_ascii=False, separators=(",", ":"))

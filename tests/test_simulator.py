@@ -2,7 +2,10 @@
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import math
+from pathlib import Path
 import struct
+import tempfile
 import unittest
 
 from backend.protocol import (
@@ -109,8 +112,56 @@ class VirtualTerminalTests(unittest.TestCase):
             if decode_frame(raw).payload["kind"] == "electric_card"
         )
         phases = [sample["phase"] for sample in card["electric_samples"]]
-        self.assertEqual(phases, list(range(0, 360, 30)))
+        self.assertEqual(phases, list(range(0, 360, 3)))
         self.assertEqual(set(card["electric_samples"][0]), {"phase", "current", "voltage", "power"})
+
+    def test_assigned_card_profiles_and_active_scenario_override(self):
+        from backend.algorithms.dynagraph import convert_electric_card
+        from backend.services.analysis import AnalysisService
+
+        def area(frame):
+            card = decode_frame(frame).payload
+            return convert_electric_card(AnalysisService._samples(card), AnalysisService._parameters(card)).features.area_kn_m
+
+        now = at("2026-06-22T10:00:00+08:00")
+        areas = []
+        for index in range(1, 7):
+            terminal = VirtualTerminal(profile_for(f"D-{index:03d}"))
+            areas.append(area(terminal.tick(now)[2]))
+        self.assertEqual(len({round(value, 1) for value in areas}), 6)
+        self.assertGreater(areas[0], 50.0)
+        self.assertLess(areas[-1], 5.0)
+        terminal = VirtualTerminal(profile_for("D-006"))
+        terminal.apply_scenario("pump_leak", 1, now=now)
+        self.assertGreater(area(terminal.tick(now)[2]), 20.0)
+        self.assertLess(area(terminal.tick(now + timedelta(minutes=2))[2]), 5.0)
+        terminal.apply_scenario("normal", 1, now=now + timedelta(minutes=2))
+        self.assertGreater(area(terminal.tick(now + timedelta(minutes=2, seconds=1))[2]), 50.0)
+
+    def test_live_profile_cards_pass_acquisition_and_signed_power_limits(self):
+        """Rejecting regeneration or leaking profile metadata loses every live card."""
+        from backend.database import Database
+        from backend.seed import seed_database
+        from backend.services.acquisition import AcquisitionService
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "platform.db")
+            database.migrate()
+            seed_database(database)
+            now = at("2026-06-22T10:00:00+08:00")
+            service = AcquisitionService(database, clock=lambda: now)
+            for index in range(1, 7):
+                terminal = VirtualTerminal(profile_for(f"D-{index:03d}"))
+                card = terminal.tick(now)[2]
+                result = service.ingest(card)
+                self.assertTrue(result.accepted, result)
+                payload = decode_frame(card).payload
+                self.assertEqual(set(payload), {"kind", "status", "connection_mode", "hardware_connected", "electric_samples", "mechanism"})
+                self.assertEqual(set(payload["mechanism"]), {"stroke_m", "strokes_per_minute"})
+            payload["electric_samples"][0]["power"] = -100.0
+            self.assertTrue(service.ingest(encode_frame("D-006", 4, payload, timestamp=now)).accepted)
+            payload["electric_samples"][0]["power"] = -100.001
+            self.assertFalse(service.ingest(encode_frame("D-006", 5, payload, timestamp=now)).accepted)
 
     def test_all_scenarios_are_deterministic_and_expire(self):
         now = at("2026-06-22T10:00:00+08:00")
@@ -122,6 +173,20 @@ class VirtualTerminalTests(unittest.TestCase):
                 self.assertEqual(first.tick(now), second.tick(now))
                 first.tick(now + timedelta(minutes=2))
                 self.assertEqual(first.scenario.name, "normal")
+
+    def test_sensor_drift_still_biases_the_electric_card(self):
+        """Replacing the sample builder must not silently remove sensor fault injection."""
+        now = at("2026-06-22T10:00:00+08:00")
+        normal = VirtualTerminal(profile_for("D-001"), seed=11)
+        drift = VirtualTerminal(profile_for("D-001"), seed=11)
+        drift.apply_scenario("sensor_drift", 1, now=now)
+        baseline = decode_frame(normal.tick(now)[2]).payload["electric_samples"]
+        biased = decode_frame(drift.tick(now)[2]).payload["electric_samples"]
+        for actual, original in zip(biased, baseline):
+            self.assertAlmostEqual(actual["power"] - original["power"], .45, places=5)
+            self.assertAlmostEqual(abs(actual["power"]), math.sqrt(3) * actual["voltage"] * actual["current"] * .88 / 1000, places=5)
+        later = now + timedelta(minutes=2)
+        self.assertEqual(normal.tick(later), drift.tick(later))
 
     def test_packet_loss_consumes_sequence_and_offline_emits_no_business_frame(self):
         now = at("2026-06-22T10:00:00+08:00")

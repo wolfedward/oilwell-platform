@@ -538,7 +538,7 @@ class AcquisitionService:
                 self._finite_range(sample["phase"], 0, 359.999999, "phase")
                 self._finite_range(sample["current"], 0, 200, "current")
                 self._finite_range(sample["voltage"], 200, 500, "voltage")
-                self._finite_range(sample["power"], 0, 100, "power")
+                self._finite_range(sample["power"], -100, 100, "power")
         return kind
 
     @staticmethod

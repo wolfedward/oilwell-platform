@@ -16,6 +16,28 @@ class SeedDatabaseTests(unittest.TestCase):
         self.database = Database(Path(self.temporary_directory.name) / "platform.db")
         self.database.migrate()
 
+    def test_seed_cards_are_electric_inputs_that_the_analysis_service_can_run(self):
+        """Legacy eight-point load arrays cannot enter the real analysis pipeline."""
+        from backend.audit import AuditService
+        from backend.services.analysis import AnalysisService
+
+        seed_database(self.database)
+        rows = self.database.query_all("SELECT id,sample_data FROM dynagraphs ORDER BY id")
+        self.assertEqual(len(rows), 48)
+        profiles = set()
+        for row in rows:
+            payload = json.loads(row["sample_data"])
+            self.assertIsInstance(payload, dict)
+            self.assertEqual(payload["kind"], "electric_card")
+            self.assertEqual(len(payload["electric_samples"]), 120)
+            profiles.add(payload["profile"])
+        self.assertEqual(profiles, {"normal", "supply_shortage", "intermittent", "pump_leak", "empty_pump", "rod_break"})
+        actor_id = self.database.scalar("SELECT id FROM users WHERE username='algorithm_engineer'")
+        service = AnalysisService(self.database, AuditService(self.database))
+        for row in rows[:6]:
+            service.run(row["id"], actor_id)
+            self.assertIsNotNone(self.database.scalar("SELECT latest_model_run_id FROM dynagraphs WHERE id=?", (row["id"],)))
+
     def test_seed_creates_consistent_project_history(self):
         """Removing the fixture generator must leave the database without the required history."""
         summary = seed_database(self.database)

@@ -16,6 +16,7 @@ import threading
 import time
 
 from backend.protocol import FrameError, decode_frame, encode_frame
+from backend.algorithms.dynagraph_profiles import build_profile_card, profile_condition
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -288,10 +289,28 @@ class VirtualTerminal:
             if self.scenario.name == "offline" or self.state == "offline":
                 self.state = "offline"; return []
             registers = self._registers(now)
+            condition = profile_condition(self.profile.device_id)
+            if self.scenario.name in {"supply_shortage", "pump_leak", "empty_pump"} or (
+                self.scenario.name == "normal" and self.scenario.duration_minutes > 0
+            ):
+                condition = self.scenario.name
+            card = build_profile_card(condition, {
+                "stroke_m": registers["stroke"],
+                "strokes_per_minute": registers["strokes_per_minute"],
+            }, variation=math.sin(now.timestamp() / 660.0 + self.seed))
+            if self.scenario.name == "sensor_drift":
+                # Apply the instrument bias after generating the physical cycle.
+                for sample in card["electric_samples"]:
+                    sample["power"] = round(sample["power"] + .45, 6)
+                    sample["current"] = round(
+                        abs(sample["power"]) * 1000.0 / (math.sqrt(3.0) * sample["voltage"] * .88), 6,
+                    )
             payloads = [
                 {"kind": "heartbeat", "status": self.state, "connection_mode": "virtual", "hardware_connected": False},
                 {"kind": "telemetry", "status": self.state, "telemetry": registers, "connection_mode": "virtual", "hardware_connected": False},
-                {"kind": "electric_card", "status": self.state, "electric_samples": self._electric_samples(registers), "mechanism": {"stroke_m": registers["stroke"], "strokes_per_minute": registers["strokes_per_minute"]}, "connection_mode": "virtual", "hardware_connected": False},
+                {"kind": card["kind"], "electric_samples": card["electric_samples"],
+                 "mechanism": {"stroke_m": registers["stroke"], "strokes_per_minute": registers["strokes_per_minute"]},
+                 "status": self.state, "connection_mode": "virtual", "hardware_connected": False},
             ]
             frames = []
             for index, payload in enumerate(payloads):
@@ -328,9 +347,6 @@ class VirtualTerminal:
         elif self.scenario.name == "sensor_drift": fillage += .07; power += .45
         return {"current": round(power * 3.8, 3), "voltage": round(380 + 4 * math.cos(phase), 3), "active_power": round(power, 3), "power_factor": round(.88 + .03 * math.sin(phase), 3), "frequency": round(50 + .05 * math.cos(phase), 3), "stroke": round(stroke, 3), "strokes_per_minute": round(strokes, 3), "fillage": round(max(.05, min(.99, fillage)), 3)}
 
-    @staticmethod
-    def _electric_samples(registers: dict) -> list[dict]:
-        return [{"phase": index * 30, "current": round(registers["current"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3), "voltage": registers["voltage"], "power": round(registers["active_power"] * (.86 + .14 * math.sin(index / 12 * math.tau)), 3)} for index in range(12)]
     @staticmethod
     def _aware(now: datetime) -> datetime:
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != timedelta(hours=8): raise SimulatorValidationError("tick requires aware +08:00 datetime")
