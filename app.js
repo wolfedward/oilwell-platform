@@ -9,6 +9,12 @@ import { renderWellList } from "./frontend/pages/wells.js";
 import { renderWellDetail } from "./frontend/pages/well-detail.js";
 import { renderDeviceList } from "./frontend/pages/devices.js";
 import { renderDeviceCommand } from "./frontend/pages/device-command.js";
+import { renderReports } from "./frontend/pages/reports.js";
+import { renderUsers } from "./frontend/pages/users.js";
+import { renderRoles } from "./frontend/pages/roles.js";
+import { renderAudit } from "./frontend/pages/audit.js";
+import { renderSystemHealth } from "./frontend/pages/system-health.js";
+import { renderAcceptanceCenter } from "./frontend/pages/acceptance-center.js";
 
 const NAVIGATION = [
   {
@@ -200,6 +206,12 @@ async function renderPage(pageId, params = {}) {
       "well-detail": renderWellDetail,
       devices: renderDeviceList,
       "device-command": renderDeviceCommand,
+      reports: renderReports,
+      users: renderUsers,
+      roles: renderRoles,
+      audit: renderAudit,
+      "system-health": renderSystemHealth,
+      "acceptance-center": renderAcceptanceCenter,
     })[page.id];
     if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);

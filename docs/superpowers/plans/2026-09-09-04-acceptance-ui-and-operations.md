@@ -252,7 +252,7 @@ Expected: all tests pass.
 - Consumes: report, user, role, audit, health, model-run, and trace APIs
 - Produces: printable reports, CSV downloads, role administration, read-only audit timeline, and requirement-to-evidence mapping
 
-- [ ] **Step 1: Write failing evidence tests**
+- [x] **Step 1: Write failing evidence tests**
 
     def test_acceptance_center_maps_all_task_requirements(self):
         data = self.client.get("/api/acceptance/evidence").json()["data"]
@@ -265,24 +265,24 @@ Expected: all tests pass.
         source = Path("frontend/pages/audit.js").read_text(encoding="utf-8")
         self.assertNotIn("deleteAudit", source)
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_acceptance_center -v
 
 Expected: missing evidence API and page modules.
 
-- [ ] **Step 3: Implement management and evidence views**
+- [x] **Step 3: Implement management and evidence views**
 
 Add server endpoint /api/acceptance/evidence that calculates evidence counts and latest linked records. Report pages use backend filters and download endpoints. Administration pages enforce role capabilities and conflict versions. Audit page supports filters and detail only. System health shows service, database, simulator, queue, disk, and latest backup status. Acceptance center links each annual requirement to live pages, tests, records, and trace identifiers without inventing intellectual-property filings.
 
-- [ ] **Step 4: Run evidence and report tests**
+- [x] **Step 4: Run evidence and report tests**
 
     python -m unittest tests.test_acceptance_center tests.test_reports tests.test_auth -v
     Get-ChildItem frontend -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 
 Expected: all commands exit zero.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
     git add frontend/pages backend/api.py backend/http_server.py styles.css tests/test_acceptance_center.py
     git commit -m "feat: add reports and acceptance evidence center"

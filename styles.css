@@ -367,6 +367,22 @@ tbody tr:hover { background: #f7fbff; }
 .device-sections .wide-section { grid-column: 1 / -1; }
 .inline-note { padding: 11px 12px; color: var(--slate-700); border-left: 3px solid var(--cyan-500); background: #f2fafb; line-height: 1.6; }
 .modal-form { display: grid; gap: 16px; }
+.permission-grid { max-height: 300px; overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 13px; border: 1px solid var(--slate-200); border-radius: 8px; }
+.permission-grid legend { padding: 0 7px; color: var(--slate-700); font-weight: 700; }
+.permission-grid label { display: flex; align-items: center; gap: 7px; padding: 7px; border-radius: 5px; background: var(--slate-100); font-family: Consolas, monospace; font-size: 12px; }
+.permission-grid input { width: 16px; height: 16px; }
+.audit-detail pre { min-height: 150px; overflow: auto; margin: 8px 0 0; padding: 12px; border-radius: 7px; color: #d9e8f5; background: #10263a; font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; }
+.comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.comparison-grid h3 { margin: 0; font-size: 14px; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.evidence-card { min-width: 0; }
+.evidence-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 15px 17px; }
+.evidence-list > div { min-width: 0; display: grid; gap: 4px; padding: 11px 12px; border: 1px solid var(--slate-200); border-radius: 7px; background: #f8fafc; }
+.evidence-list span { color: var(--slate-500); font-size: 12px; }
+.evidence-list strong { color: var(--blue-700); font-size: 23px; }
+.evidence-list small { overflow: hidden; color: var(--slate-500); text-overflow: ellipsis; white-space: nowrap; }
+.evidence-card footer { padding: 0 17px 16px; }
+.acceptance-note { margin-bottom: 14px; }
 
 .login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(520px, 1.15fr) minmax(440px, 0.85fr); background: #eef3f8; }
 .login-brand { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; padding: 9vw; color: #fff; background: linear-gradient(145deg, rgba(4,25,47,0.97), rgba(10,55,88,0.93)); }
@@ -419,6 +435,7 @@ tbody tr:hover { background: #f7fbff; }
   .brand { width: 230px; min-width: 230px; }
   .topnav button { min-width: 53px; }
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
+  .evidence-grid { grid-template-columns: 1fr; }
 }
 
 @media print {

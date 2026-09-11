@@ -43,6 +43,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if WellApi(self).get(self.path): return
         path = urlsplit(self.path).path
         if path == "/api/health": return self._health()
+        if path == "/api/audit": return self._audit_get()
+        if path == "/api/acceptance/evidence": return self._acceptance_evidence()
         if path == "/api/auth/me": return self._auth_me()
         if path == "/api/users" or path.startswith("/api/users/"): return self._users_get(path)
         if path == "/api/roles" or path.startswith("/api/roles/"): return self._roles_get(path)
@@ -86,6 +88,137 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, self._error("database_unavailable", "Database is unavailable"))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"service": "ok", "database": status,
             "simulator": "running" if getattr(self.server.simulator, "_thread", None) and self.server.simulator._thread.is_alive() else "ready", "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
+
+    def _audit_get(self):
+        if self._require("audit.read") is None:
+            return
+        try:
+            query = WellApi._query(
+                urlsplit(self.path).query,
+                {"action", "object_type", "actor_id", "from", "to", "page", "page_size"},
+            )
+            page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+            page_size = WellApi._integer(query.get("page_size", "20"), "page_size", 1, 100)
+            clauses, values = [], []
+            for key, column in (("action", "log.action"), ("object_type", "log.object_type")):
+                if query.get(key):
+                    clauses.append(f"{column}=?")
+                    values.append(query[key])
+            if query.get("actor_id"):
+                clauses.append("log.actor_id=?")
+                values.append(WellApi._integer(query["actor_id"], "actor_id", 1, 2**63 - 1))
+            if query.get("from"):
+                datetime.fromisoformat(query["from"])
+                clauses.append("datetime(log.created_at)>=datetime(?)")
+                values.append(query["from"])
+            if query.get("to"):
+                datetime.fromisoformat(query["to"])
+                clauses.append("datetime(log.created_at)<=datetime(?)")
+                values.append(query["to"])
+            where = " AND ".join(clauses) if clauses else "1=1"
+            total = self.server.database.scalar(
+                f"SELECT COUNT(*) FROM audit_logs AS log WHERE {where}", values,
+            )
+            rows = self.server.database.query_all(
+                f"""SELECT log.id,log.actor_id,user.display_name AS actor_name,log.action,
+                            log.object_type,log.object_id,log.details_json,log.status,
+                            log.source_type,log.created_at
+                       FROM audit_logs AS log
+                       LEFT JOIN users AS user ON user.id=log.actor_id
+                      WHERE {where} ORDER BY log.id DESC LIMIT ? OFFSET ?""",
+                [*values, page_size, (page - 1) * page_size],
+            )
+            items = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["details"] = json.loads(item.pop("details_json"))
+                except (TypeError, json.JSONDecodeError):
+                    item["details"] = {}
+                items.append(item)
+        except (ValueError, RequestValidationError) as error:
+            return self._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self._error("validation_error", str(error)),
+            )
+        self._send_json(HTTPStatus.OK, {"ok": True, "data": {
+            "items": items, "total": total, "page": page, "page_size": page_size,
+        }})
+
+    def _acceptance_evidence(self):
+        if self._require("reports.read") is None:
+            return
+        if urlsplit(self.path).query:
+            return self._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self._error("validation_error", "acceptance evidence does not accept query parameters"),
+            )
+        db = self.server.database
+        count = lambda sql, values=(): int(db.scalar(sql, values) or 0)
+        latest = lambda sql, values=(): db.scalar(sql, values)
+        requirements = [
+            {
+                "code": "Y1-DYNAGRAPH", "year": "第一年度",
+                "title": "电功图到示功图转换与智能诊断", "route": "dynagraph-analysis",
+                "evidence": [
+                    {"label": "功图档案", "count": count("SELECT COUNT(*) FROM dynagraphs"), "latest_id": latest("SELECT id FROM dynagraphs ORDER BY captured_at DESC,id DESC LIMIT 1")},
+                    {"label": "特征参数", "count": count("SELECT COUNT(*) FROM dynagraph_features"), "latest_id": latest("SELECT dynagraph_id FROM dynagraph_features ORDER BY id DESC LIMIT 1")},
+                    {"label": "诊断结论", "count": count("SELECT COUNT(*) FROM diagnoses"), "latest_id": latest("SELECT id FROM diagnoses ORDER BY created_at DESC,id DESC LIMIT 1")},
+                ],
+            },
+            {
+                "code": "Y1-ACQUISITION", "year": "第一年度",
+                "title": "可靠稳定的数字采集与数据处理", "route": "acquisition",
+                "evidence": [
+                    {"label": "原始报文", "count": count("SELECT COUNT(*) FROM raw_messages"), "latest_id": latest("SELECT id FROM raw_messages ORDER BY id DESC LIMIT 1")},
+                    {"label": "遥测数据", "count": count("SELECT COUNT(*) FROM telemetry"), "latest_id": latest("SELECT id FROM telemetry ORDER BY measured_at DESC,id DESC LIMIT 1")},
+                    {"label": "终端心跳", "count": count("SELECT COUNT(*) FROM device_heartbeats"), "latest_id": latest("SELECT id FROM device_heartbeats ORDER BY reported_at DESC,id DESC LIMIT 1")},
+                ],
+            },
+            {
+                "code": "Y1-TRANSMISSION", "year": "第一年度",
+                "title": "信息传输、共享与质量闭环", "route": "data-quality",
+                "evidence": [
+                    {"label": "质量事件", "count": count("SELECT COUNT(*) FROM data_quality_events"), "latest_id": latest("SELECT id FROM data_quality_events ORDER BY id DESC LIMIT 1")},
+                    {"label": "已修复事件", "count": count("SELECT COUNT(*) FROM data_quality_events WHERE status IN ('repaired','closed')"), "latest_id": latest("SELECT id FROM data_quality_events WHERE status IN ('repaired','closed') ORDER BY id DESC LIMIT 1")},
+                ],
+            },
+            {
+                "code": "Y1-DECISION", "year": "第一年度",
+                "title": "可靠的智能决策支持", "route": "diagnosis-review",
+                "evidence": [
+                    {"label": "模型运行", "count": count("SELECT COUNT(*) FROM model_runs"), "latest_id": latest("SELECT id FROM model_runs ORDER BY created_at DESC,id DESC LIMIT 1")},
+                    {"label": "人工复核", "count": count("SELECT COUNT(*) FROM diagnosis_reviews"), "latest_id": latest("SELECT diagnosis_id FROM diagnosis_reviews ORDER BY id DESC LIMIT 1")},
+                ],
+            },
+            {
+                "code": "Y2-ENERGY", "year": "第二年度",
+                "title": "产油井自适应节能控制", "route": "strategy-center",
+                "evidence": [
+                    {"label": "渗流恢复试验", "count": count("SELECT COUNT(*) FROM recovery_tests WHERE status='completed'"), "latest_id": latest("SELECT id FROM recovery_tests WHERE status='completed' ORDER BY tested_at DESC,id DESC LIMIT 1")},
+                    {"label": "生效策略", "count": count("SELECT COUNT(*) FROM energy_strategies WHERE status='effective'"), "latest_id": latest("SELECT id FROM energy_strategies WHERE status='effective' ORDER BY effective_at DESC,id DESC LIMIT 1")},
+                    {"label": "成功控制", "count": count("SELECT COUNT(*) FROM device_commands WHERE status IN ('success','succeeded')"), "latest_id": latest("SELECT id FROM device_commands WHERE status IN ('success','succeeded') ORDER BY completed_at DESC,id DESC LIMIT 1")},
+                ],
+            },
+            {
+                "code": "Y2-DSP-MCU", "year": "第二年度",
+                "title": "DSP+MCU 架构智能化抽油测控", "route": "devices",
+                "evidence": [
+                    {"label": "测控终端", "count": count("SELECT COUNT(*) FROM devices"), "latest_id": latest("SELECT id FROM devices ORDER BY id DESC LIMIT 1")},
+                    {"label": "采集通道", "count": count("SELECT COUNT(*) FROM device_channels"), "latest_id": latest("SELECT id FROM device_channels ORDER BY id DESC LIMIT 1")},
+                    {"label": "自检记录", "count": count("SELECT COUNT(*) FROM device_events WHERE event_type='self_check'"), "latest_id": latest("SELECT device_id FROM device_events WHERE event_type='self_check' ORDER BY id DESC LIMIT 1")},
+                    {"label": "签名控制", "count": count("SELECT COUNT(*) FROM device_commands WHERE signature IS NOT NULL"), "latest_id": latest("SELECT id FROM device_commands WHERE signature IS NOT NULL ORDER BY completed_at DESC,id DESC LIMIT 1")},
+                ],
+            },
+        ]
+        with db.connection() as connection:
+            database_status = connection.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_key_status = "ok" if connection.execute("PRAGMA foreign_key_check").fetchone() is None else "failed"
+        self._send_json(HTTPStatus.OK, {"ok": True, "data": {
+            "generated_at": datetime.now(SHANGHAI_TIMEZONE).isoformat(),
+            "requirements": requirements,
+            "integrity": {"database": database_status, "foreign_keys": foreign_key_status},
+        }})
 
     def _login(self):
         try:
