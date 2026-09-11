@@ -4,6 +4,8 @@ from datetime import timedelta
 import http.client
 import json
 from pathlib import Path
+import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,6 +16,99 @@ from backend.http_server import create_server
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PAGE_ROOT = PROJECT_ROOT / "frontend" / "pages"
+
+
+class ChartTooltipTests(unittest.TestCase):
+    def test_all_xy_builders_emit_focusable_escaped_point_metadata(self):
+        """Missing raw/filter/reference hit targets would make their points unreadable."""
+        script = r'''
+import fs from 'node:fs';
+import { charts } from './frontend/charts.js';
+import { escapeHtml } from './frontend/components.js';
+let source = fs.readFileSync('frontend/pages/dynagraph-analysis.js', 'utf8')
+  .replace(/^import .*;$/gm, '').replace(/^export /gm, '');
+const electricCurve = new Function('charts', 'escapeHtml', source + '\nreturn electricCurve;')(charts, escapeHtml);
+console.log(JSON.stringify({
+  line: charts.line([{x:'<img src=x onerror=alert(1)>',y:1.25},{x:'2026-09-11',y:2.5}], {title:'A"<B>',unit:'kW'}),
+  electric: electricCurve([{phase:0,power:1},{phase:90,power:-2}], [{phase_deg:0,power_kw:.5},{phase_deg:90,power_kw:-1}]),
+  filtered: electricCurve([{phase:0,power:1},{phase:90,power:-2}], [{phase_deg:0,power_kw:.5},{phase_deg:90,power_kw:-1}], {smoothedOnly:true}),
+  dynagraph: charts.dynagraph([{x:0,y:36},{x:1,y:61},{x:0,y:36}], {reference:[{x:0,y:37},{x:1,y:60},{x:0,y:37}]}),
+}));
+'''
+        completed = subprocess.run(["node", "--input-type=module", "-e", script], cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", check=True)
+        rendered = json.loads(completed.stdout)
+        for name, count in (("line", 2), ("electric", 4), ("filtered", 2), ("dynagraph", 6)):
+            with self.subTest(chart=name):
+                points = re.findall(r'<circle\b[^>]*data-chart-point[^>]*>', rendered[name])
+                self.assertEqual(len(points), count)
+                for point in points:
+                    for attribute in ('data-series=', 'data-x=', 'data-y=', 'data-x-unit=', 'data-y-unit=', 'tabindex="0"', 'aria-label='):
+                        self.assertIn(attribute, point)
+                self.assertNotRegex(rendered[name], r'<[^>]+\son(?:click|pointerover|focus)=')
+        self.assertIn('data-y="1.25"', rendered["line"])
+        self.assertIn('data-y-unit="kW"', rendered["line"])
+        self.assertIn('&lt;img', rendered["line"])
+        self.assertNotIn('<img', rendered["line"])
+        self.assertIn('data-x="90"', rendered["electric"])
+        self.assertIn('data-y="-2"', rendered["electric"])
+        self.assertIn('data-x-unit="°"', rendered["electric"])
+        self.assertIn('data-x-unit="m"', rendered["dynagraph"])
+        self.assertIn('data-y-unit="kN"', rendered["dynagraph"])
+
+    def test_delegated_pointer_and_focus_show_safe_bounded_tooltip_in_browser(self):
+        """The real DOM must expose a bounded visible tooltip, guides, and keyboard cleanup."""
+        browser = Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
+        if not browser.exists():
+            self.skipTest("Edge is unavailable for the real-DOM chart interaction test")
+        script = r'''
+import { charts, bindChartInteractions } from CHART_MODULE;
+const root = document.querySelector('#root');
+root.innerHTML = charts.line([{x:'<img src=x onerror=alert(1)>',y:1.25},{x:'later',y:2.5}], {title:'Well <A>',unit:'kW'});
+const checks = [];
+function check(condition, message) { if (!condition) throw new Error(message); checks.push(message); }
+try {
+  bindChartInteractions(root);
+  bindChartInteractions(root);
+  let point = root.querySelector('[data-chart-point]');
+  point.dispatchEvent(new PointerEvent('pointerover', {bubbles:true,clientX:999,clientY:999}));
+  let tooltip = root.querySelector('.chart-tooltip');
+  check(tooltip && !tooltip.hidden, 'pointer shows tooltip');
+  check(tooltip.textContent.includes('<img src=x onerror=alert(1)>') && !tooltip.querySelector('img'), 'values remain safe text');
+  check(tooltip.textContent.includes('1.25') && tooltip.textContent.includes('kW'), 'tooltip contains values and units');
+  check(root.querySelectorAll('.chart-tooltip').length === 1, 'binding is idempotent');
+  check(point.classList.contains('is-active'), 'active point is highlighted');
+  check(root.querySelectorAll('.chart-guide').length === 2, 'two crosshair guides are present');
+  const figure = point.closest('figure'), outer = figure.getBoundingClientRect(), box = tooltip.getBoundingClientRect();
+  check(box.left >= outer.left && box.right <= outer.right + 1 && box.top >= outer.top && box.bottom <= outer.bottom + 1, 'tooltip stays inside figure');
+  point.dispatchEvent(new PointerEvent('pointerout', {bubbles:true,relatedTarget:root}));
+  check(tooltip.hidden && !point.classList.contains('is-active'), 'pointerout clears tooltip and highlight');
+  point.focus();
+  check(!tooltip.hidden && point.classList.contains('is-active'), 'keyboard focus shows tooltip');
+  point.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true,key:'Escape'}));
+  check(tooltip.hidden, 'Escape dismisses tooltip');
+  point.blur();
+  root.innerHTML = charts.line([{x:'new',y:7},{x:'next',y:8}], {unit:'m'});
+  point = root.querySelector('[data-chart-point]');
+  point.focus();
+  tooltip = root.querySelector('.chart-tooltip');
+  check(tooltip && !tooltip.hidden && tooltip.textContent.includes('7'), 'delegation handles rerendered points');
+  point.blur();
+  check(tooltip.hidden, 'focusout dismisses tooltip');
+  document.querySelector('#result').textContent = JSON.stringify({ok:true,checks});
+} catch (error) { document.querySelector('#result').textContent = JSON.stringify({ok:false,error:String(error),checks}); }
+'''
+        script = script.replace("CHART_MODULE", json.dumps((PROJECT_ROOT / "frontend/charts.js").as_uri()))
+        with tempfile.TemporaryDirectory(prefix="chart-tooltip-test-") as directory:
+            page = Path(directory) / "test.html"
+            page.write_text('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="' + (PROJECT_ROOT / "styles.css").as_uri() + '"><div id="root" style="width:300px"></div><pre id="result">pending</pre><script type="module">' + script + '</script>', encoding="utf-8")
+            completed = subprocess.run([str(browser), "--headless", "--disable-gpu", "--no-first-run", "--allow-file-access-from-files", "--virtual-time-budget=3000", "--user-data-dir=" + str(Path(directory) / "profile"), "--dump-dom", page.as_uri()], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
+            match = re.search(r'<pre id="result">(.*?)</pre>', completed.stdout, re.S)
+            self.assertIsNotNone(match, completed.stderr[-2000:])
+            import html
+            result_text = html.unescape(match[1])
+            self.assertNotEqual(result_text, "pending", "chart module failed to load or bind")
+            result = json.loads(result_text)
+            self.assertTrue(result["ok"], result)
 
 
 class AnalysisPageSourceTests(unittest.TestCase):

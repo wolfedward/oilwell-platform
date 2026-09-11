@@ -176,7 +176,7 @@ class OperationalPageSourceTests(unittest.TestCase):
         script = r"""
 const fs = require('fs');
 let source = fs.readFileSync('frontend/pages/dynagraph-analysis.js', 'utf8');
-source = source.replace('import { charts } from "../charts.js";', 'const charts = {};');
+source = source.replace('import { charts } from "../charts.js";', '');
 source = source.replace('import { escapeHtml } from "../components.js";',
   'const escapeHtml = (value) => String(value ?? "");');
 source = source.replace('export async function renderDynagraphAnalysis',
@@ -185,7 +185,7 @@ source += '\nconsole.log(electricCurve([' +
   '{phase:0,power:1},{phase:0.5,power:2},{phase:1.4,power:3},' +
   '{phase:2.2,power:4},{phase:3.8,power:5},{phase:5.5,power:6}' +
   '], []));';
-eval(source);
+import('./frontend/charts.js').then(({charts}) => eval(source));
 """
         completed = subprocess.run(
             ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
@@ -198,7 +198,7 @@ eval(source);
         script = r"""
 const fs = require('fs');
 let source = fs.readFileSync('frontend/pages/dynagraph-analysis.js', 'utf8');
-source = source.replace('import { charts } from "../charts.js";', 'const charts = {};');
+source = source.replace('import { charts } from "../charts.js";', '');
 source = source.replace('import { escapeHtml } from "../components.js";',
   'const escapeHtml = (value) => String(value ?? "");');
 source = source.replace('export async function renderDynagraphAnalysis',
@@ -206,7 +206,7 @@ source = source.replace('export async function renderDynagraphAnalysis',
 source += '\nconsole.log(electricCurve([' +
   '{phase:0,power:1},{phase:1,power:2},{phase:2,power:3},{phase:3,power:4}' +
   '], []));';
-eval(source);
+import('./frontend/charts.js').then(({charts}) => eval(source));
 """
         completed = subprocess.run(
             ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
@@ -221,7 +221,7 @@ const fs = require('fs');
 let source = fs.readFileSync('frontend/charts.js', 'utf8');
 source = source.replace('import { escapeHtml } from "./components.js";',
   'const escapeHtml = (value) => String(value ?? "");');
-source = source.replace('export const charts =', 'const charts =');
+source = source.replace(/^export /gm, '');
 source += '\nconsole.log(JSON.stringify({\n' +
   'normal: charts.dynagraph([{x:0,y:10},{x:1,y:20},{x:2,y:15}], {title:"井A"}),\n' +
   'hostile: charts.dynagraph([{x:null,y:null},{x:2,y:Infinity},{x:2,y:NaN},{x:1e308,y:-1e308}], {title:"井B"})\n' +

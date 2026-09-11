@@ -17,8 +17,102 @@ function placeholder(message = "暂无趋势数据") {
   return `<div class="chart-empty">${escapeHtml(message)}</div>`;
 }
 
+function pointAttributes({ series, seriesLabel = series, x, y, xUnit = "", yUnit = "", detail = "" }) {
+  const label = `${seriesLabel}：${x} ${xUnit}，${y} ${yUnit}${detail ? `；${detail}` : ""}`;
+  return `data-chart-point data-series="${escapeHtml(series)}" data-series-label="${escapeHtml(seriesLabel)}" data-x="${escapeHtml(x)}" data-y="${escapeHtml(y)}" data-x-unit="${escapeHtml(xUnit)}" data-y-unit="${escapeHtml(yUnit)}" data-detail="${escapeHtml(detail)}" tabindex="0" role="img" aria-label="${escapeHtml(label)}"`;
+}
+
+const chartBindings = new WeakMap();
+let tooltipSequence = 0;
+
+export function bindChartInteractions(root) {
+  if (!root?.addEventListener) return;
+  if (chartBindings.has(root)) {
+    chartBindings.get(root)();
+    return;
+  }
+  const document = root.ownerDocument;
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.id = `chart-tooltip-${++tooltipSequence}`;
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.hidden = true;
+  let active = null;
+  let guides = null;
+  const hide = () => {
+    tooltip.hidden = true;
+    active?.classList.remove("is-active");
+    active?.removeAttribute("aria-describedby");
+    guides?.remove();
+    guides = null;
+    active = null;
+  };
+  const pointFor = (target) => {
+    const point = target?.closest?.("[data-chart-point]");
+    return point && root.contains(point) && !point.closest("[hidden]") ? point : null;
+  };
+  const show = (point, event) => {
+    const figure = point.closest("figure.chart"), svg = point.ownerSVGElement;
+    if (!figure || !svg || !point.getClientRects().length) return;
+    hide();
+    active = point;
+    point.classList.add("is-active");
+    point.setAttribute("aria-describedby", tooltip.id);
+    const data = point.dataset;
+    const heading = document.createElement("strong");
+    heading.textContent = data.seriesLabel || data.series;
+    const values = document.createElement("span");
+    values.textContent = `x: ${data.x} ${data.xUnit || ""} · y: ${data.y} ${data.yUnit || ""}`;
+    const detail = document.createElement("span");
+    detail.textContent = data.detail || "";
+    tooltip.replaceChildren(heading, values, detail);
+    figure.append(tooltip);
+    tooltip.hidden = false;
+    const outer = figure.getBoundingClientRect(), pointBox = point.getBoundingClientRect();
+    const padding = 8;
+    tooltip.style.maxWidth = `${Math.max(0, figure.clientWidth - padding * 2)}px`;
+    tooltip.style.maxHeight = `${Math.max(0, figure.clientHeight - padding * 2)}px`;
+    const anchorX = event?.type.startsWith("pointer") ? event.clientX : pointBox.left + pointBox.width / 2;
+    const anchorY = event?.type.startsWith("pointer") ? event.clientY : pointBox.top + pointBox.height / 2;
+    tooltip.style.left = `${Math.max(padding, Math.min(anchorX - outer.left + 12, figure.clientWidth - tooltip.offsetWidth - padding))}px`;
+    tooltip.style.top = `${Math.max(padding, Math.min(anchorY - outer.top + 12, figure.clientHeight - tooltip.offsetHeight - padding))}px`;
+    const ns = "http://www.w3.org/2000/svg";
+    guides = document.createElementNS(ns, "g");
+    guides.setAttribute("aria-hidden", "true");
+    guides.setAttribute("class", "chart-guides");
+    const cx = numeric(point.getAttribute("cx")), cy = numeric(point.getAttribute("cy"));
+    const bounds = svg.viewBox.baseVal;
+    const segments = [
+      [numeric(svg.dataset.plotLeft), cy, numeric(svg.dataset.plotRight, bounds.width), cy],
+      [cx, numeric(svg.dataset.plotTop), cx, numeric(svg.dataset.plotBottom, bounds.height)],
+    ];
+    for (const [x1, y1, x2, y2] of segments) {
+      const line = document.createElementNS(ns, "line");
+      line.setAttribute("class", "chart-guide");
+      Object.entries({ x1, y1, x2, y2 }).forEach(([name, value]) => line.setAttribute(name, value));
+      guides.append(line);
+    }
+    svg.append(guides);
+  };
+  const enter = (event) => {
+    const point = pointFor(event.target);
+    if (point) show(point, event);
+  };
+  root.addEventListener("pointerover", enter);
+  root.addEventListener("pointermove", enter);
+  root.addEventListener("focusin", enter);
+  root.addEventListener("pointerout", (event) => {
+    if (pointFor(event.target) === active && active !== document.activeElement) hide();
+  });
+  root.addEventListener("focusout", hide);
+  root.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+  chartBindings.set(root, hide);
+}
+
 export const charts = {
-  line(items, { xKey = "x", yKey = "y", title = "趋势图", unit = "", color = "#1e6ee8" } = {}) {
+  pointAttributes,
+
+  line(items, { xKey = "x", yKey = "y", title = "趋势图", unit = "", xUnit = "", color = "#1e6ee8" } = {}) {
     if (!Array.isArray(items) || items.length < 2) return placeholder();
     const width = 720, height = 240, left = 54, right = 18, top = 20, bottom = 38;
     const values = items.map((item) => numeric(item[yKey]));
@@ -34,9 +128,9 @@ export const charts = {
     }).join("");
     const labels = items.map((item, index) => index % Math.max(1, Math.ceil(items.length / 6)) === 0 || index === items.length - 1
       ? `<text x="${x(index)}" y="${height - 12}" text-anchor="middle">${escapeHtml(String(item[xKey] ?? "").slice(5, 10))}</text>` : "").join("");
-    const points = items.map((item, index) => `<circle cx="${x(index)}" cy="${y(numeric(item[yKey]))}" r="3"><title>${escapeHtml(item[xKey])}：${escapeHtml(numeric(item[yKey]).toFixed(2))}${escapeHtml(unit)}</title></circle>`).join("");
+    const points = items.map((item, index) => `<circle ${pointAttributes({ series: title, x: item[xKey] ?? "", y: numeric(item[yKey]), xUnit, yUnit: unit })} cx="${x(index)}" cy="${y(numeric(item[yKey]))}" r="4"><title>${escapeHtml(item[xKey])}：${escapeHtml(numeric(item[yKey]).toFixed(2))}${escapeHtml(unit)}</title></circle>`).join("");
     return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption>
-      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}">
+      <svg viewBox="0 0 ${width} ${height}" data-plot-left="${left}" data-plot-right="${width - right}" data-plot-top="${top}" data-plot-bottom="${height - bottom}" role="img" aria-label="${escapeHtml(title)}">
         <g class="chart-grid">${guide}${labels}</g>
         <path class="chart-area" style="--chart-color:${color}" d="${path} L${x(items.length - 1)},${height - bottom} L${x(0)},${height - bottom} Z" />
         <path class="chart-line" style="--chart-color:${color}" d="${path}" />
@@ -80,7 +174,7 @@ export const charts = {
       const value = ys.max - ratio * ys.span;
       return `<g data-axis="y" class="chart-tick"><line x1="${left}" y1="${py.toFixed(1)}" x2="${width - right}" y2="${py.toFixed(1)}" /><text x="${left - 10}" y="${(py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(value.toFixed(2))}</text></g>`;
     }).join("");
-    const tooltips = points.map((item) => `<circle cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="3"><title>${escapeHtml(xLabel)}：${escapeHtml(item.x.toFixed(3))}；${escapeHtml(yLabel)}：${escapeHtml(item.y.toFixed(3))}</title></circle>`).join("");
-    return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}"><rect class="plot-frame" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" /><g class="chart-grid dynagraph-grid">${xTicks}${yTicks}</g>${referencePoints.length ? `<polyline class="dynagraph-reference" points="${coords(referencePoints)}" />` : ""}<polyline class="dynagraph-line" points="${coords(points)}" /><g class="chart-points dynagraph-points">${tooltips}</g><text class="chart-axis-title" x="${left + plotWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(xLabel)}</text><text class="chart-axis-title" x="16" y="${top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${top + plotHeight / 2})">${escapeHtml(yLabel)}</text></svg></figure>`;
+    const tooltips = (items, series, seriesLabel) => items.map((item) => `<circle ${pointAttributes({ series, seriesLabel, x: item.x, y: item.y, xUnit: "m", yUnit: "kN" })} cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="4"><title>${escapeHtml(xLabel)}：${escapeHtml(item.x.toFixed(3))}；${escapeHtml(yLabel)}：${escapeHtml(item.y.toFixed(3))}</title></circle>`).join("");
+    return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption><svg viewBox="0 0 ${width} ${height}" data-plot-left="${left}" data-plot-right="${width - right}" data-plot-top="${top}" data-plot-bottom="${height - bottom}" role="img" aria-label="${escapeHtml(title)}"><rect class="plot-frame" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" /><g class="chart-grid dynagraph-grid">${xTicks}${yTicks}</g>${referencePoints.length ? `<polyline class="dynagraph-reference" data-series="measured" points="${coords(referencePoints)}" />` : ""}<polyline class="dynagraph-line" data-series="inferred" points="${coords(points)}" /><g class="chart-points dynagraph-points" data-series="inferred">${tooltips(points, "inferred", "电功图反演")}</g>${referencePoints.length ? `<g class="chart-points dynagraph-points measured-points" data-series="measured">${tooltips(referencePoints, "measured", "载荷位移传感器")}</g>` : ""}<text class="chart-axis-title" x="${left + plotWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(xLabel)}</text><text class="chart-axis-title" x="16" y="${top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${top + plotHeight / 2})">${escapeHtml(yLabel)}</text></svg></figure>`;
   },
 };

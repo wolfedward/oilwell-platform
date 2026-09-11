@@ -27,6 +27,7 @@ import { renderAcquisitionStream } from "./frontend/pages/acquisition.js";
 import { renderQualityBoard } from "./frontend/pages/data-quality.js";
 import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
+import { bindChartInteractions } from "./frontend/charts.js";
 import { renderDiagnosisReview } from "./frontend/pages/diagnosis-review.js";
 
 const NAVIGATION = [
@@ -243,6 +244,7 @@ async function renderPage(pageId, params = {}) {
     if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);
     if (generation !== renderGeneration) return;
+    bindChartInteractions(workspace);
     document.title = `${page.label}｜合能油井数字智能化管理平台`;
   } catch (error) {
     if (generation !== renderGeneration) return;

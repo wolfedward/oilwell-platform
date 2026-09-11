@@ -381,7 +381,17 @@ tbody tr:hover { background: #f7fbff; }
 .detail-grid { display: grid; grid-template-columns: 1.45fr 0.72fr; gap: 14px; margin-bottom: 14px; }
 .detail-grid .wide { min-width: 0; }
 .chart-panel .chart { padding: 8px 15px 13px; }
-.chart { margin: 0; min-height: 230px; }
+.chart { position: relative; margin: 0; min-height: 230px; }
+.chart-tooltip { position: absolute; z-index: 5; display: grid; gap: 4px; box-sizing: border-box; width: max-content; padding: 9px 12px; border: 1px solid #49617f; border-radius: 7px; background: #172b46; color: #fff; font-size: 12px; line-height: 1.5; overflow: hidden; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 4px 14px #172b4633; }
+.chart-tooltip[hidden] { display: none; }
+.chart-tooltip strong { color: #bdddff; }
+.chart-tooltip span:empty { display: none; }
+.chart-points [data-chart-point] { cursor: crosshair; pointer-events: all; }
+.chart-points [data-chart-point]:focus, .chart-points [data-chart-point].is-active { outline: none; fill: #ffe7a0; stroke: #c46b00; stroke-width: 3; r: 6; }
+.chart-guides { pointer-events: none; }
+.chart-guide { stroke: #64748b; stroke-width: 1; stroke-dasharray: 4 3; }
+.chart [data-series][hidden] { display: none; }
+.chart-points.measured-points circle { stroke: #64748b; }
 .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
 .chart-grid line { stroke: #e7edf3; stroke-width: 1; }
 .chart-grid text { fill: var(--slate-500); font-size: 10px; }
