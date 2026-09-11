@@ -375,6 +375,7 @@ class StrategyService:
                FROM strategy_versions WHERE strategy_id=? ORDER BY version_number DESC""",
             (strategy_id,),
         )]
+        result["effect_trace"] = self._effect_trace(result)
         return result
 
     def list_strategies(self, filters: dict) -> dict:
@@ -430,8 +431,7 @@ class StrategyService:
             raise StrategyNotFound()
         return row
 
-    @staticmethod
-    def _public(row) -> dict:
+    def _public(self, row) -> dict:
         keys = (
             "id", "well_id", "well_name", "parent_strategy_id", "current_version_id",
             "name", "version", "configuration_version", "created_by", "submitted_by",
@@ -440,7 +440,49 @@ class StrategyService:
         )
         result = {key: row[key] for key in keys}
         result["configuration"] = StrategyService._configuration(row["configuration"])
+        config = result["configuration"]
+        if row["source_type"] == "simulator" and "recovery_model" not in config:
+            recovery = self.database.query_one("SELECT id,tested_at,result_data FROM recovery_tests WHERE well_id=? AND status='completed' AND tested_at<=? ORDER BY tested_at DESC,id DESC LIMIT 1", (row["well_id"], row["created_at"]))
+            if recovery:
+                points, payload = self._recovery_points(recovery["result_data"])
+                model = fit_recovery_curve(points)
+                constraints, motor_kw, normalized = self._constraints({
+                    "min_on_minutes": 20, "max_on_minutes": 120, "min_off_minutes": 15,
+                    "max_off_minutes": 180, "max_starts_per_day": 12,
+                    "min_liquid_m3_day": float(config.get("minimum_daily_fluid", 1)), "motor_kw": 18.5,
+                })
+                candidates = optimize_cycle(model, constraints, motor_kw)
+                feasible = [candidate for candidate in candidates if candidate.feasible]
+                config = {**config, "schema_version": 1, "strategy_version_id": row["current_version_id"], "recovery_test_id": recovery["id"],
+                          "recovery_tested_at": recovery["tested_at"], "recovery_observations": payload["observations"],
+                          "recovery_units": payload["units"], "recovery_model": _plain(model),
+                          "constraints": normalized, "selected_candidate": _plain(feasible[0]) if feasible else {},
+                          "ranked_candidates": [_plain(candidate) for candidate in feasible[:10]],
+                          "evidence_basis": "legacy-version-recovery-projection-v1"}
+        if config.get("recovery_model"):
+            model = config["recovery_model"]
+            end = max(point["shut_in_minutes"] for point in config["recovery_observations"])
+            config = {**config,
+                      "recovery_fitted_curve": [{"shut_in_minutes": end * index / 72,
+                          "liquid_rate_m3_day": model["baseline"] + model["capacity"] * (1 - math.exp(-end * index / 72 / model["tau_minutes"]))} for index in range(73)]}
+        result["configuration"] = config
         return result
+
+    def _effect_trace(self, strategy):
+        from backend.services.reports import ReportService, ReportValidationError
+        if strategy["effective_at"] and strategy["status"] in {"active", "effective", "paused", "rollback", "rolled_back"}:
+            try:
+                report = ReportService(self.database).report("energy", {"strategy_id": strategy["id"]})
+                if report["items"]:
+                    effect = report["items"][0]
+                    effect["conclusion"] = (f"同长度窗口用电下降 {effect['saving_rate'] * 100:.1f}%；产液变化 {effect['liquid_change_rate'] * 100:.1f}%。"
+                        if effect["valid_for_comparison"] and effect["liquid_valid_for_comparison"] else "观测覆盖不足，继续补齐有效运行记录后复核。")
+                    return effect
+            except ReportValidationError:
+                pass
+        return {"strategy_id": strategy["id"], "strategy_version_id": strategy["current_version_id"],
+                "well_id": strategy["well_id"], "valid_for_comparison": False,
+                "conclusion": "策略尚未形成可比较的执行窗口；当前为候选制度预测。"}
 
     @staticmethod
     def _configuration(raw):

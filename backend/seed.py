@@ -525,7 +525,8 @@ def _recovery_payload(profile: dict) -> dict:
         {
             "shut_in_minutes": minute,
             "liquid_rate_m3_day": round(
-                baseline + capacity * (1.0 - math.exp(-minute / tau_minutes)), 3,
+                baseline + capacity * (1.0 - math.exp(-minute / tau_minutes))
+                + capacity * .0025 * math.sin(minute / 37.0), 3,
             ),
         }
         for minute in (0, 30, 60, 90, 120, 180, 240, 360)
@@ -535,6 +536,7 @@ def _recovery_payload(profile: dict) -> dict:
         "recovery_hours": 8,
         "observations": observations,
         "units": {"liquid_rate": "m³/d", "time": "min"},
+        "observation_revision": 2,
     }
 
 
@@ -740,7 +742,36 @@ def _with_auth_bootstrap(db: Database, summary: SeedSummary) -> SeedSummary:
     _ensure_effect_history(db)
     _ensure_device_self_checks(db)
     _ensure_signed_command_history(db)
+    _ensure_strategy_evidence(db)
     return summary
+
+
+def _ensure_strategy_evidence(db: Database) -> None:
+    """Enrich only verified seed-owned evidence, retaining immutable configurations."""
+    manifest = db.query_one("SELECT seed,namespace FROM seed_manifests WHERE dataset_name=?", (MANIFEST_NAME,))
+    if not manifest:
+        return
+    specs = _workflow_specs(_well_profiles(manifest["seed"], manifest["namespace"]))
+    pending = []
+    for spec in specs:
+        row = db.query_one("SELECT object_version,comment,decided_at,decision FROM approvals WHERE id=? AND source_type=?", (spec["approval_id"], SIMULATOR))
+        recovery = db.query_one("SELECT result_data FROM recovery_tests WHERE id=? AND source_type=?", (spec["recovery_id"], SIMULATOR))
+        old_recovery = recovery and json.loads(recovery["result_data"]).get("observation_revision") != 2
+        if row and (row["object_version"] is None or not row["comment"] or (row["decision"] in {"approved", "rejected"} and not row["decided_at"])) or old_recovery:
+            pending.append((spec, bool(old_recovery)))
+    if not pending:
+        return
+    with db.transaction(None, "seed.enrich_strategy_evidence", "seed_manifest", MANIFEST_NAME,
+                        source_type="system", details_json=_canonical_json({"basis": "historical-seed-records", "strategy_ids": [spec["strategy_id"] for spec, _ in pending]})) as connection:
+        for spec, old_recovery in pending:
+            if old_recovery:
+                connection.execute("UPDATE recovery_tests SET result_data=? WHERE id=?", (_canonical_json(_recovery_payload(spec["profile"])), spec["recovery_id"]))
+            connection.execute("""UPDATE approvals SET
+                object_version=COALESCE(object_version,(SELECT version FROM energy_strategies WHERE id=object_id)),
+                comment=COALESCE(NULLIF(comment,''),CASE decision WHEN 'approved' THEN '恢复试验及启停边界复核通过，同意按对应策略版本执行。' WHEN 'rejected' THEN '最低产液边界复核未通过，请调整关井时长后重新提交。' ELSE '试验记录与候选制度已登记，等待独立审批。' END),
+                decided_at=CASE WHEN decision IN ('approved','rejected') THEN COALESCE(decided_at,created_at) ELSE decided_at END
+                WHERE id=? AND source_type=?""", (spec["approval_id"], SIMULATOR))
+        connection.execute("UPDATE seed_manifests SET content_hash=? WHERE dataset_name=?", (_content_hash_from(connection, manifest["seed"], manifest["namespace"]), MANIFEST_NAME))
 
 
 def _ensure_device_self_checks(db: Database) -> None:
