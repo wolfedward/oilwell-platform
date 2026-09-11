@@ -17,9 +17,15 @@ function placeholder(message = "暂无趋势数据") {
   return `<div class="chart-empty">${escapeHtml(message)}</div>`;
 }
 
+function coordinateText(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return value;
+  return (Math.abs(value) < 0.005 ? 0 : value).toFixed(2);
+}
+
 function pointAttributes({ series, seriesLabel = series, x, y, xUnit = "", yUnit = "", detail = "" }) {
-  const label = `${seriesLabel}：${x} ${xUnit}，${y} ${yUnit}${detail ? `；${detail}` : ""}`;
-  return `data-chart-point data-series="${escapeHtml(series)}" data-series-label="${escapeHtml(seriesLabel)}" data-x="${escapeHtml(x)}" data-y="${escapeHtml(y)}" data-x-unit="${escapeHtml(xUnit)}" data-y-unit="${escapeHtml(yUnit)}" data-detail="${escapeHtml(detail)}" tabindex="0" role="img" aria-label="${escapeHtml(label)}"`;
+  const displayX = coordinateText(x), displayY = coordinateText(y);
+  const label = `${seriesLabel}：${displayX} ${xUnit}，${displayY} ${yUnit}${detail ? `；${detail}` : ""}`;
+  return `data-chart-point data-series="${escapeHtml(series)}" data-series-label="${escapeHtml(seriesLabel)}" data-x="${escapeHtml(displayX)}" data-y="${escapeHtml(displayY)}" data-x-unit="${escapeHtml(xUnit)}" data-y-unit="${escapeHtml(yUnit)}" data-detail="${escapeHtml(detail)}" tabindex="0" role="img" aria-label="${escapeHtml(label)}"`;
 }
 
 const chartBindings = new WeakMap();
@@ -174,7 +180,7 @@ export const charts = {
       const value = ys.max - ratio * ys.span;
       return `<g data-axis="y" class="chart-tick"><line x1="${left}" y1="${py.toFixed(1)}" x2="${width - right}" y2="${py.toFixed(1)}" /><text x="${left - 10}" y="${(py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(value.toFixed(2))}</text></g>`;
     }).join("");
-    const tooltips = (items, series, seriesLabel) => items.map((item) => `<circle ${pointAttributes({ series, seriesLabel, x: item.x, y: item.y, xUnit: "m", yUnit: "kN" })} cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="7"><title>${escapeHtml(xLabel)}：${escapeHtml(item.x.toFixed(3))}；${escapeHtml(yLabel)}：${escapeHtml(item.y.toFixed(3))}</title></circle>`).join("");
+    const tooltips = (items, series, seriesLabel) => items.map((item) => `<circle ${pointAttributes({ series, seriesLabel, x: item.x, y: item.y, xUnit: "m", yUnit: "kN" })} cx="${x(item.x).toFixed(1)}" cy="${y(item.y).toFixed(1)}" r="7"><title>${escapeHtml(xLabel)}：${escapeHtml(coordinateText(item.x))}；${escapeHtml(yLabel)}：${escapeHtml(coordinateText(item.y))}</title></circle>`).join("");
     return `<figure class="chart"><figcaption class="visually-hidden">${escapeHtml(title)}</figcaption><svg viewBox="0 0 ${width} ${height}" data-plot-left="${left}" data-plot-right="${width - right}" data-plot-top="${top}" data-plot-bottom="${height - bottom}" role="img" aria-label="${escapeHtml(title)}"><rect class="plot-frame" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" /><g class="chart-grid dynagraph-grid">${xTicks}${yTicks}</g>${referencePoints.length ? `<polyline class="dynagraph-reference" data-series="measured" points="${coords(referencePoints)}" />` : ""}<polyline class="dynagraph-line" data-series="inferred" points="${coords(points)}" /><g class="chart-points dynagraph-points" data-series="inferred">${tooltips(points, "inferred", "电功图反演")}</g>${referencePoints.length ? `<g class="chart-points dynagraph-points measured-points" data-series="measured">${tooltips(referencePoints, "measured", "载荷位移传感器")}</g>` : ""}<text class="chart-axis-title" x="${left + plotWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(xLabel)}</text><text class="chart-axis-title" x="16" y="${top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${top + plotHeight / 2})">${escapeHtml(yLabel)}</text></svg></figure>`;
   },
 };

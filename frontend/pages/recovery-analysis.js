@@ -1,3 +1,4 @@
+import { charts } from "../charts.js";
 import { escapeHtml } from "../components.js";
 
 function recoveryCurve(observations, fitted) {
@@ -9,7 +10,7 @@ function recoveryCurve(observations, fitted) {
   const ymax = Math.max(1, ...points.map((p) => p.liquid_rate_m3_day)) * 1.08;
   const x = (value) => 58 + value / xmax * 630;
   const y = (value) => 218 - value / ymax * 190;
-  const series = (values, name, label, color, dashed) => `<path fill="none" stroke="${color}" stroke-width="2.5" ${dashed ? 'stroke-dasharray="5 4"' : ''} d="${values.map((p, i) => `${i ? 'L' : 'M'}${x(p.shut_in_minutes).toFixed(2)},${y(p.liquid_rate_m3_day).toFixed(2)}`).join(' ')}"/><g class="chart-points" style="--chart-color:${color}">${values.map((p) => `<circle data-chart-point data-series="${name}" data-series-label="${label}" data-x="${p.shut_in_minutes}" data-y="${p.liquid_rate_m3_day}" data-x-unit="min" data-y-unit="m³/d" tabindex="0" role="img" aria-label="${label}：${p.shut_in_minutes} min，${p.liquid_rate_m3_day.toFixed(3)} m³/d" cx="${x(p.shut_in_minutes)}" cy="${y(p.liquid_rate_m3_day)}" r="6"/>`).join('')}</g>`;
+  const series = (values, name, label, color, dashed) => `<path fill="none" stroke="${color}" stroke-width="2.5" ${dashed ? 'stroke-dasharray="5 4"' : ''} d="${values.map((p, i) => `${i ? 'L' : 'M'}${x(p.shut_in_minutes).toFixed(2)},${y(p.liquid_rate_m3_day).toFixed(2)}`).join(' ')}"/><g class="chart-points" style="--chart-color:${color}">${values.map((p) => `<circle ${charts.pointAttributes({ series: name, seriesLabel: label, x: p.shut_in_minutes, y: p.liquid_rate_m3_day, xUnit: "min", yUnit: "m³/d" })} cx="${x(p.shut_in_minutes)}" cy="${y(p.liquid_rate_m3_day)}" r="6"/>`).join('')}</g>`;
   const ticks = Array.from({length: 5}, (_, i) => `<line x1="58" y1="${y(ymax * i / 4)}" x2="688" y2="${y(ymax * i / 4)}"/><text x="50" y="${y(ymax * i / 4) + 4}" text-anchor="end">${(ymax * i / 4).toFixed(1)}</text><text x="${x(xmax * i / 4)}" y="240" text-anchor="middle">${Math.round(xmax * i / 4)}</text>`).join('');
   return `<figure class="chart"><figcaption>恢复观测点与模型拟合 · <span style="color:#b66a1f">橙色虚线：观测</span> · <span style="color:#1e6ee8">蓝色实线：拟合</span></figcaption><svg viewBox="0 0 720 270" data-plot-left="58" data-plot-right="688" data-plot-top="28" data-plot-bottom="218" role="img" aria-label="关井时间与恢复产液能力"><g class="chart-grid">${ticks}</g><text x="58" y="17">恢复液量 m³/d</text><text x="365" y="264" text-anchor="middle">关井时间 min</text>${series(model,'recovery-fitted','模型拟合','#1e6ee8',false)}${series(observed,'recovery-observed','恢复观测','#b66a1f',true)}</svg></figure>`;
 }

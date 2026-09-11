@@ -49,11 +49,16 @@ console.log(JSON.stringify({
         self.assertIn('data-y-unit="kW"', rendered["line"])
         self.assertIn('&lt;img', rendered["line"])
         self.assertNotIn('<img', rendered["line"])
-        self.assertIn('data-x="90"', rendered["electric"])
-        self.assertIn('data-y="-2"', rendered["electric"])
+        self.assertIn('data-x="90.00"', rendered["electric"])
+        self.assertIn('data-y="-2.00"', rendered["electric"])
         self.assertIn('data-x-unit="°"', rendered["electric"])
+        self.assertIn('data-x="0.00"', rendered["dynagraph"])
+        self.assertIn('data-y="36.00"', rendered["dynagraph"])
         self.assertIn('data-x-unit="m"', rendered["dynagraph"])
         self.assertIn('data-y-unit="kN"', rendered["dynagraph"])
+        self.assertRegex(rendered["electric"], r'<title>[^<]*90\.00[^<]*-2\.00 kW</title>')
+        self.assertRegex(rendered["dynagraph"], r'<title>[^<]*0\.00[^<]*36\.00</title>')
+        self.assertIn('data-x="2026-09-11"', rendered["line"])
 
     def test_delegated_pointer_and_focus_show_safe_bounded_tooltip_in_browser(self):
         """The real DOM must expose a bounded visible tooltip, guides, and keyboard cleanup."""
