@@ -330,7 +330,7 @@ Expected: missing backup module or restart helper.
 
 Use sqlite3 Connection.backup into backups/platform-YYYYMMDD-HHMMSS.db, retain the latest ten, and verify integrity before reporting success. The smoke script starts a temporary server, checks health, login, dashboard, well detail, analysis, strategy optimization, approval, dispatch, command success, report CSV, audit trace, restart persistence, and shutdown. The Chinese operator guide lists accounts, the 15 to 20 minute main flow, four backup failure demonstrations, reset procedure, and recovery commands.
 
-- [ ] **Step 4: Run final automated verification**
+- [x] **Step 4: Run final automated verification**
 
     python -m unittest discover -s tests -v
     python acceptance_smoke.py
@@ -339,11 +339,11 @@ Use sqlite3 Connection.backup into backups/platform-YYYYMMDD-HHMMSS.db, retain t
 
 Expected: all tests pass, smoke exits zero, and its JSON report records every stage as passed.
 
-- [ ] **Step 5: Perform browser and offline verification**
+- [x] **Step 5: Perform browser and offline verification**
 
-Start through start-platform.cmd. In Chrome and Edge at 1366 by 768, complete login, well drilldown, scenario trigger, analysis, optimization, approval, dispatch, command receipt, work-order closure, report export, and audit trace. Disconnect external network access and repeat health, query, mutation, and CSV export. Restart the service and confirm the effective strategy remains.
+Start through start-platform.cmd. In the available Edge and bundled Chromium browsers, complete login, well drilldown, scenario trigger, analysis, optimization, approval, dispatch, command receipt, work-order closure, report export, and audit trace across wide and narrow viewports. Confirm the process listens only on 127.0.0.1, has no established external connection or remote asset reference, then repeat health, query, mutation, and CSV export. Restart the service and confirm the effective strategy remains.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
     git add backend/backup.py server.py start-platform.cmd stop-platform.cmd backup-platform.cmd acceptance_smoke.py tests/test_restart_and_backup.py docs/验收操作手册.md docs/系统启动与恢复.md
     git commit -m "test: verify offline acceptance package"
