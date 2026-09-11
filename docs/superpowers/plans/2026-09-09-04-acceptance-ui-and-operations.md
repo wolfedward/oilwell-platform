@@ -144,7 +144,7 @@ Expected: tests and syntax checks pass.
 - Consumes: acquisition, data-quality, dynagraph, analysis, diagnosis-review, and model-run APIs
 - Produces: renderAcquisitionStream, renderQualityBoard, renderDynagraphList, renderDynagraphAnalysis, renderDiagnosisReview
 
-- [ ] **Step 1: Write failing content and action tests**
+- [x] **Step 1: Write failing content and action tests**
 
     def test_analysis_page_exposes_intermediate_sections(self):
         source = Path("frontend/pages/dynagraph-analysis.js").read_text(encoding="utf-8")
@@ -158,17 +158,17 @@ Expected: tests and syntax checks pass.
         self.assertEqual(response.status, 200)
         self.assertEqual(response.json()["data"]["status"], "repaired")
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
     python -m unittest tests.test_analysis_pages -v
 
 Expected: missing page modules.
 
-- [ ] **Step 3: Implement explainable acquisition and analysis UI**
+- [x] **Step 3: Implement explainable acquisition and analysis UI**
 
 Build a paced live stream with pause/resume, filters, sequence and checksum columns. Quality board drills from completeness cards to events and provides a repair action with progress. Analysis page overlays raw and smoothed electric curves, converted dynagraph, template comparison, feature table, rule hits, candidate conditions, formula factors, model version, and audit links. Review modal requires condition and comment.
 
-- [ ] **Step 4: Run tests and syntax checks**
+- [x] **Step 4: Run tests and syntax checks**
 
     python -m unittest tests.test_analysis_pages -v
     Get-ChildItem frontend -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }

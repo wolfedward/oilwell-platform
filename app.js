@@ -23,6 +23,11 @@ import { renderApprovals } from "./frontend/pages/approvals.js";
 import { renderCommands } from "./frontend/pages/commands.js";
 import { renderAlarms } from "./frontend/pages/alarms.js";
 import { renderWorkOrders } from "./frontend/pages/work-orders.js";
+import { renderAcquisitionStream } from "./frontend/pages/acquisition.js";
+import { renderQualityBoard } from "./frontend/pages/data-quality.js";
+import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
+import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
+import { renderDiagnosisReview } from "./frontend/pages/diagnosis-review.js";
 
 const NAVIGATION = [
   {
@@ -229,6 +234,11 @@ async function renderPage(pageId, params = {}) {
       commands: renderCommands,
       alarms: renderAlarms,
       "work-orders": renderWorkOrders,
+      acquisition: renderAcquisitionStream,
+      "data-quality": renderQualityBoard,
+      dynagraphs: renderDynagraphList,
+      "dynagraph-analysis": renderDynagraphAnalysis,
+      "diagnosis-review": renderDiagnosisReview,
     })[page.id];
     if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);
