@@ -1,0 +1,5 @@
+# Edge gateway and production persistence dependencies.
+# Keep this file pinned so an accepted installation can be reproduced.
+paho-mqtt==2.1.0
+pymodbus==3.15.0
+psycopg[binary]==3.3.5

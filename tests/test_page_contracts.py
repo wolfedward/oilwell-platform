@@ -191,8 +191,8 @@ import('./frontend/charts.js').then(({charts}) => eval(source));
             ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
             capture_output=True, check=True,
         )
-        self.assertIn("原始：曲柄角 0.5°", completed.stdout)
-        self.assertIn("原始：曲柄角 5.5°", completed.stdout)
+        self.assertIn("原始：曲柄角 0.50°", completed.stdout)
+        self.assertIn("原始：曲柄角 5.50°", completed.stdout)
 
     def test_electric_curve_maps_legacy_indices_like_backend(self):
         script = r"""
@@ -212,8 +212,8 @@ import('./frontend/charts.js').then(({charts}) => eval(source));
             ["node", "-e", script], cwd=PROJECT_ROOT, text=True, encoding="utf-8",
             capture_output=True, check=True,
         )
-        self.assertIn("原始：曲柄角 270.0°", completed.stdout)
-        self.assertNotIn("原始：曲柄角 360.0°", completed.stdout)
+        self.assertIn("原始：曲柄角 270.00°", completed.stdout)
+        self.assertNotIn("原始：曲柄角 360.00°", completed.stdout)
 
     def test_dynagraph_chart_renders_complete_finite_axes(self):
         script = r"""

@@ -12,6 +12,12 @@ htmlcov/
 *.log
 .DS_Store
 Thumbs.db
+.venv/
+.env
+config/*.local.toml
+config/mosquitto.local.conf
+config/*.password
+certs/private/
 
 # Existing user-owned artifacts are not platform source files.
 output/

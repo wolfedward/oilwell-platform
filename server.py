@@ -37,6 +37,7 @@ def parse_arguments():
     parser.add_argument("--restore", type=Path, metavar="BACKUP", help="restore a verified backup while the service is stopped")
     parser.add_argument("--launch", action="store_true", help="start a hidden child and wait until it is healthy")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--instance-id", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -180,7 +181,12 @@ def launch_server(host, port, open_browser):
     runtime_file, runtime_log = _runtime_paths()
     before = _read_runtime(runtime_file)
     Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
-    command = [sys.executable, str(Path(__file__).resolve()), "--child", "--host", host, "--port", str(port)]
+    expected_instance_id = secrets.token_urlsafe(32)
+    command = [
+        sys.executable, str(Path(__file__).resolve()), "--child",
+        f"--instance-id={expected_instance_id}",
+        "--host", host, "--port", str(port),
+    ]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     with runtime_log.open("a", encoding="utf-8") as log_file:
         child = subprocess.Popen(command, cwd=Path(__file__).resolve().parent, stdout=log_file,
@@ -188,7 +194,15 @@ def launch_server(host, port, open_browser):
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         runtime = _read_runtime(runtime_file)
-        if runtime and runtime.get("pid") == child.pid and runtime != before and _health_is_ready(runtime):
+        # Windows venv launchers may hand execution to a different process, so
+        # the Popen PID is not a stable identity boundary. The one-time launch
+        # token proves that this exact request created the healthy instance.
+        if (
+            runtime
+            and runtime.get("instance_id") == expected_instance_id
+            and runtime != before
+            and _health_is_ready(runtime)
+        ):
             _append_runtime_log(f"launcher ready pid={child.pid}")
             if open_browser:
                 _open_when_ready(runtime)
@@ -211,9 +225,9 @@ def launch_server(host, port, open_browser):
     return 1
 
 
-def run_server(host, port, open_browser=False):
+def run_server(host, port, open_browser=False, instance_id=None):
     """Hold a platform-wide OS lock from migration through shutdown."""
-    instance_id = secrets.token_urlsafe(32)
+    instance_id = instance_id or secrets.token_urlsafe(32)
     shutdown_token = secrets.token_urlsafe(32)
     runtime_file, _ = _runtime_paths()
     lock = InstanceLock(Config.LOG_PATH)
@@ -260,7 +274,12 @@ def main():
         return restore_server(arguments.restore)
     if arguments.launch:
         return launch_server(arguments.host, arguments.port, arguments.open_browser)
-    return run_server(arguments.host, arguments.port, arguments.open_browser)
+    return run_server(
+        arguments.host,
+        arguments.port,
+        arguments.open_browser,
+        instance_id=arguments.instance_id,
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+# Use one explicit section per provisioned gateway identity.
+user gateway-GW-001
+topic write oilfield/v1/GW-001/+/telemetry
+
+# Provision the central ingestor as a separate, read-only identity.
+user platform-ingestor
+topic read oilfield/v1/+/+/telemetry

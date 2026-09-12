@@ -1,0 +1,57 @@
+# Hardware-neutral edge gateway example. Copy to gateway.local.toml and keep it out of Git.
+
+[gateway]
+id = "GW-001"
+boot_id_file = "data/gateway-boot-id"
+spool_database = "data/uplink-spool.db"
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+client_id = "GW-001"
+username = "gateway-GW-001"
+# Resolve the password from a protected environment variable or credential store.
+password_env = "OILWELL_MQTT_PASSWORD"
+topic_prefix = "oilfield"
+keepalive_seconds = 30
+connect_timeout_seconds = 10
+publish_timeout_seconds = 10
+# Production/remotely reachable broker profile must also set ca_cert.
+# ca_cert = "certs/ca.crt"
+# client_cert = "certs/GW-001.crt"
+# client_key = "certs/private/GW-001.key"
+
+[[modbus.devices]]
+device_id = "D-001"
+transport = "tcp"
+host = "192.0.2.10"
+port = 502
+timeout_seconds = 2
+
+[[modbus.devices.points]]
+point_code = "motor.active_power"
+unit_id = 1
+function_code = 4
+address = 0
+data_type = "float32"
+byte_order = "big"
+word_order = "big"
+scale = 1.0
+unit = "kW"
+engineering_min = 0.0
+engineering_max = 100.0
+poll_group = "fast"
+
+[[modbus.devices.points]]
+point_code = "motor.current"
+unit_id = 1
+function_code = 4
+address = 2
+data_type = "float32"
+byte_order = "big"
+word_order = "big"
+scale = 1.0
+unit = "A"
+engineering_min = 0.0
+engineering_max = 200.0
+poll_group = "fast"

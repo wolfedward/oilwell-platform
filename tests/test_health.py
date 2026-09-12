@@ -213,7 +213,11 @@ class HealthTests(unittest.TestCase):
 
     def test_stop_uses_runtime_token_to_end_its_own_server(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            environment = os.environ | {"PLATFORM_LOG_PATH": temporary_directory}
+            environment = os.environ | {
+                "PLATFORM_LOG_PATH": temporary_directory,
+                "PLATFORM_DATABASE_PATH": str(Path(temporary_directory) / "platform.db"),
+                "PLATFORM_NO_BROWSER": "1",
+            }
             project_root = Path(__file__).resolve().parent.parent
             process = subprocess.Popen(
                 [sys.executable, "server.py", "--port", "0"],
