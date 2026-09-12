@@ -186,6 +186,71 @@ class UplinkBatch:
             created_at=created_at or datetime.now(timezone.utc),
         )
 
+    @classmethod
+    def from_json(cls, payload):
+        """Parse the exact v1 wire contract and reject forward-unknown fields."""
+
+        if not isinstance(payload, (str, bytes, bytearray, memoryview)):
+            raise ContractValidationError("uplink payload must be JSON text or bytes")
+        try:
+            text = bytes(payload).decode("utf-8") if not isinstance(payload, str) else payload
+
+            def reject_constant(value):
+                raise ValueError(f"non-finite JSON number: {value}")
+
+            body = json.loads(text, parse_constant=reject_constant)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ContractValidationError("uplink payload is not strict UTF-8 JSON") from error
+        expected = {
+            "schema", "message_id", "gateway_id", "device_id", "boot_id",
+            "created_at", "sequence", "samples",
+        }
+        if not isinstance(body, dict) or set(body) != expected:
+            raise ContractValidationError("uplink envelope fields do not match schema v1")
+        if body["schema"] != "oilwell.telemetry.v1":
+            raise ContractValidationError("unsupported uplink schema")
+        summary = body["sequence"]
+        if not isinstance(summary, dict) or set(summary) != {"first", "last"}:
+            raise ContractValidationError("sequence summary is invalid")
+        rows = body["samples"]
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 5000:
+            raise ContractValidationError("samples must contain between 1 and 5000 rows")
+        sample_fields = {"point", "measured_at", "sequence", "value", "quality", "unit", "source"}
+        samples = []
+        try:
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != sample_fields:
+                    raise ContractValidationError("sample fields do not match schema v1")
+                measured_at = datetime.fromisoformat(row["measured_at"].replace("Z", "+00:00"))
+                samples.append(TelemetrySample(
+                    gateway_id=body["gateway_id"],
+                    device_id=body["device_id"],
+                    point_code=row["point"],
+                    measured_at=measured_at,
+                    sequence=row["sequence"],
+                    value=row["value"],
+                    quality=row["quality"],
+                    unit=row["unit"],
+                    source=row["source"],
+                ))
+            created_at = datetime.fromisoformat(body["created_at"].replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError) as error:
+            if isinstance(error, ContractValidationError):
+                raise
+            raise ContractValidationError("uplink timestamp or sample value is invalid") from error
+        batch = cls(
+            gateway_id=body["gateway_id"],
+            device_id=body["device_id"],
+            boot_id=body["boot_id"],
+            samples=tuple(samples),
+            message_id=body["message_id"],
+            created_at=created_at,
+            schema=body["schema"],
+        )
+        if summary.get("first") != batch.samples[0].sequence or summary.get("last") != batch.samples[-1].sequence:
+            raise ContractValidationError("sequence summary does not match samples")
+        return batch
+
     def topic(self, prefix: str) -> str:
         _safe_name(prefix, "topic prefix")
         return f"{prefix}/v1/{self.gateway_id}/{self.device_id}/telemetry"

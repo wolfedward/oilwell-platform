@@ -9,6 +9,7 @@ import tomllib
 from .contracts import ContractValidationError, PointDefinition
 from .mqtt_uplink import MqttConfig, MqttConfigurationError
 from .poller import ModbusDevice
+from backend.secret_store import SecretStoreError, read_windows_credential
 
 
 _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
@@ -35,10 +36,11 @@ def _resolved_path(value, root: Path) -> str | None:
     return str(path if path.is_absolute() else (root / path).resolve())
 
 
-def load_gateway_config(path, *, env=None, project_root=None) -> GatewayConfig:
+def load_gateway_config(path, *, env=None, project_root=None, credential_reader=None) -> GatewayConfig:
     config_path = Path(path).resolve()
     root = Path(project_root).resolve() if project_root else config_path.parent.parent
     environment = os.environ if env is None else env
+    credential_reader = credential_reader or read_windows_credential
     try:
         with config_path.open("rb") as handle:
             raw = tomllib.load(handle)
@@ -51,9 +53,23 @@ def load_gateway_config(path, *, env=None, project_root=None) -> GatewayConfig:
     if "password" in mqtt_raw:
         raise GatewayConfigurationError("inline MQTT passwords are prohibited; use password_env")
     password_env = mqtt_raw.get("password_env")
-    password = environment.get(password_env) if password_env else None
-    if password_env and password is None:
-        raise GatewayConfigurationError(f"required secret environment variable is not set: {password_env}")
+    password_credential = mqtt_raw.get("password_credential")
+    if bool(password_env) == bool(password_credential):
+        raise GatewayConfigurationError(
+            "configure exactly one of mqtt.password_env or mqtt.password_credential"
+        )
+    if password_env:
+        password = environment.get(password_env)
+        if password is None:
+            raise GatewayConfigurationError(f"required secret environment variable is not set: {password_env}")
+    else:
+        try:
+            credential = credential_reader(password_credential)
+        except SecretStoreError as error:
+            raise GatewayConfigurationError(str(error)) from error
+        if credential.username and credential.username != mqtt_raw.get("username"):
+            raise GatewayConfigurationError("MQTT credential username does not match configuration")
+        password = credential.password
 
     gateway_id = gateway.get("id")
     poll_interval = gateway.get("poll_interval_seconds", 5.0)

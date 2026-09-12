@@ -12,6 +12,7 @@ client_id = "GW-001"
 username = "gateway-GW-001"
 # Resolve the password from a protected environment variable or credential store.
 password_env = "OILWELL_MQTT_PASSWORD"
+# On Windows, password_credential = "OilWell.MQTT.Gateway.GW-001" may replace password_env.
 topic_prefix = "oilfield"
 keepalive_seconds = 30
 connect_timeout_seconds = 10

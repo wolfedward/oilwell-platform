@@ -57,9 +57,27 @@ class GatewayConfigTests(unittest.TestCase):
     def test_missing_secret_and_inline_password_are_rejected(self):
         with self.assertRaises(GatewayConfigurationError):
             load_gateway_config(self.path, env={}, project_root=self.root)
-        self.path.write_text(VALID_CONFIG.replace('password_env = "TEST_MQTT_PASSWORD"', 'password = "bad"'), encoding="utf-8")
+        self.path.write_text(VALID_CONFIG.replace(
+            'password_env = "TEST_MQTT_PASSWORD"', 'password = "bad"'
+        ), encoding="utf-8")
         with self.assertRaises(GatewayConfigurationError):
             load_gateway_config(self.path, env={}, project_root=self.root)
+
+    def test_windows_credential_target_can_replace_environment_secret(self):
+        from backend.secret_store import StoredCredential
+
+        self.path.write_text(VALID_CONFIG.replace(
+            'password_env = "TEST_MQTT_PASSWORD"',
+            'password_credential = "OilWell.MQTT.Gateway.GW-001"',
+        ), encoding="utf-8")
+        config = load_gateway_config(
+            self.path,
+            env={},
+            project_root=self.root,
+            credential_reader=lambda target: StoredCredential("gateway", "credential-secret"),
+        )
+        self.assertEqual(config.mqtt.password, "credential-secret")
+        self.assertNotIn("credential-secret", repr(config))
 
     def test_duplicate_device_ids_and_point_codes_are_rejected(self):
         duplicated_device = VALID_CONFIG + VALID_CONFIG.split("[[modbus.devices]]", 1)[1].join(("\n[[modbus.devices]]", ""))

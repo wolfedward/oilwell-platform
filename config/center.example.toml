@@ -1,0 +1,28 @@
+[center]
+topic_prefix = "oilfield"
+
+[mqtt]
+host = "127.0.0.1"
+port = 1883
+client_id = "platform-ingestor"
+username = "platform-ingestor"
+password_env = "OILWELL_CENTER_MQTT_PASSWORD"
+# On Windows, password_credential = "OilWell.MQTT.Center" may replace password_env.
+keepalive_seconds = 30
+session_expiry_seconds = 604800
+# A remote broker must configure a trusted CA, and may add a client certificate.
+# ca_cert = "certs/ca.crt"
+# client_cert = "certs/platform-ingestor.crt"
+# client_key = "certs/private/platform-ingestor.key"
+
+[postgres]
+host = "127.0.0.1"
+port = 5432
+database = "oilwell_platform"
+user = "oilwell_ingestor"
+password_env = "OILWELL_CENTER_POSTGRES_PASSWORD"
+# On Windows, password_credential = "OilWell.PostgreSQL.Ingestor" may replace password_env.
+sslmode = "prefer"
+# Remote PostgreSQL must use both settings below.
+# sslmode = "verify-full"
+# sslrootcert = "certs/postgresql-ca.crt"

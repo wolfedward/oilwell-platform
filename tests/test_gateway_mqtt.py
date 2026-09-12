@@ -22,12 +22,18 @@ class FakeInfo:
 
 
 class FakeClient:
-    def __init__(self, info=None, *, connect_error=None, connack_failure=False):
+    def __init__(
+        self, info=None, *, connect_error=None, connack_failure=False,
+        publish_failure=False, no_subscribers=False,
+    ):
         self.info = info or FakeInfo()
         self.connect_error = connect_error
         self.connack_failure = connack_failure
+        self.publish_failure = publish_failure
+        self.no_subscribers = no_subscribers
         self.calls = []
         self.on_connect = None
+        self.on_publish = None
 
     def username_pw_set(self, username, password):
         self.calls.append(("credentials", username, password))
@@ -57,6 +63,17 @@ class FakeClient:
 
     def publish(self, topic, payload, qos, retain):
         self.calls.append(("publish", topic, payload, qos, retain))
+        if self.info.is_published():
+            reason = type("Reason", (), {
+                "is_failure": self.publish_failure,
+                "__str__": lambda reason_self: (
+                    "Not authorized" if reason_self.is_failure
+                    else "No matching subscribers" if self.no_subscribers
+                    else "Success"
+                ),
+            })()
+            self.on_publish(self, None, 1, reason, None)
+            self.info.mid = 1
         return self.info
 
 
@@ -123,6 +140,20 @@ class MqttUplinkTests(unittest.TestCase):
         with self.assertRaisesRegex(MqttPublishError, "Not authorized"):
             uplink.publish_pending(now=10.0)
         self.assertFalse(any(call[0] == "publish" for call in client.calls))
+        self.assertEqual(self.spool.counts()["pending"], 1)
+
+    def test_negative_puback_keeps_message_for_retry(self):
+        client = FakeClient(publish_failure=True)
+        uplink = MqttUplink(self.config, self.spool, client_factory=lambda _config: client)
+        with self.assertRaisesRegex(MqttPublishError, "broker rejected publish"):
+            uplink.publish_pending(now=10.0)
+        self.assertEqual(self.spool.counts()["pending"], 1)
+
+    def test_no_matching_subscriber_is_not_treated_as_application_delivery(self):
+        client = FakeClient(no_subscribers=True)
+        uplink = MqttUplink(self.config, self.spool, client_factory=lambda _config: client)
+        with self.assertRaisesRegex(MqttPublishError, "No matching subscribers"):
+            uplink.publish_pending(now=10.0)
         self.assertEqual(self.spool.counts()["pending"], 1)
 
 

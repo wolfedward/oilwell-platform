@@ -1,10 +1,11 @@
 """Authenticated MQTT uplink which acknowledges the spool only after PUBACK."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 from pathlib import Path
 import ssl
 import threading
+import time
 
 
 class MqttConfigurationError(ValueError):
@@ -30,7 +31,7 @@ class MqttConfig:
     port: int
     client_id: str
     username: str | None = None
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
     ca_cert: str | None = None
     client_cert: str | None = None
     client_key: str | None = None
@@ -81,7 +82,10 @@ class MqttUplink:
         self.client = (client_factory or _paho_client_factory)(config)
         self._connack = threading.Event()
         self._connection_error = None
+        self._publish_condition = threading.Condition()
+        self._publish_results = {}
         self.client.on_connect = self._on_connect
+        self.client.on_publish = self._on_publish
         if config.username:
             self.client.username_pw_set(config.username, config.password)
         if config.tls_enabled:
@@ -99,6 +103,17 @@ class MqttUplink:
         else:
             self._connection_error = None
         self._connack.set()
+
+    def _on_publish(self, _client, _userdata, mid, reason_code, _properties=None):
+        reason_text = str(reason_code)
+        error = (
+            reason_text
+            if getattr(reason_code, "is_failure", False) or reason_text == "No matching subscribers"
+            else None
+        )
+        with self._publish_condition:
+            self._publish_results[mid] = error
+            self._publish_condition.notify_all()
 
     def publish_pending(self, *, now: float | None = None, limit: int = 50) -> dict[str, int]:
         published = failed = 0
@@ -141,6 +156,18 @@ class MqttUplink:
                     info.wait_for_publish(timeout=self.config.publish_timeout_seconds)
                     if not info.is_published():
                         raise MqttPublishError("PUBACK was not received before the timeout")
+                    deadline = time.monotonic() + self.config.publish_timeout_seconds
+                    with self._publish_condition:
+                        while info.mid not in self._publish_results:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise MqttPublishError(
+                                    "PUBACK result was not delivered before the timeout"
+                                )
+                            self._publish_condition.wait(remaining)
+                        publish_error = self._publish_results.pop(info.mid)
+                    if publish_error:
+                        raise MqttPublishError(f"broker rejected publish: {publish_error}")
                     if not self.spool.ack(message.message_id, now=now):
                         raise MqttPublishError("spool lease was lost before acknowledgement")
                     published += 1
