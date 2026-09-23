@@ -100,3 +100,23 @@ class RegistryDatabaseCase(unittest.TestCase):
         command = validate_command(action, UUID(target) if target is not None else None, actor, body,
                                    method="POST", route="/api/registry" + routes[action])
         return RegistryService(RegistryTransactions(lambda: self.connect("writer"))).execute(command)
+
+    def fixture(self, *, active=False):
+        """Create only isolated fixtures through the real lifecycle service."""
+        suffix = uuid4().hex
+        well = self.command("well.create", area_code="A", well_code="W" + suffix, name="测试井")["entity"]
+        device = self.command("device.create", gateway_id="GW", device_id="D" + suffix, name="测试终端",
+                              transport="mqtt_direct", usage="commissioning")["entity"]
+        point_map = self.command("map.create", device["id"], expected_version=device["version"], parent_version=None,
+                                 points=[{"point_code": "load", "unit": "kN", "engineering_min": 0,
+                                          "engineering_max": 80}])["entity"]
+        reviewed = self.command("map.review", device["id"], expected_version=point_map["device_version"],
+                                map_version=point_map["map_version"], sha256=point_map["sha256"], decision="approved")["entity"]
+        bound = self.command("device.bind", device["id"], expected_version=reviewed["device_version"], well_id=well["id"])
+        current = self.command("map.assign", device["id"], expected_version=bound["entity"]["version"],
+                               map_version=point_map["map_version"])["entity"]
+        if active:
+            current = self.command("device.state", device["id"], expected_version=current["version"], status="active",
+                                   check_note="隔离测试核对依据")["entity"]
+        return {"well_id": well["id"], "device_id": device["id"], "version": current["version"],
+                "map_version": point_map["map_version"], "sha256": point_map["sha256"], "binding_time": bound["committed_at"]}
