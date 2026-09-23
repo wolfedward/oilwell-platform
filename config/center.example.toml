@@ -36,3 +36,29 @@ sslmode = "prefer"
 # user = "oilwell_reader"
 # password_credential = "OilWell.PostgreSQL.Reader"
 # sslmode = "prefer"
+
+# Independent production device registry (observation only; no remote control).
+# Keep disabled until an administrator explicitly applies registry DDL/grants.
+# No production wells/devices are seeded, and no credentials are reused here.
+[registry]
+enabled = false
+# Required when enabled. Exact browser Origin with explicit port; no wildcard.
+# allowed_origins = ["http://127.0.0.1:8765", "http://localhost:8765"]
+# Integer seconds, at most 86400; delayed must be greater than online.
+# online_seconds = 120
+# delayed_seconds = 900
+# clock_tolerance_seconds = 300
+
+# Required together with [postgres_query] when registry.enabled = true.
+# All three PG sections must have exactly equal host/port/database and distinct users.
+# Runtime connection timeout is fixed at 3 seconds; lock/statement waits at 1/3 seconds.
+# [postgres_registry]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_registry_writer"
+# password_credential = "OilWell.PostgreSQL.RegistryWriter"
+# sslmode = "prefer"
+# Remote writer AND reader require sslmode="verify-full" and sslrootcert.
+# sslrootcert = "certs/postgresql-ca.crt"
+# Registry startup never falls back to [postgres] and never grants/repairs permissions.
