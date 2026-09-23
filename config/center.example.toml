@@ -42,7 +42,7 @@ sslmode = "prefer"
 # No production wells/devices are seeded, and no credentials are reused here.
 [registry]
 enabled = false
-# Required when enabled. Exact browser Origin with explicit port; no wildcard.
+# Required when enabled. Exact browser Origin; default 80/443 omitted, no wildcard.
 # allowed_origins = ["http://127.0.0.1:8765", "http://localhost:8765"]
 # Integer seconds, at most 86400; delayed must be greater than online.
 # online_seconds = 120

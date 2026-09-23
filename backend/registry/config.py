@@ -1,5 +1,6 @@
 """Explicit registry identities; never fall back to the ingestion account."""
 from dataclasses import dataclass, field
+from ipaddress import IPv6Address
 import os
 from pathlib import Path
 import re
@@ -30,14 +31,21 @@ def _origin(value):
         raise _invalid()
     try:
         parsed = urlsplit(value)
-        if (parsed.scheme not in ("http", "https") or not parsed.hostname or not parsed.port
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.port == 0
+                or parsed.netloc.endswith(":")
                 or parsed.username is not None or parsed.password is not None
                 or parsed.path or parsed.query or parsed.fragment or "?" in value or "#" in value
                 or "*" in value or "\\" in value or "%" in parsed.netloc):
             raise _invalid()
+        host = parsed.hostname
+        if ":" in host:
+            host = "[" + IPv6Address(host).compressed + "]"
+        # Browsers omit default ports in Origin; do not normalize untrusted headers.
+        port = parsed.port
+        suffix = "" if port is None or port == {"http": 80, "https": 443}[parsed.scheme] else f":{port}"
     except ValueError:
         raise _invalid() from None
-    return value
+    return f"{parsed.scheme}://{host}{suffix}"
 
 
 def _identity(section):

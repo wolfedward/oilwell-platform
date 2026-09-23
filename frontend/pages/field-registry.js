@@ -165,9 +165,12 @@ export async function renderFieldRegistry(context) {
   controller.onChanged = async ({deviceId, wellId} = {}) => {
     if (!current()) return;
     const tasks = [loadList("devices")];
+    const selectionGeneration = selection, listGeneration = state.devices.generation;
     if (wellId) tasks.push(loadList("wells"));
     await Promise.all(tasks);
-    if (current() && deviceId) await selectDevice(deviceId);
+    if (current() && deviceId && selection === selectionGeneration && state.devices.generation === listGeneration) {
+      await selectDevice(deviceId);
+    }
   };
   forms = mountRegistryForms({root, api, client, components, permissions, onChanged: controller.onChanged, isCurrent: current});
   if (permissions.has("telemetry.read")) provenance = mountRegistryHistory({root: root.querySelector("[data-registry-provenance]"),

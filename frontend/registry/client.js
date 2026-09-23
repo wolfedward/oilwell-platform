@@ -74,7 +74,8 @@ export function createRegistryClient(api, {isCurrent}) {
         state.result = result;
         return result;
       }, error => {
-        operation.phase = !error.status || error.status === 503 ? "uncertain" : "rejected";
+        // Server/proxy failures cannot prove that the transaction was not committed.
+        operation.phase = !error.status || (error.status >= 500 && error.status <= 599) ? "uncertain" : "rejected";
         state.error = error;
         throw error;
       });

@@ -12,6 +12,7 @@ const W='00000000-0000-0000-0000-000000000003', X='00000000-0000-0000-0000-00000
 const attack='</textarea><script>window.registryInjected=true<\/script><img src=x onerror="window.registryInjected=true">';
 const unitAttack='</textarea><script>x=1<\/script>';
 let current=true, postError=null, heldPost=null, hold=false, rejectRead=false, holdWells=false, releaseWells=null;
+let holdNextDeviceList=false, releaseDeviceList=null;
 const calls=[],sent=[],maps=[];
 const devices=new Map([[D,{id:D,name:'终端甲',gateway_id:'GW',device_id:'D',transport:'modbus_tcp',usage:'commissioning',usage_locked:false,status:'pending',version:'9007199254740993'}],
   [E,{id:E,name:'终端乙',gateway_id:'GW',device_id:'E',transport:'mqtt_direct',usage:'commissioning',usage_locked:false,status:'pending',version:'1'}]]);
@@ -26,7 +27,11 @@ const api={get:async path=>{
     if(holdWells)return new Promise(resolve=>{releaseWells=()=>resolve(response);});
     return response;
   }
-  if(route==='/api/registry/devices')return paged([...devices.values()],url);
+  if(route==='/api/registry/devices'){
+    const response=paged([...devices.values()],url);
+    if(holdNextDeviceList){holdNextDeviceList=false;return new Promise(resolve=>{releaseDeviceList=()=>resolve(response);});}
+    return response;
+  }
   const id=route.split('/')[4];
   if(devices.has(id) && route===`/api/registry/devices/${id}`)return{...structuredClone(devices.get(id)),...contextData};
   if(route.endsWith('/link-status'))return{link_status:'never_reported',last_received_at:null,...contextData};
@@ -108,9 +113,14 @@ try{
  dialog=await click('create-device');set(dialog,'gateway_id','GW2');set(dialog,'device_id','D2');set(dialog,'name','新终端');set(dialog,'transport','mqtt_direct');set(dialog,'usage','commissioning');set(dialog,'reason','核实组合身份');await submit(dialog);
  check(sent.at(-1).path==='/api/registry/devices' && sent.at(-1).body.transport==='mqtt_direct','device registration sends chosen protocol');await select(E);
  // Failed submission retains exact request across uncertain retries, but current GET wins over old receipt.
- dialog=await click('edit-device');set(dialog,'name','网络重试');set(dialog,'reason','核对设备名称');postError=Object.assign(new Error('lost'),{status:0,code:'network_error'});await submit(dialog);
- check(dialog.textContent.includes('未确认') && dialog.querySelector('[name="name"]').disabled,'uncertain locks original input');const original=sent.at(-1);await submit(dialog);
- check(JSON.stringify(original)===JSON.stringify(sent.at(-1)),'form retry preserves exact route/body/key');
+ for(const status of [0,500,502,503,504,599]){
+   dialog=await click('edit-device');set(dialog,'name','网络重试');set(dialog,'reason','核对设备名称');postError=Object.assign(new Error('lost'),{status,code:'unconfirmed'});await submit(dialog);
+   check(dialog.textContent.includes('未确认') && dialog.querySelector('[name="name"]').disabled,'uncertain locks original input '+status);
+   check(dialog.querySelector('[data-action="submit-registry"]').textContent.includes('重试原操作'),'uncertain retry remains available '+status);
+   const original=structuredClone(sent.at(-1)),beforeRetry=sent.length;await submit(dialog);
+   check(sent.length===beforeRetry+1 && JSON.stringify(original)===JSON.stringify(sent.at(-1)),'form retry preserves exact route/body/key '+status);
+   check(!document.querySelector('[role="dialog"]'),'confirmed retry closes form '+status);
+ }
  for(const status of [401,403,409,422,503]){
    dialog=await click('edit-device');set(dialog,'reason','错误提示测试');postError=Object.assign(new Error('failure'),{status});await submit(dialog);
    check(dialog.textContent.includes(({401:'登录',403:'权限',409:'变更',422:'输入',503:'未确认'})[status]),'actionable HTTP '+status);
@@ -121,6 +131,16 @@ try{
  // In-flight old form must not repaint a newly selected device, even on successful late reply.
  await select(D);dialog=await click('edit-device');set(dialog,'reason','旧设备操作');hold=true;dialog.querySelector('[data-action="submit-registry"]').click();await flush();await select(E);heldPost({entity:{id:D,version:'2'},replayed:true});hold=false;await flush();await flush();
  check(root.querySelector('[data-registry-detail]').textContent.includes('网络重试'),'late old form cannot redraw newer device');components.closeAllModals();
+ // The post is already confirmed, but its automatic list refresh R1 is still pending.
+ await select(D);dialog=await click('edit-device');set(dialog,'reason','成功后刷新竞态');holdNextDeviceList=true;await submit(dialog);
+ check(typeof releaseDeviceList==='function' && !document.querySelector('[role="dialog"]'),'successful write awaits held automatic refresh R1');
+ root.querySelector('[data-registry-refresh="devices"]').click();await flush();await select(E);
+ dialog=await click('edit-device');set(dialog,'name','新选择的未提交编辑');const beforeOldRefresh=calls.length;
+ releaseDeviceList();releaseDeviceList=null;await flush();await flush();
+ check(root.querySelector('[data-registry-detail]').textContent.includes('网络重试'),'stale post-success refresh cannot replace newer device');
+ check(document.querySelector('[role="dialog"]')===dialog && dialog.querySelector('[name="name"]').value==='新选择的未提交编辑','stale post-success refresh cannot close or overwrite newer form');
+ check(!calls.slice(beforeOldRefresh).some(path=>new URL(path,'http://localhost').pathname===`/api/registry/devices/${D}`),'stale refresh does not request old device again');
+ await click('cancel-registry',dialog);
  await select(D);dialog=await click('retire-device');set(dialog,'reason','结束隔离联调登记');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
  check(!root.querySelector('[data-action="edit-device"]') && !root.querySelector('[data-action="create-map"]') && root.textContent.includes('非物理停机'),'retired entity has read-only UI');
  dialog=await click('archive-well');set(dialog,'reason','井目录归档核对');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);check(sent.at(-1).body.status==='archived','archive submits explicit status');

@@ -303,6 +303,25 @@ class RegistryHTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST","/api/registry/devices",body)[0],403)
         self.assertEqual(self.runtime.service.execute.call_count,2)
 
+    def test_browser_default_port_origins_work_without_accepting_other_origins(self):
+        from dataclasses import replace
+        from backend.registry.config import _origin
+        body={"gateway_id":"GW","device_id":"D","name":"终端","transport":"mqtt_direct","usage":"commissioning","reason":"登记核验","idempotency_key":str(uuid4())}
+        for configured, browser_origin, wrong in (
+            ("http://localhost:80", "http://localhost", "http://localhost:8765"),
+            ("https://localhost:443", "https://localhost", "http://localhost"),
+            ("https://localhost", "https://localhost", "https://evil.test"),
+            ("https://localhost:8443", "https://localhost:8443", "https://localhost"),
+            ("https://[0:0:0:0:0:0:0:1]:443", "https://[::1]", "https://[::1]:8443"),
+        ):
+            with self.subTest(configured=configured):
+                self.server.registry_runtime=replace(self.runtime,allowed_origins=(_origin(configured),))
+                self.assertEqual(self.request("POST","/api/registry/devices",body,{"Origin":browser_origin})[0],201)
+                before=self.runtime.service.execute.call_count
+                for rejected in (wrong, "null", browser_origin + "/"):
+                    self.assertEqual(self.request("POST","/api/registry/devices",body,{"Origin":rejected})[0],403)
+                self.assertEqual(self.runtime.service.execute.call_count,before)
+
     def test_actual_session_revocation_blocks_registry_and_old_health_still_works(self):
         self.assertEqual(self.request("GET","/api/registry/devices")[0],200)
         self.server.auth.logout(self.token)

@@ -84,7 +84,8 @@ check(op.phase === "succeeded", "confirmed reply completes operation");
 const nextOp = mutations.beginMutation(op.path, source);
 check(op.key !== nextOp.key, "new operation gets new idempotency key");
 
-for (const error of [{code:"network_error",status:0},{code:"timeout",status:0},{code:"cancelled",status:0},{status:503},
+for (const error of [{code:"network_error",status:0},{code:"timeout",status:0},{code:"cancelled",status:0},
+                     {status:500},{status:502},{status:503},{status:504},{status:599},
                      {status:409},{status:422},{status:401},{status:403}]) {
   const calls=[];
   const retry = createRegistryClient({post:async(path,body)=>{
@@ -94,7 +95,7 @@ for (const error of [{code:"network_error",status:0},{code:"timeout",status:0},{
   }},{isCurrent:()=>true});
   const operation=retry.beginMutation("/api/registry/devices/D/changes",{name:"设备",expected_version:"9007199254740993",reason:"核对铭牌"});
   try {await retry.submitMutation(operation);} catch (_) {}
-  const uncertain=!error.status || error.status===503;
+  const uncertain=!error.status || (error.status>=500 && error.status<=599);
   check(operation.phase===(uncertain?"uncertain":"rejected"),"error classified "+JSON.stringify(error));
   if(uncertain){
     await retry.submitMutation(operation);

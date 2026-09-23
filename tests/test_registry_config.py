@@ -162,14 +162,26 @@ class RegistryConfigTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(RegistryError):
                 self.load()
 
-    def test_origin_whitelist_requires_explicit_http_origin_and_port(self):
-        for origins in ([], "http://127.0.0.1:8765", ["*"], ["null"], ["file:///tmp"], ["http://localhost"],
+    def test_origin_whitelist_requires_exact_http_origin(self):
+        for origins in ([], "http://127.0.0.1:8765", ["*"], ["null"], ["file:///tmp"], ["http://localhost:"],
                         ["http://name:password@localhost:8765"], ["http://localhost:8765/"], ["http://localhost:8765?x=1"],
                         ["http://localhost:8765#fragment"], ["http://localhost:0"], ["http://localhost:65536"]):
             raw = copy.deepcopy(self.base)
             raw["registry"]["allowed_origins"] = origins
             with self.subTest(origins=origins), self.assertRaises(RegistryError):
                 self.load(raw)
+
+    def test_default_ports_match_browser_serialization_and_deduplicate(self):
+        raw = copy.deepcopy(self.base)
+        raw["registry"]["allowed_origins"] = [
+            "http://localhost", "http://LOCALHOST:80", "https://localhost", "https://LOCALHOST:443",
+            "https://localhost:8443", "http://localhost:443", "https://localhost:80",
+            "https://[0:0:0:0:0:0:0:1]:443", "https://[::1]", "http://[::1]:8765",
+        ]
+        self.assertEqual(self.load(raw).allowed_origins, (
+            "http://localhost", "https://localhost", "https://localhost:8443",
+            "http://localhost:443", "https://localhost:80", "https://[::1]", "http://[::1]:8765",
+        ))
 
     def test_runtime_disabled_or_invalid_config_never_falls_back_to_other_credentials(self):
         path = self.write({"registry": {"enabled": False}})
