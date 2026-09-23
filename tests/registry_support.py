@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tomllib
 import unittest
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -83,3 +84,19 @@ class RegistryDatabaseCase(unittest.TestCase):
     def scalar(self, statement, params=(), *, role="reader"):
         with self.connect(role) as conn:
             return conn.execute(statement, params).fetchone()[0]
+
+    def command(self, action, target=None, *, key=None, actor=None, **body):
+        from backend.registry.contracts import Actor, validate_command
+        from backend.registry.service import RegistryService
+        from backend.registry.transactions import RegistryTransactions
+        actor = actor or Actor("platform-local", "101", "operator", "测试操作者", "administrator")
+        body = {"reason": "隔离库验证", "idempotency_key": str(key or uuid4())} | body
+        routes = {"well.create": "/wells", "well.change": f"/wells/{target}/changes",
+                  "device.create": "/devices", "device.change": f"/devices/{target}/changes",
+                  "device.state": f"/devices/{target}/state", "device.bind": f"/devices/{target}/bindings",
+                  "device.unbind": f"/devices/{target}/unbind", "map.create": f"/devices/{target}/point-maps",
+                  "map.assign": f"/devices/{target}/point-map-assignment",
+                  "map.review": f"/devices/{target}/point-maps/{body.get('map_version', '')}/review"}
+        command = validate_command(action, UUID(target) if target is not None else None, actor, body,
+                                   method="POST", route="/api/registry" + routes[action])
+        return RegistryService(RegistryTransactions(lambda: self.connect("writer"))).execute(command)
