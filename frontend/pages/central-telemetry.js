@@ -96,9 +96,9 @@ export function centralOperationsMarkup(snapshot, components, format, canInspect
     </div></section>`;
 }
 
-export async function mountCentralOperations({ api, components, format, root, isCurrent, permissions, navigate }) {
+export async function mountCentralOperations({ api, components, format, root, isCurrent, permissions, navigate, capabilities }) {
   const canReadTelemetry = permissions?.has("telemetry.read") ?? true;
-  const canInspect = canReadTelemetry && permissions?.has("registry.read") && typeof navigate === "function";
+  const canInspect = canReadTelemetry && permissions?.has("registry.read") && capabilities?.registry?.enabled !== false && typeof navigate === "function";
   const state = { filters: {}, paused: false, generation: 0, lastWindow: null, frozenWindow: null };
   root.innerHTML = `<section class="panel filter-panel"><form id="centralFilters" class="central-filters">
     ${[["gateway_id", "网关编号"], ["device_id", "终端编号"], ["point_code", "测点编码"]].map(([name, label]) => `<div class="form-field"><label for="central-${name}">${label}</label><input id="central-${name}" name="${name}" maxlength="128" placeholder="全部" /></div>`).join("")}

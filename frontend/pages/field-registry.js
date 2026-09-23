@@ -24,6 +24,10 @@ export async function renderFieldRegistry(context) {
     root.textContent = "没有生产设备台账查看权限。";
     return false;
   }
+  if (context.capabilities?.registry?.enabled === false) {
+    root.textContent = "生产台账未配置，请联系管理员启用独立连接。现有采集与业务功能不受影响。";
+    return false;
+  }
   let disposed = false, selection = 0, selected = null, forms = null, history = null, provenance = null;
   const current = () => !disposed && isCurrent() && workspace.contains(root);
   const client = createRegistryClient(api, {isCurrent: current});

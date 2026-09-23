@@ -11,12 +11,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RegistryBrowserTests(unittest.TestCase):
-    def run_fixture(self, filename, width=1440):
+    def run_fixture(self, filename, width=1440, mode="ready"):
         browser = Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
         self.assertTrue(browser.exists(), "Edge is required for registry browser verification")
         source = (ROOT / "tests/fixtures" / filename).read_text(encoding="utf-8")
+        source = source.replace("CAPABILITY_MODE", mode)
         for placeholder, filename in {
             "STYLE_MODULE": "styles.css",
+            "APP_MODULE": "app.js",
             "REGISTRY_MODULE": "frontend/pages/field-registry.js",
             "CLIENT_MODULE": "frontend/registry/client.js",
             "CENTRAL_MODULE": "frontend/pages/central-telemetry.js",
@@ -36,7 +38,7 @@ class RegistryBrowserTests(unittest.TestCase):
             match = re.search(r'<pre id="result">(.*?)</pre>', result.stdout, re.S)
             self.assertIsNotNone(match, result.stderr[-1000:])
             payload = html.unescape(match[1])
-            self.assertNotEqual(payload, "pending", "registry browser modules did not complete")
+            self.assertNotEqual(payload, "pending", "registry browser modules did not complete: " + result.stdout[-5000:] + result.stderr[-1500:])
             outcome = json.loads(payload)
             self.assertTrue(outcome["ok"], outcome)
 
@@ -51,3 +53,9 @@ class RegistryBrowserTests(unittest.TestCase):
 
     def test_real_forms_history_and_provenance_at_laptop_width(self):
         self.run_fixture("registry_forms_check.html", 1024)
+
+    def test_disabled_capability_hides_navigation_and_explains_direct_route(self):
+        self.run_fixture("registry_shell_check.html", mode="disabled")
+
+    def test_ready_capability_exposes_the_actual_registry_workspace(self):
+        self.run_fixture("registry_shell_check.html")

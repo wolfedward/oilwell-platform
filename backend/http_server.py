@@ -261,7 +261,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             user = self.server.auth.me(self._token())
         except (AuthError, SessionExpired):
             return self._send_json(HTTPStatus.UNAUTHORIZED, self._error("unauthenticated", "Authentication required"))
-        self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user)})
+        status = self.server.registry_runtime.status
+        capability = {"enabled": status != "disabled", "status": status}
+        self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
+            "capabilities": {"registry": capability}}})
 
     def _users_get(self, path):
         if self._require("users.read") is None: return

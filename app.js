@@ -164,7 +164,7 @@ function renderChrome() {
     </button>`).join("");
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
-    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission))).map((page) => `
+    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission)) && (page.id !== "field-registry" || state.user?.capabilities?.registry?.enabled === true)).map((page) => `
       <button type="button" data-page="${page.id}" class="${page.id === state.activePage ? "active" : ""}"
         aria-label="${escapeHtml(page.label)}" title="${escapeHtml(page.label)}"
         aria-current="${page.id === state.activePage ? "page" : "false"}">
@@ -192,7 +192,7 @@ async function renderModuleLanding(page) {
   workspace.innerHTML = `${pageHeader(page)}
     <section class="panel module-landing"><div class="landing-title"><span>${page.module.icon}</span>
       <div><p class="eyebrow">${escapeHtml(page.module.label.toUpperCase())}</p><h2>${escapeHtml(page.label)}</h2><p>${escapeHtml(page.description)}</p></div></div>
-      <div class="landing-links">${page.module.pages.map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
+      <div class="landing-links">${page.module.pages.filter(item => item.id !== "field-registry" || (store.getState().user?.capabilities?.registry?.enabled === true && store.getState().user?.permissions?.includes("registry.read"))).map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
         <strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.description)}</span><b>进入 →</b></button>`).join("")}</div>
       <div class="system-ready"><i></i><span><strong>服务接口已就绪</strong><small>页面读取当前登录账号的权限与本机业务数据。</small></span></div>
     </section>`;
@@ -214,6 +214,7 @@ async function renderPage(pageId, params = {}) {
     const context = {
       api, components, format, escapeHtml, workspace, page, pageHeader, params,
       permissions: new Set(state.user?.permissions || []),
+      capabilities: state.user?.capabilities || {registry: {enabled: false, status: "disabled"}},
       navigate: openPage,
       isCurrent: () => generation === renderGeneration,
     };
