@@ -1,4 +1,5 @@
 import { escapeHtml } from "../components.js";
+import { centralQualityMarkup, loadCentralHealth } from "./central-telemetry.js";
 
 const KIND_LABELS = {
   sequence_gap: "序列缺失",
@@ -50,6 +51,8 @@ export async function renderQualityBoard({ api, components, format, workspace, p
   ];
   const pages = Math.max(1, Math.ceil(result.total / result.page_size));
   workspace.innerHTML = `${pageHeader(page)}
+    <div id="centralQuality" class="center-operations">${components.skeleton(2)}</div>
+    <div class="layer-heading"><span>联</span><div><p class="eyebrow">TERMINAL QUALITY</p><h2>本机终端质量事件</h2></div></div>
     <section class="metric-grid" aria-label="质量统计">
       <button class="metric-card warning" type="button" data-quality-status="open"><p>待处理事件</p><strong>${escapeHtml(format.number(open.total))}<small>条</small></strong><span>进入待处理队列 →</span></button>
       <button class="metric-card success" type="button" data-quality-status="repaired"><p>已完成修复</p><strong>${escapeHtml(format.number(repaired.total))}<small>条</small></strong><span>查看修复结果 →</span></button>
@@ -64,6 +67,16 @@ export async function renderQualityBoard({ api, components, format, workspace, p
     </form></section>
     <section class="panel list-panel"><header><div><p class="eyebrow">QUALITY CONTROL</p><h2>数据质量事件</h2></div><span>共 ${escapeHtml(result.total)} 条</span></header><div class="panel-body">${components.table(columns, result.items)}${components.pagination({ page: result.page, pages, total: result.total })}</div></section>`;
 
+  const updateCenter = async () => {
+    try {
+      const health = await loadCentralHealth(api, "/api/central/quality");
+      if (isCurrent()) workspace.querySelector("#centralQuality").innerHTML = centralQualityMarkup(health, components, format);
+    } catch (error) {
+      if (isCurrent()) workspace.querySelector("#centralQuality").innerHTML = components.errorPanel(error);
+    }
+    if (isCurrent()) window.setTimeout(updateCenter, 15_000);
+  };
+  void updateCenter();
   const formValues = () => Object.fromEntries(new FormData(workspace.querySelector("#qualityFilters")));
   workspace.querySelector("#qualityFilters").addEventListener("submit", (event) => { event.preventDefault(); navigate("data-quality", { ...formValues(), page: "1" }); });
   workspace.querySelector("#resetQuality").addEventListener("click", () => navigate("data-quality", {}));

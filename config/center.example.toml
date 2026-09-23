@@ -26,3 +26,13 @@ sslmode = "prefer"
 # Remote PostgreSQL must use both settings below.
 # sslmode = "verify-full"
 # sslrootcert = "certs/postgresql-ca.crt"
+
+# Optional dedicated SELECT-only credentials for the web query service.
+# When absent, [postgres] is reused with enforced read-only transactions.
+# [postgres_query]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_reader"
+# password_credential = "OilWell.PostgreSQL.Reader"
+# sslmode = "prefer"

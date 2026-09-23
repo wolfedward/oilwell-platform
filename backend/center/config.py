@@ -94,36 +94,7 @@ def load_center_config(path, *, env=None, credential_reader=None) -> CenterConfi
             connect_timeout_seconds=mqtt_raw.get("connect_timeout_seconds", 10),
             publish_timeout_seconds=mqtt_raw.get("publish_timeout_seconds", 10),
         )
-        pg_host = postgres_raw["host"]
-        pg_port = postgres_raw.get("port", 5432)
-        pg_database = postgres_raw["database"]
-        pg_user = postgres_raw["user"]
-        for label, value in (("database", pg_database), ("user", pg_user)):
-            if not isinstance(value, str) or not _SAFE_NAME.fullmatch(value):
-                raise CenterConfigurationError(f"postgres.{label} is invalid")
-        if not isinstance(pg_port, int) or not 1 <= pg_port <= 65535:
-            raise CenterConfigurationError("postgres.port is invalid")
-        sslmode = postgres_raw.get("sslmode", "verify-full")
-        root_cert = postgres_raw.get("sslrootcert")
-        if not _loopback(pg_host) and (sslmode != "verify-full" or not root_cert):
-            raise CenterConfigurationError(
-                "remote PostgreSQL requires sslmode=verify-full and sslrootcert"
-            )
-        postgres = {
-            "host": pg_host,
-            "port": pg_port,
-            "dbname": pg_database,
-            "user": pg_user,
-            "password": _secret(
-                postgres_raw, environment, "postgres", pg_user, credential_reader
-            ),
-            "sslmode": sslmode,
-        }
-        if root_cert:
-            root_path = Path(root_cert)
-            postgres["sslrootcert"] = str(
-                root_path if root_path.is_absolute() else (config_path.parent.parent / root_path).resolve()
-            )
+        postgres = _postgres_settings(postgres_raw, config_path, environment, credential_reader)
     except (KeyError, TypeError, ValueError, MqttConfigurationError) as error:
         if isinstance(error, CenterConfigurationError):
             raise
@@ -134,3 +105,54 @@ def load_center_config(path, *, env=None, credential_reader=None) -> CenterConfi
         mqtt_session_expiry_seconds=session_expiry,
         postgres=postgres,
     )
+
+
+def _postgres_settings(postgres_raw, config_path, environment, credential_reader):
+    pg_host = postgres_raw["host"]
+    pg_port = postgres_raw.get("port", 5432)
+    pg_database = postgres_raw["database"]
+    pg_user = postgres_raw["user"]
+    for label, value in (("database", pg_database), ("user", pg_user)):
+        if not isinstance(value, str) or not _SAFE_NAME.fullmatch(value):
+            raise CenterConfigurationError(f"postgres.{label} is invalid")
+    if not isinstance(pg_port, int) or not 1 <= pg_port <= 65535:
+        raise CenterConfigurationError("postgres.port is invalid")
+    sslmode = postgres_raw.get("sslmode", "verify-full")
+    root_cert = postgres_raw.get("sslrootcert")
+    if not _loopback(pg_host) and (sslmode != "verify-full" or not root_cert):
+        raise CenterConfigurationError(
+            "remote PostgreSQL requires sslmode=verify-full and sslrootcert"
+        )
+    postgres = {
+        "host": pg_host,
+        "port": pg_port,
+        "dbname": pg_database,
+        "user": pg_user,
+        "password": _secret(
+            postgres_raw, environment, "postgres", pg_user, credential_reader
+        ),
+        "sslmode": sslmode,
+    }
+    if root_cert:
+        root_path = Path(root_cert)
+        postgres["sslrootcert"] = str(
+            root_path if root_path.is_absolute() else (config_path.parent.parent / root_path).resolve()
+        )
+    return postgres
+
+
+def load_query_postgres_config(path, *, env=None, credential_reader=None):
+    """Resolve only database credentials; optionally use a dedicated SELECT role."""
+    config_path = Path(path).resolve()
+    try:
+        with config_path.open("rb") as handle:
+            raw = tomllib.load(handle)
+        section = raw["postgres_query"] if "postgres_query" in raw else raw["postgres"]
+        return _postgres_settings(
+            section, config_path, os.environ if env is None else env,
+            credential_reader or read_windows_credential,
+        )
+    except CenterConfigurationError:
+        raise
+    except (OSError, KeyError, TypeError, AttributeError, ValueError) as error:
+        raise CenterConfigurationError("invalid central query configuration") from error

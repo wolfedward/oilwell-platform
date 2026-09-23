@@ -2,10 +2,12 @@
 
 from http import HTTPStatus
 import csv
+from datetime import datetime, timedelta, timezone
 import io
 import re
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from backend.center.postgres import PostgresRepositoryError
 from backend.services.wells import WellNotFound, WellValidationError, WellVersionConflict, WellsService
 from backend.services.devices import ChannelVersionConflict, DeviceNotFound, DevicesService, DeviceValidationError
 from backend.services.acquisition import (
@@ -25,6 +27,132 @@ from backend.services.workflows import (
 )
 from backend.services.reports import ReportNotFound, ReportService, ReportValidationError
 from backend.state_machine import InvalidState
+
+
+class CentralTelemetryApi:
+    """Authenticated read-only routes over the central PostgreSQL telemetry store."""
+
+    SAFE_DEVICE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+    SAFE_POINT = SAFE_DEVICE
+    MAX_WINDOW = timedelta(days=31)
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.repository = getattr(handler.server, "central_telemetry", None)
+        self.clock = getattr(
+            handler.server,
+            "central_clock",
+            lambda: datetime.now(timezone.utc),
+        )
+
+    def get(self, request_target):
+        parsed = urlsplit(request_target)
+        try:
+            if parsed.path in {"/api/central/health", "/api/central/quality"}:
+                permission = "data_quality.read" if parsed.path.endswith("/quality") else "acquisition.read"
+                if self.handler._require(permission) is None:
+                    return True
+                if parsed.query:
+                    raise WellValidationError("central health does not accept query parameters")
+                if self.repository is None:
+                    return self._ok({"status": "not_configured", "summary": {}, "links": []})
+                try:
+                    return self._ok(self.repository.health(now=self.clock(), stale_after_seconds=120))
+                except PostgresRepositoryError:
+                    return self._ok({"status": "unavailable", "summary": {}, "links": []})
+
+            if parsed.path == "/api/central/telemetry":
+                if self.handler._require("telemetry.read") is None:
+                    return True
+                query = WellApi._query(
+                    parsed.query,
+                    {"gateway_id", "device_id", "point_code", "quality", "from", "to", "received_before", "page", "page_size"},
+                )
+                values = self._sample_query(query)
+                if self.repository is None:
+                    return self._unavailable("central_not_configured", "Central telemetry is not configured")
+                try:
+                    result = self.repository.list_samples(**values)
+                    return self._ok({**result, "window": {
+                        "from": values["from_time"].isoformat(),
+                        "to": values["to_time"].isoformat(),
+                        "received_before": values["received_before"].isoformat(),
+                    }})
+                except PostgresRepositoryError:
+                    return self._unavailable("central_unavailable", "Central telemetry is unavailable")
+            return False
+        except WellValidationError as error:
+            self.handler._send_json(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                self.handler._error("validation_error", str(error)),
+            )
+            return True
+
+    def _sample_query(self, query):
+        gateway_id = query.get("gateway_id") or None
+        device_id = query.get("device_id") or None
+        point_code = query.get("point_code") or None
+        quality = query.get("quality") or None
+        if gateway_id and not self.SAFE_DEVICE.fullmatch(gateway_id):
+            raise WellValidationError("invalid gateway id")
+        if device_id and not self.SAFE_DEVICE.fullmatch(device_id):
+            raise WellValidationError("invalid device id")
+        if point_code and not self.SAFE_POINT.fullmatch(point_code):
+            raise WellValidationError("invalid point code")
+        if quality and quality not in {"good", "uncertain", "bad"}:
+            raise WellValidationError("invalid quality code")
+        page = WellApi._integer(query.get("page", "1"), "page", 1, WellApi.MAX_PAGE)
+        page_size = WellApi._integer(query.get("page_size", "50"), "page_size", 1, 200)
+        if (page - 1) * page_size > WellApi.SQLITE_MAX_INTEGER:
+            raise WellValidationError("page offset is out of range")
+        now = self.clock()
+        to_time = self._timestamp(query.get("to"), "to") or now
+        received_before = self._timestamp(query.get("received_before"), "received_before") or now
+        try:
+            from_time = self._timestamp(query.get("from"), "from") or (to_time - timedelta(hours=24))
+        except (OverflowError, ValueError):
+            raise WellValidationError("from is outside the supported time range") from None
+        if from_time > to_time:
+            raise WellValidationError("from must not be after to")
+        if to_time - from_time > self.MAX_WINDOW:
+            raise WellValidationError("telemetry query window cannot exceed 31 days")
+        return {
+            "gateway_id": gateway_id,
+            "device_id": device_id,
+            "point_code": point_code,
+            "quality": quality,
+            "from_time": from_time,
+            "to_time": to_time,
+            "received_before": min(received_before, now),
+            "page": page,
+            "page_size": page_size,
+        }
+
+    @staticmethod
+    def _timestamp(value, label):
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            raise WellValidationError(f"{label} must be an ISO 8601 timestamp") from None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise WellValidationError(f"{label} must include a timezone")
+        try:
+            return parsed.astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            raise WellValidationError(f"{label} is outside the supported time range") from None
+
+    def _ok(self, data):
+        self.handler._send_json(HTTPStatus.OK, {"ok": True, "data": data})
+        return True
+
+    def _unavailable(self, code, message):
+        self.handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            self.handler._error(code, message),
+        )
+        return True
 
 
 class WellApi:

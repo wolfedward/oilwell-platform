@@ -11,8 +11,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from backend.audit import AuditService
-from backend.api import AcquisitionApi, AnalysisApi, CommandApi, DeviceApi, ReportApi, StrategyApi, WellApi, WorkflowApi
+from backend.api import AcquisitionApi, AnalysisApi, CentralTelemetryApi, CommandApi, DeviceApi, ReportApi, StrategyApi, WellApi, WorkflowApi
 from backend.auth import AuthError, AuthService, InvalidCredentials, PermissionDenied, SessionExpired, password_material
+from backend.center.config import load_query_postgres_config
+from backend.center.postgres import PostgresTelemetryQueryRepository
 from backend.config import Config
 from backend.database import Database
 from backend.seed import seed_database
@@ -33,6 +35,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if CentralTelemetryApi(self).get(self.path): return
         if ReportApi(self).get(self.path): return
         if WorkflowApi(self).get(self.path): return
         if CommandApi(self).get(self.path): return
@@ -509,9 +512,23 @@ class PlatformHTTPServer(ThreadingHTTPServer):
             super().server_close()
 
 
-def create_server(host: str, port: int, database_path=None) -> ThreadingHTTPServer:
+def create_server(
+    host: str,
+    port: int,
+    database_path=None,
+    *,
+    central_repository=None,
+    center_config_path=None,
+) -> ThreadingHTTPServer:
+    if central_repository is not None and center_config_path is not None:
+        raise ValueError("central_repository and center_config_path are mutually exclusive")
+    if center_config_path is not None:
+        central_repository = PostgresTelemetryQueryRepository(
+            connect_kwargs=load_query_postgres_config(center_config_path),
+        )
     database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
+    server.central_telemetry = central_repository
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker

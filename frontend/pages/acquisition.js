@@ -1,10 +1,13 @@
 import { escapeHtml } from "../components.js";
+import { mountCentralOperations } from "./central-telemetry.js";
 
 const KIND_LABELS = {
   heartbeat: "心跳",
   telemetry: "遥测",
   electric_card: "电功图",
 };
+
+export { loadCentralSnapshot, centralOperationsMarkup } from "./central-telemetry.js";
 
 function filtered(items, filters) {
   return items.filter((item) => (
@@ -58,7 +61,7 @@ function renderMessageDetail(components, format, message) {
   </div>`;
 }
 
-export async function renderAcquisitionStream({ api, components, format, workspace, page, pageHeader, params, isCurrent }) {
+export async function renderAcquisitionStream({ api, components, format, workspace, page, pageHeader, params, isCurrent, permissions }) {
   const state = {
     cursor: 0,
     paused: false,
@@ -72,6 +75,8 @@ export async function renderAcquisitionStream({ api, components, format, workspa
   state.items = first.items || [];
   state.snapshot = first;
   workspace.innerHTML = `${pageHeader(page, `<div class="header-actions"><span id="streamState" class="data-time">实时接收中</span><button id="streamToggle" class="button secondary" type="button">暂停刷新</button></div>`)}
+    <div id="centralOperations" class="center-operations"></div>
+    <div class="layer-heading"><span>联</span><div><p class="eyebrow">TERMINAL INTEGRATION</p><h2>本机终端联调链路</h2></div></div>
     <div id="streamMetrics">${queueMarkup(state.snapshot, format)}</div>
     <section class="panel filter-panel"><form id="streamFilters" class="filter-grid device-filters">
       <div class="form-field"><label for="streamDevice">终端编号</label><input id="streamDevice" name="device_id" value="${escapeHtml(state.filters.device_id)}" placeholder="例如 D-001" /></div>
@@ -89,6 +94,7 @@ export async function renderAcquisitionStream({ api, components, format, workspa
     workspace.querySelector("#streamCount").textContent = `缓存 ${state.items.length} 条 · 当前显示 ${visible.length} 条`;
   };
   draw();
+  void mountCentralOperations({ api, components, format, root: workspace.querySelector("#centralOperations"), isCurrent, permissions });
 
   workspace.querySelector("#streamToggle").addEventListener("click", (event) => {
     state.paused = !state.paused;

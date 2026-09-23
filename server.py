@@ -19,7 +19,10 @@ from backend.lifecycle import AlreadyRunningError, InstanceLock, remove_runtime_
 
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
-LAUNCH_TIMEOUT_SECONDS = 15
+# Populated local databases require integrity and seed-manifest validation.
+# The acceptance laptop takes about 18 seconds; keep validation intact and
+# allow a bounded cold start rather than terminating a healthy startup at 15s.
+LAUNCH_TIMEOUT_SECONDS = 60
 # Server close may finish one bounded SQLite write from each worker before it
 # releases the process lock.  Ten seconds was shorter than the combined worker
 # contract on a busy acceptance laptop, causing a successful shutdown to be
@@ -38,6 +41,12 @@ def parse_arguments():
     parser.add_argument("--launch", action="store_true", help="start a hidden child and wait until it is healthy")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--instance-id", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--center-config",
+        type=Path,
+        default=Path(os.environ["PLATFORM_CENTER_CONFIG"]) if os.environ.get("PLATFORM_CENTER_CONFIG") else None,
+        help="enable central PostgreSQL telemetry queries using this external TOML config",
+    )
     return parser.parse_args()
 
 
@@ -176,17 +185,29 @@ def _open_when_ready(runtime):
         webbrowser.open(f"http://{_local_host(runtime['host'])}:{runtime['port']}/")
 
 
-def launch_server(host, port, open_browser):
+def _launch_command(host, port, instance_id, center_config_path=None):
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--child",
+        f"--instance-id={instance_id}",
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    if center_config_path is not None:
+        command.append(f"--center-config={Path(center_config_path).resolve()}")
+    return command
+
+
+def launch_server(host, port, open_browser, center_config_path=None):
     """Start a detached child and return only after that child is healthy."""
     runtime_file, runtime_log = _runtime_paths()
     before = _read_runtime(runtime_file)
     Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
     expected_instance_id = secrets.token_urlsafe(32)
-    command = [
-        sys.executable, str(Path(__file__).resolve()), "--child",
-        f"--instance-id={expected_instance_id}",
-        "--host", host, "--port", str(port),
-    ]
+    command = _launch_command(host, port, expected_instance_id, center_config_path)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     with runtime_log.open("a", encoding="utf-8") as log_file:
         child = subprocess.Popen(command, cwd=Path(__file__).resolve().parent, stdout=log_file,
@@ -225,7 +246,7 @@ def launch_server(host, port, open_browser):
     return 1
 
 
-def run_server(host, port, open_browser=False, instance_id=None):
+def run_server(host, port, open_browser=False, instance_id=None, center_config_path=None):
     """Hold a platform-wide OS lock from migration through shutdown."""
     instance_id = instance_id or secrets.token_urlsafe(32)
     shutdown_token = secrets.token_urlsafe(32)
@@ -239,7 +260,12 @@ def run_server(host, port, open_browser=False, instance_id=None):
         print("platform already running", file=sys.stderr)
         return 1
     try:
-        server = create_server(host, port, database_path=Config.DATABASE_PATH)
+        server = create_server(
+            host,
+            port,
+            database_path=Config.DATABASE_PATH,
+            center_config_path=center_config_path,
+        )
         server.shutdown_token = shutdown_token
         runtime = {"instance_id": instance_id, "pid": os.getpid(), "host": server.server_address[0],
                    "port": server.server_port, "shutdown_token": shutdown_token}
@@ -273,12 +299,18 @@ def main():
     if arguments.restore:
         return restore_server(arguments.restore)
     if arguments.launch:
-        return launch_server(arguments.host, arguments.port, arguments.open_browser)
+        return launch_server(
+            arguments.host,
+            arguments.port,
+            arguments.open_browser,
+            arguments.center_config,
+        )
     return run_server(
         arguments.host,
         arguments.port,
         arguments.open_browser,
         instance_id=arguments.instance_id,
+        center_config_path=arguments.center_config,
     )
 
 

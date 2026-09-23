@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import backend.center.config as config_module
 
 from backend.center.config import CenterConfigurationError, load_center_config
 
@@ -69,6 +70,26 @@ class CenterConfigTests(unittest.TestCase):
                 "CENTER_MQTT_PASSWORD": "mqtt-secret",
                 "CENTER_POSTGRES_PASSWORD": "pg-secret",
             })
+
+    def test_query_configuration_does_not_require_mqtt_secret(self):
+        loader = getattr(config_module, "load_query_postgres_config", None)
+        self.assertIsNotNone(loader)
+        result = loader(self.path, env={"CENTER_POSTGRES_PASSWORD": "pg-secret"})
+        self.assertEqual(result["dbname"], "oilwell_platform")
+
+    def test_query_credentials_override_ingestion_credentials(self):
+        loader = getattr(config_module, "load_query_postgres_config", None)
+        self.assertIsNotNone(loader)
+        self.path.write_text(CONFIG + '''
+[postgres_query]
+host = "127.0.0.1"
+database = "oilwell_platform"
+user = "oilwell_reader"
+password_env = "CENTER_READER_PASSWORD"
+sslmode = "prefer"
+''', encoding="utf-8")
+        result = loader(self.path, env={"CENTER_READER_PASSWORD": "reader-secret"})
+        self.assertEqual((result["user"], result["password"]), ("oilwell_reader", "reader-secret"))
 
 
 if __name__ == "__main__":

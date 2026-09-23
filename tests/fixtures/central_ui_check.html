@@ -1,0 +1,94 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+import { mountCentralOperations } from CENTRAL_MODULE;
+import { renderAcquisitionStream } from ACQUISITION_MODULE;
+import { components } from COMPONENT_MODULE;
+import * as format from FORMAT_MODULE;
+const checks = [];
+const timers = [];
+const wait = window.setTimeout.bind(window);
+window.setTimeout = (callback, ms) => { timers.push({callback, ms}); return timers.length; };
+const flush = () => new Promise(resolve => wait(resolve, 0));
+function check(ok, name) { if (!ok) throw new Error(name); checks.push(name); }
+const root = document.querySelector('#root');
+let current = true;
+let mode = 'normal';
+let deferred = null;
+const calls = [];
+const health = {status:'available', generated_at:'2026-09-23T04:00:00Z', summary:{gateway_count:1,device_count:1,
+  online_devices:1,delayed_devices:0,offline_devices:0,samples_24h:150,bad_samples_24h:0,uncertain_samples_24h:0,
+  p95_delivery_ms:20,sequence_gap_count_24h:1,missing_sequences_24h:'9223372036854775805',clock_ahead_samples_24h:0},links:[]};
+const api = {get: async path => {
+  calls.push(path);
+  if (path.startsWith('/api/acquisition/stream')) return {cursor:0,items:[],queue:{},worker:{}};
+  if (path === '/api/central/health') {
+    if (mode === 'network') throw Object.assign(new Error('network'), {code:'network_error'});
+    return health;
+  }
+  if (mode === 'invalid') throw Object.assign(new Error('invalid'), {status:422});
+  if (mode === 'defer') return new Promise(resolve => { deferred = resolve; });
+  const page = Number(new URL(path, 'http://localhost').searchParams.get('page'));
+  return {items:[{gateway_id:'GW-001',device_id:'D-001',point_code:'Power.A',value:6.125,quality:'good',unit:'kW',
+    message_id:'<img src=x onerror=alert(1)>',measured_at:'2026-09-23T03:59:55Z',sequence:'9007199254740993'}],total:150,page,page_size:100,
+    window:{from:'2026-09-12T00:00:00Z',to:'2026-09-23T04:00:00Z',received_before:'2026-09-23T04:00:00Z'}};
+}};
+try {
+  await renderAcquisitionStream({api, components, format, workspace:root, page:{}, pageHeader:(_page,actions='')=>actions,params:{},
+    permissions:new Set(['acquisition.read','telemetry.read']),isCurrent:()=>current});
+  await flush();
+  check(root.querySelector('#centralOperations') && root.textContent.includes('中心测点记录'), 'acquisition mounts central query');
+  const centralTag = root.querySelector('#centralOperations .layer-heading .status-tag');
+  check(centralTag.getBoundingClientRect().width > 60 && centralTag.getBoundingClientRect().height < 32, 'central status label stays on one line');
+  check(root.textContent.includes('6.13 kW'), 'engineering value shows two decimals');
+  check(root.textContent.includes('9007199254740993'), 'large sequence identity keeps every digit');
+  check(root.textContent.includes('9,223,372,036,854,775,805'), 'large gap total keeps every digit');
+  check(!root.querySelector('img') && root.textContent.includes('<img src=x onerror=alert(1)>'), 'message identity is escaped');
+  const form = root.querySelector('#centralFilters');
+  root.querySelector('#central-device_id').value = 'D-001';
+  root.querySelector('#central-from').value = '2026-09-12T08:00';
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  await flush();
+  const filtered = calls.filter(path=>path.startsWith('/api/central/telemetry')).at(-1);
+  check(filtered.includes('device_id=D-001') && filtered.includes('from='), 'form submits device and historical window');
+  root.querySelector('[data-central-page="2"]').click();
+  await flush();
+  check(calls.at(-1).includes('page=2'), 'pagination requests the next page');
+  check(new URL(calls.at(-1),'http://localhost').searchParams.get('received_before')==='2026-09-23T04:00:00.000Z', 'pagination pins the server receipt cutoff');
+  check(root.querySelector('#pauseCentral').textContent === '继续自动刷新', 'pagination pauses auto refresh');
+  const centerTimer = timers.find(timer=>timer.ms===15000);
+  const before = calls.length;
+  await centerTimer.callback();
+  check(calls.length === before, 'paused timer sends no request');
+  mode = 'invalid';
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  await flush();
+  check(root.textContent.includes('查询条件无效') && root.textContent.includes('中心可查询'), 'invalid query does not report database outage');
+  mode = 'network';
+  root.querySelector('#refreshCentral').click();
+  await flush();
+  check(root.textContent.includes('中心暂不可用'), 'network failure renders explicit unavailable state');
+  check(!root.textContent.includes('6.13 kW'), 'outage clears old measurements');
+  mode = 'normal';
+  root.querySelector('#refreshCentral').click();
+  await flush();
+  check(root.textContent.includes('6.13 kW'), 'manual refresh recovers after outage');
+  mode = 'defer';
+  root.querySelector('#central-device_id').value = 'D-OLD';
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  await flush();
+  check(Boolean(deferred), 'older request is held');
+  mode = 'normal';
+  root.querySelector('#central-device_id').value = 'D-001';
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  await flush();
+  deferred({items:[],total:0,page:1,page_size:100});
+  await flush();
+  check(root.textContent.includes('6.13 kW'), 'late older response cannot overwrite new results');
+  current = false;
+  const second = document.createElement('div'); root.append(second);
+  const readsBefore = calls.filter(path=>path.startsWith('/api/central/telemetry')).length;
+  await mountCentralOperations({api,components,format,root:second,isCurrent:()=>true,permissions:new Set(['acquisition.read'])});
+  check(calls.filter(path=>path.startsWith('/api/central/telemetry')).length === readsBefore, 'health-only role never requests protected telemetry');
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+} catch(error) { document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),checks}); }
+</script>
