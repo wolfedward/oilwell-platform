@@ -1,5 +1,7 @@
 """Manual-ack MQTT consumer boundary for durable central ingestion."""
 
+import time
+
 
 class MqttConsumerError(RuntimeError):
     pass
@@ -37,6 +39,8 @@ def create_paho_client(config, consumer: MqttConsumer, *, on_error=None):
         reconnect_on_failure=True,
         manual_ack=True,
     )
+    client.connect_timeout = config.connect_timeout_seconds
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     if config.username:
         client.username_pw_set(config.username, config.password)
     if config.tls_enabled:
@@ -52,11 +56,13 @@ def create_paho_client(config, consumer: MqttConsumer, *, on_error=None):
         try:
             consumer.handle_message(paho_client, message)
         except Exception as error:
-            if on_error:
-                on_error(error, message)
-            # Closing the session without acknowledging causes the broker to
-            # redeliver after reconnect instead of losing the database write.
-            paho_client.disconnect()
+            try:
+                if on_error:
+                    on_error(error, message)
+            finally:
+                # This ends loop_forever(): the outer supervisor must resume
+                # the persistent session, without acknowledging failed writes.
+                paho_client.disconnect()
 
     client.on_message = receive
     return client
@@ -78,3 +84,37 @@ def connect_persistent_session(client, config, session_expiry_seconds: int):
         clean_start=False,
         properties=properties,
     )
+
+
+def run_persistent_session(client, config, session_expiry_seconds: int, *, on_retry=None):
+    """Supervise initial connects AND application-triggered disconnects.
+
+    Paho handles unplanned transport loss inside loop_forever, but deliberately
+    returns after disconnect() in our failed-write callback. Never interpret
+    that return as successful service completion. Ctrl+C propagates to the
+    entry point, including during backoff; programming errors are not hidden.
+    """
+    delay = 1
+    try:
+        while True:
+            started = time.monotonic()
+            error_type = None
+            try:
+                result = connect_persistent_session(client, config, session_expiry_seconds)
+                if result not in (0, None):
+                    error_type = "ConnectRejected"
+                else:
+                    client.loop_forever(retry_first_connection=True)
+            except OSError as error:
+                # OS/SSL exception text can contain addresses and credentials.
+                error_type = type(error).__name__
+            finally:
+                client.disconnect()
+            if time.monotonic() - started >= 60:
+                delay = 1
+            if on_retry:
+                on_retry(delay, error_type)
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    finally:
+        client.disconnect()

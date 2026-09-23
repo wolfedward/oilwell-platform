@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="960" viewBox="0 0 1480 960" role="img" aria-labelledby="title desc">
+  <title id="title">OWP-EDGE-R1 井场终端参考设计总图</title>
+  <desc id="desc">三相隔离测量与载荷位移进入实时采样 DSP，通信 MCU 提供缓存与 MQTT，上联平台；独立本地保护不经过平台。参考设计未经制板和实物验证。</desc>
+  <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#356080"/></marker></defs>
+  <style>text{font-family:'Microsoft YaHei','Noto Sans SC',sans-serif;fill:#183449} .h{font-size:23px;font-weight:700}.t{font-size:18px}.s{font-size:16px;fill:#486377}.box{fill:#fff;stroke:#a8bdcb;stroke-width:1.5;rx:10}.line{fill:none;stroke:#356080;stroke-width:2;marker-end:url(#arrow)}.dashed{stroke-dasharray:7 6}.tag{font-size:15px;font-weight:700;letter-spacing:1px;fill:#167365}</style>
+  <rect width="1480" height="960" fill="#f5f8fb"/>
+  <text x="45" y="48" class="tag">OPEN FIELD DEVICE REFERENCE · R1 · 2026-09-23</text>
+  <text x="45" y="92" font-size="34" font-weight="700">井场测控终端 / 系统参考设计</text>
+  <text x="45" y="127" class="t">只读采集基线：Modbus TCP/RTU → MQTT 5 → 中心平台</text>
+  <rect x="320" y="165" width="1115" height="595" rx="16" fill="#eaf2f7" stroke="#b6cbd9" stroke-dasharray="8 6"/>
+  <text x="342" y="194" class="tag">厂家终端 / 低压测控域 · 元件级绝缘与保护由厂家设计验证</text>
+  <rect x="45" y="230" width="235" height="140" class="box"/><text x="64" y="265" class="h">三相电参输入</text><text x="64" y="301" class="t">经合格隔离测量前端</text><text x="64" y="331" class="s">Ua / Ub / Uc · Ia / Ib / Ic</text><text x="64" y="355" class="s">禁止动力线直入本板</text>
+  <rect x="345" y="230" width="270" height="140" class="box"/><text x="365" y="265" class="h">同步采样前端</text><text x="365" y="301" class="t">调理 / 抗混叠 / 校准</text><text x="365" y="331" class="s">候选 ADS131M08 · SPI</text><text x="365" y="355" class="s">8 kS/s/通道：设计目标</text>
+  <path d="M280 300 H342" class="line"/>
+  <rect x="670" y="230" width="290" height="300" class="box"/><text x="694" y="266" class="h">实时运算 / DSP 角色</text><text x="694" y="304" class="t">候选 C2000 F280049C</text><text x="694" y="343" class="t">共时钟采样 · DMA</text><text x="694" y="381" class="t">功率 / RMS / 周期识别</text><text x="694" y="419" class="t">本地异常监测</text><text x="694" y="467" class="s">记录滤波与传感器群延迟</text><text x="694" y="497" class="s">不能代替独立硬件保护</text>
+  <path d="M615 300 H666" class="line"/>
+  <rect x="45" y="425" width="235" height="135" class="box"/><text x="64" y="460" class="h">载荷 / 位移</text><text x="64" y="496" class="t">4–20 mA / 桥式 / 编码器</text><text x="64" y="528" class="s">量程、零位、方向须标定</text><text x="64" y="550" class="s">各输入按实际传感器选配</text>
+  <rect x="345" y="425" width="270" height="135" class="box"/><text x="365" y="460" class="h">传感器输入适配</text><text x="365" y="496" class="t">隔离 / 精密 ADC / 时间戳</text><text x="365" y="528" class="s">桥式比率测量为可选子板</text><text x="365" y="550" class="s">与电参实测对齐，不能假定</text>
+  <path d="M280 490 H342 M615 490 H666" class="line"/>
+  <rect x="1030" y="230" width="375" height="300" class="box"/><text x="1054" y="266" class="h">通信管理 / MCU</text><text x="1054" y="304" class="t">候选 STM32H563 + PHY</text><text x="1054" y="343" class="t">TLS / MQTT · 身份与安全启动</text><text x="1054" y="381" class="t">RTC / 同步 · 配置版本</text><text x="1054" y="419" class="t">掉电可恢复缓存 · 升级回退</text><text x="1054" y="467" class="s">以太网；可选外部工业蜂窝网关</text><text x="1054" y="497" class="s">协议能力不等于固件已经实现</text>
+  <path d="M960 350 H1026" class="line"/><text x="970" y="330" font-size="14">SPI/IRQ</text>
+  <rect x="345" y="615" width="270" height="112" class="box"/><text x="365" y="650" class="h">24 VDC 低压供电</text><text x="365" y="683" class="t">限流 / 反接 / 浪涌 / 欠压</text><text x="365" y="710" class="s">18–36 V：待验证设计目标</text>
+  <rect x="670" y="615" width="290" height="112" class="box"/><text x="694" y="650" class="h">电源与隔离分区</text><text x="694" y="683" class="t">模拟域 / 数字域 / 总线侧</text><text x="694" y="710" class="s">PE、屏蔽、信号地分别定义</text><path d="M615 674 H666" class="line"/>
+  <rect x="1030" y="615" width="375" height="112" class="box"/><text x="1054" y="650" class="h">持久存储 / 隔离串口</text><text x="1054" y="683" class="t">工业存储 · ISO1410 + 隔离电源</text><text x="1054" y="710" class="s">掉电恢复、磨损与缓存满必须测试</text><path d="M1205 615 V534" class="line"/>
+  <rect x="45" y="615" width="235" height="145" rx="10" fill="#fff1ed" stroke="#d69077"/><text x="64" y="651" class="h">独立本地保护</text><text x="64" y="687" class="t">急停 / 过载 / 硬联锁</text><text x="64" y="720" class="s">独立于网络与平台</text><text x="64" y="744" class="s">当前不连接远程执行输出</text>
+  <rect x="740" y="815" width="665" height="84" rx="12" fill="#e5f2ec" stroke="#8dbda6"/><text x="765" y="850" class="h">中心平台 · MQTT 接入 / PostgreSQL / 质量与查询</text><text x="765" y="878" class="s">v1：标量可用；v2：同步波形 / 应用回执 / 准入为设计草案</text><path d="M1405 430 H1453 V856 H1409" class="line"/><text x="1265" y="790" class="s">MQTT 5 · TLS</text>
+  <text x="45" y="825" class="h">设计边界</text><text x="45" y="859" class="t">参考设计，未经制板、实物与安规验证。</text><text x="45" y="888" class="s">非 PCB / Gerber；不构成防爆、SIL 或 PL 认证。</text>
+  <text x="45" y="936" font-size="15">OWP-EDGE-R1 · 图 01 / 02 · 原创可编辑参考图 · MIT（限本接入包） · 详见 HARDWARE.md</text>
+</svg>

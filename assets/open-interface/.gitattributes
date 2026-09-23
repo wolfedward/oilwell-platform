@@ -1,0 +1,3 @@
+# Keep published source bytes identical to the checked-in download archive.
+* text eol=lf
+*.zip -text

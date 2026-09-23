@@ -15,9 +15,9 @@ if errorlevel 1 (
 set "PLATFORM_PYTHON=python"
 :runtime_ready
 if exist "%~dp0config\center.local.toml" (
-  "%PLATFORM_PYTHON%" "%~dp0server.py" --launch --open --center-config "%~dp0config\center.local.toml"
+  "%PLATFORM_PYTHON%" "%~dp0server.py" --launch --open --center-config "%~dp0config\center.local.toml" %*
 ) else (
-  "%PLATFORM_PYTHON%" "%~dp0server.py" --launch --open
+  "%PLATFORM_PYTHON%" "%~dp0server.py" --launch --open %*
 )
 set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" (

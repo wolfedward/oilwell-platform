@@ -91,7 +91,7 @@ class LifecycleTests(unittest.TestCase):
 
     def _runtime_log(self):
         log = self.log_path / "runtime.log"
-        return log.read_text(encoding="utf-8") if log.exists() else ""
+        return log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
 
     def test_foreground_single_instance_preserves_owner_and_restarts_after_stop(self):
         first = self._start("--port", "0")
@@ -167,10 +167,10 @@ class LifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other_cwd:
             for _ in range(2):
                 started = subprocess.run(
-                    ["cmd", "/c", str(PROJECT_ROOT / "start-platform.cmd")], cwd=other_cwd, env=self.environment,
+                    ["cmd", "/c", str(PROJECT_ROOT / "start-platform.cmd"), "--port", "0"], cwd=other_cwd, env=self.environment,
                     capture_output=True, text=True, timeout=20, check=False,
                 )
-                self.assertEqual(started.returncode, 0, started.stderr)
+                self.assertEqual(started.returncode, 0, started.stderr + self._runtime_log())
                 runtime = json.loads((self.log_path / "runtime.json").read_text(encoding="utf-8"))
                 self.assertTrue(healthy(runtime))
                 stopped = subprocess.run(

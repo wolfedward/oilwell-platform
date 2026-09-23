@@ -6,7 +6,7 @@ import sys
 
 from .config import CenterConfigurationError, load_center_config
 from .ingest import CentralIngestService
-from .mqtt_consumer import MqttConsumer, connect_persistent_session, create_paho_client
+from .mqtt_consumer import MqttConsumer, create_paho_client, run_persistent_session
 from .postgres import PostgresTelemetryRepository
 
 
@@ -45,32 +45,54 @@ def main(argv=None):
         config.mqtt,
         consumer,
         on_error=lambda error, message: _event(
-            "ingest_failed", error=str(error), topic=getattr(message, "topic", None)
+            "ingest_failed", error_type=type(error).__name__, mid=getattr(message, "mid", None)
         ),
     )
 
+    pending_subscription = None
+    topic = f"{config.topic_prefix}/v1/+/+/telemetry"
+
     def connected(paho_client, _userdata, _flags, reason_code, _properties=None):
+        nonlocal pending_subscription
+        pending_subscription = None
         if getattr(reason_code, "is_failure", False):
-            _event("mqtt_connection_rejected", reason=str(reason_code))
+            _event("mqtt_connection_rejected", code=getattr(reason_code, "value", None))
+            paho_client.disconnect()
             return
-        topic = f"{config.topic_prefix}/v1/+/+/telemetry"
-        result, _mid = paho_client.subscribe(topic, qos=1)
+        result, mid = paho_client.subscribe(topic, qos=1)
         if result != 0:
             _event("mqtt_subscribe_failed", code=result, topic=topic)
             paho_client.disconnect()
         else:
-            _event("mqtt_subscribed", topic=topic, qos=1)
+            pending_subscription = mid
+            _event("mqtt_subscribe_requested", topic=topic, qos=1)
+
+    def subscribed(paho_client, _userdata, mid, reason_codes, _properties=None):
+        nonlocal pending_subscription
+        if mid != pending_subscription:
+            return
+        pending_subscription = None
+        granted = [getattr(code, "value", code) for code in reason_codes]
+        if granted != [1]:
+            _event("mqtt_subscribe_rejected", topic=topic, codes=granted)
+            paho_client.disconnect()
+            return
+        _event("mqtt_subscribed", topic=topic, qos=1)
 
     client.on_connect = connected
+    client.on_subscribe = subscribed
     try:
-        connect_persistent_session(
+        run_persistent_session(
             client,
             config.mqtt,
             config.mqtt_session_expiry_seconds,
+            on_retry=lambda delay, error_type: _event(
+                "mqtt_retry_scheduled", delay_seconds=delay, error_type=error_type
+            ),
         )
-        client.loop_forever(retry_first_connection=True)
     except KeyboardInterrupt:
         client.disconnect()
+        _event("ingestor_stopped")
     return 0
 
 

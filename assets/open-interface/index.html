@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设备开放接入 · 油井智能测控平台</title>
+  <link rel="stylesheet" href="portal.css">
+</head>
+<body>
+  <header class="top"><a href="/">油井智能测控平台</a><span>设备生态 / 开放技术资料</span><a href="/#/acquisition">返回采集实况</a></header>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">OPEN FIELD DEVICE INTERFACE</p>
+      <h1>设备开放接入</h1>
+      <p class="lead">让不同厂家的井场终端使用同一套可验证接口接入平台。</p>
+      <p>OWP-EDGE/1.0 · 2026-09-23 · 基础标量遥测对接版 / R1 硬件参考</p>
+      <div class="actions"><a class="primary" href="open-interface-r1.zip" download>下载厂家接入包</a><a href="INTERFACE.md" download>接口标准</a><a href="HARDWARE.md" download>硬件设计说明</a><a href="LICENSE.txt">开放许可</a></div>
+    </section>
+    <nav class="sections" aria-label="章节"><a href="#capabilities">可用接口</a><a href="#onboarding">厂家联调</a><a href="#hardware">设备参考图</a><a href="#downloads">文件下载</a><a href="#limits">安全与版本边界</a></nav>
+
+    <section id="capabilities"><p class="eyebrow">IMPLEMENTED INTERFACE</p><h2>当前能对接什么</h2>
+      <div class="cards"><article><span class="status ready">已实现</span><h3>Modbus 设备接入</h3><p>TCP / RTU，FC03 / FC04 只读采集。点表定义地址、字节序、换算比例和工程单位。</p></article><article><span class="status ready">已实现</span><h3>MQTT 标量上行</h3><p>MQTT 5、QoS 1、UTF-8 JSON。保留测量时间、设备身份、序号与质量码。</p></article><article><span class="status ready">已实现</span><h3>中心接收与追溯</h3><p>PostgreSQL 幂等入库、原始摘要、质量状态与历史查询。入库后才确认消费消息。</p></article></div>
+      <div class="note">这些是软件接口能力，不代表现场设备已接通，也不代表完成生产认证。设备注册、波形上行、应用回执与控制仍有后续工作。</div>
+      <div class="table-wrap"><table><caption>v1 关键约束</caption><thead><tr><th>项目</th><th>约定</th></tr></thead><tbody><tr><td>上行主题</td><td><code>oilfield/v1/{gateway_id}/{device_id}/telemetry</code></td></tr><tr><td>报文版本</td><td><code>oilwell.telemetry.v1</code>；未知字段不得混入</td></tr><tr><td>消息与样本</td><td>最多 1 MiB / 5000 个标量；UTC 时间、有限数值、质量码</td></tr><tr><td>重发</td><td>同一 message_id、同一原始字节；不可重写采样时间</td></tr><tr><td>安全</td><td>远程 TLS、每网关独立身份、Broker ACL；文档不含实际口令</td></tr><tr><td>控制</td><td>只读采集；当前无真实远程启停 / Modbus 写接口</td></tr></tbody></table></div>
+    </section>
+
+    <section id="onboarding"><p class="eyebrow">MANUFACTURER ONBOARDING</p><h2>厂家如何开始联调</h2>
+      <ol class="steps"><li><strong>提交设备与点表</strong><p>提供型号、版本、单位、字节序、量程和标定说明；现阶段由运维分配身份与 ACL，不自动注册。</p></li><li><strong>选一种接入方式</strong><p>标准 Modbus 终端经平台网关接入，或自主实现 MQTT v1。两种方式遵循相同数据约定。</p></li><li><strong>离线校验报文</strong><p>下载示例与校验器。校验器只检查报文，不联网、不取凭据、不发送控制指令。</p></li><li><strong>隔离环境联调与准入</strong><p>检查断网补传、重复报文、错身份、时钟漂移和缓存满；另行完成电气、采样与安全验证。</p></li></ol>
+      <pre><code>python validate_telemetry.py --topic oilfield/v1/GW-EXAMPLE/D-EXAMPLE/telemetry --file telemetry-example.json</code></pre>
+      <p class="muted">校验器使用 Python 3.10+ 标准库，退出码 0 表示协议预检通过，2 表示不通过。示例是公开测试向量，不是现场测量。</p>
+      <p><a href="telemetry.schema.json" download>下载 JSON Schema</a> · <a href="telemetry-example.json" download>下载完整示例</a> · <a href="validate_telemetry.py" download>下载离线校验器</a></p>
+    </section>
+
+    <section id="hardware"><p class="eyebrow">OPEN HARDWARE REFERENCE</p><h2>给设备厂家的参考设计图</h2><p>以模块接口约束实现互联，不绑定单一芯片品牌。两张图均为可编辑 SVG，可放大、修改并随设备文档交付。</p>
+      <div class="warning"><strong>参考设计，未经制板与实物验证。</strong> 本包不是元件级原理图、PCB 或 Gerber；不构成防爆、功能安全或电气认证。</div>
+      <figure><a href="hardware-overview.svg"><img src="hardware-overview.svg" alt="三相采样、载荷位移、DSP 和 MCU、持久缓存及独立保护的系统参考图" width="1480" height="960"></a><figcaption>图 1 · 系统分层与安全边界。点击查看原尺寸。 <a href="hardware-overview.svg" download>下载 SVG</a></figcaption></figure>
+      <figure><a href="terminal-interfaces.svg"><img src="terminal-interfaces.svg" alt="低压电源、隔离串口、以太网、载荷桥、模拟输入和状态接口的端子参考图" width="1480" height="990" loading="lazy"></a><figcaption>图 2 · 低压端子功能与信号约束。 <a href="terminal-interfaces.svg" download>下载 SVG</a></figcaption></figure>
+      <p>选型依据：<a href="https://www.ti.com/product/ADS131M08">TI 同步 ADC</a>、<a href="https://www.ti.com/product/TMS320F280049C">TI 实时控制器</a>、<a href="https://www.st.com/en/microcontrollers-microprocessors/stm32h563-573.html">ST 通信 MCU</a>、<a href="https://www.analog.com/en/resources/reference-designs/circuits-from-the-lab/cn0102.html">ADI 载荷桥测量参考</a>。候选器件参数不是整机性能保证。</p>
+    </section>
+
+    <section id="downloads"><p class="eyebrow">REFERENCE PACKAGE</p><h2>开放文件目录</h2><div class="table-wrap"><table><thead><tr><th>文件</th><th>用途</th><th>下载</th></tr></thead><tbody>
+      <tr><td>INTERFACE.md</td><td>已实现接口、点表建议、联调与验收要求</td><td><a href="INTERFACE.md" download>接口标准</a></td></tr>
+      <tr><td>telemetry.schema.json</td><td>机器可读的 v1 报文结构约束</td><td><a href="telemetry.schema.json" download>Schema</a></td></tr>
+      <tr><td>telemetry-example.json</td><td>与当前接收器兼容的标量测试向量</td><td><a href="telemetry-example.json" download>示例</a></td></tr>
+      <tr><td>validate_telemetry.py</td><td>离线预检，补充跨字段与大小检查</td><td><a href="validate_telemetry.py" download>校验器</a></td></tr>
+      <tr><td>HARDWARE.md + 两张 SVG</td><td>硬件模块、端子、同步采样及存储预算</td><td><a href="HARDWARE.md" download>设计说明</a></td></tr>
+      <tr><td>ROADMAP.md</td><td>注册、波形、配置回执与控制的未实现草案</td><td><a href="ROADMAP.md" download>草案</a></td></tr>
+      <tr><td>LICENSE.txt</td><td>本目录原创资料 MIT 许可；不改变主平台许可</td><td><a href="LICENSE.txt" download>许可</a></td></tr>
+    </tbody></table></div></section>
+
+    <section id="limits"><p class="eyebrow">BOUNDARIES</p><h2>版本、安全与真实性</h2><ul><li>本包允许厂家复制和修改原创参考材料；第三方芯片图纸、标准文本和商标不在本许可中。</li><li>当前标量协议不是同步功图协议，不是 Sparkplug，不是远程控制协议。</li><li>MQTT PUBACK 不等于中心业务入库回执；Broker 持久状态丢失或会话过期仍有数据风险。</li><li>时间同步、传感器标定与物理安装必须验证，不能靠报文格式正确推断采样准确。</li><li>当前平台文档在本机开放；没有自动发布到互联网，没有公开任何现场地址和实际凭据。</li></ul></section>
+    <footer>OWP-EDGE/1.0 · 原创开放接入资料 · 2026-09-23 · <a href="/#/acquisition">返回平台</a></footer>
+  </main>
+</body>
+</html>

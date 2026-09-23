@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="990" viewBox="0 0 1480 990" role="img" aria-labelledby="title desc">
+  <title id="title">井场终端低压接口分配参考设计</title><desc id="desc">24伏电源、RS485、以太网、载荷、位移和状态输入的连接器功能参考，所有执行输出未开放，未经实物验证。</desc>
+  <style>text{font-family:'Microsoft YaHei','Noto Sans SC',sans-serif;fill:#193449}.h{font-size:24px;font-weight:700}.t{font-size:19px}.s{font-size:16px;fill:#496474}.box{fill:#fff;stroke:#b0c3d0;stroke-width:1.5;rx:12}.line{stroke:#d2dfe8;stroke-width:1}.mono{font-family:Consolas,monospace;font-size:17px}</style>
+  <rect width="1480" height="990" fill="#f5f8fb"/><text x="45" y="48" font-size="15" font-weight="700" fill="#167365">OPEN FIELD DEVICE REFERENCE · CONNECTOR FUNCTION ASSIGNMENT</text>
+  <text x="45" y="92" font-size="34" font-weight="700">端子与输入接口 / 厂家连接器参考设计</text><text x="45" y="128" class="t">J 编号与针位仅为本参考板约定；不是芯片引脚表，不可直接按图施工。</text>
+  <rect x="45" y="165" width="440" height="270" class="box"/><text x="68" y="204" class="h">J1 · 24 VDC 电源</text><path d="M65 225 H465" class="line"/>
+  <text x="68" y="260" class="mono">1  VIN+     2  VIN−     3  PE</text><text x="68" y="300" class="t">额定目标 24 VDC，禁止接市电</text><text x="68" y="336" class="t">PE 接柜体保护地；不是信号地</text><text x="68" y="375" class="s">输入熔断/限流、反接、浪涌与欠压保护</text><text x="68" y="407" class="s">具体器件值、绝缘距离须电气设计评审</text>
+  <rect x="520" y="165" width="440" height="270" class="box"/><text x="543" y="204" class="h">J2 · 隔离 RS-485</text><path d="M540 225 H940" class="line"/>
+  <text x="543" y="260" class="mono">1  D1/B   2  D0/A   3  COM_ISO</text><text x="543" y="300" class="t">屏蔽在独立屏蔽端处理</text><text x="543" y="336" class="t">默认建议：19200 / 8E1</text><text x="543" y="375" class="s">厂商 A/B 命名可能相反：以电气极性核对</text><text x="543" y="407" class="s">总线末端匹配/偏置依拓扑设置，非处处加装</text>
+  <rect x="995" y="165" width="440" height="270" class="box"/><text x="1018" y="204" class="h">J3 · 工业以太网</text><path d="M1015 225 H1415" class="line"/>
+  <text x="1018" y="260" class="t">MAC → PHY → 磁性器件 → RJ45</text><text x="1018" y="300" class="t">MQTT/TLS 上联；OT 网段隔离</text><text x="1018" y="336" class="t">不将 Modbus 502 暴露到互联网</text><text x="1018" y="375" class="s">ESD/浪涌、屏蔽和接地由厂家验证</text><text x="1018" y="407" class="s">当前本机服务不是公网生产接入地址</text>
+  <rect x="45" y="470" width="440" height="310" class="box"/><text x="68" y="509" class="h">J4 · 载荷桥输入（可选）</text><path d="M65 530 H465" class="line"/>
+  <text x="68" y="565" class="mono">1 EXC+  2 EXC−  3 SIG+  4 SIG−</text><text x="68" y="602" class="mono">5 SENSE+       6 SENSE−</text><text x="68" y="641" class="t">励磁与 SENSE 采用比率测量</text><text x="68" y="680" class="s">励磁电压、桥阻抗、mV/V 量程按传感器确定</text><text x="68" y="714" class="s">ADC 满量程、输入保护、低通须匹配设计</text><text x="68" y="749" class="s">与电参 ADC 的群延迟需实测校正</text>
+  <rect x="520" y="470" width="440" height="310" class="box"/><text x="543" y="509" class="h">J5 · 隔离模拟输入</text><path d="M540 530 H940" class="line"/>
+  <text x="543" y="565" class="mono">1 AI1+  2 AI1−  3 AI2+  4 AI2−</text><text x="543" y="602" class="t">AI1：载荷备选；AI2：位移</text><text x="543" y="641" class="t">4–20 mA，供电型式单独确认</text><text x="543" y="680" class="s">两线/四线、主动/被动不能凭端子名推定</text><text x="543" y="714" class="s">桥式载荷与电流输入按配置择一，禁止混接</text><text x="543" y="749" class="s">编码器需单独电平适配，不接此模拟口</text>
+  <rect x="995" y="470" width="440" height="310" class="box"/><text x="1018" y="509" class="h">J6 · 状态采集 / 输出保留</text><path d="M1015 530 H1415" class="line"/>
+  <text x="1018" y="565" class="t">隔离 DI：运行、故障、就地模式</text><text x="1018" y="602" class="t">接触器反馈只读，不构成控制闭环</text><text x="1018" y="641" class="t" fill="#a13c25">DO：当前不装配或不连接执行机构</text><text x="1018" y="680" class="s">急停与保护由独立合格硬件回路实现</text><text x="1018" y="714" class="s">接触器线圈/变频器使能禁止由本图直连</text><text x="1018" y="749" class="s">未来启停需单独联锁与安全评审</text>
+  <rect x="45" y="820" width="1390" height="105" rx="12" fill="#fff1ed" stroke="#d59077"/><text x="68" y="857" class="h">电参输入不在上述低压端子直接接入</text><text x="68" y="892" class="t">使用具备额定与绝缘能力的 PT/CT 或隔离变送器。CT 不得运行中开路。参考设计未经制板、实物和危险区适用性验证。</text>
+  <text x="45" y="963" font-size="15">OWP-EDGE-R1 · 图 02 / 02 · 原创可编辑参考图 · MIT（限本接入包） · 最终端子、PCB 与安规由厂家定型</text>
+</svg>

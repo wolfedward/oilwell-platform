@@ -74,7 +74,7 @@ export async function renderAcquisitionStream({ api, components, format, workspa
   state.cursor = first.cursor || 0;
   state.items = first.items || [];
   state.snapshot = first;
-  workspace.innerHTML = `${pageHeader(page, `<div class="header-actions"><span id="streamState" class="data-time">实时接收中</span><button id="streamToggle" class="button secondary" type="button">暂停刷新</button></div>`)}
+  workspace.innerHTML = `${pageHeader(page, `<div class="header-actions"><a class="button secondary" href="/assets/open-interface/index.html" target="_blank" rel="noopener">设备开放接入</a><span id="streamState" class="data-time">实时接收中</span><button id="streamToggle" class="button secondary" type="button">暂停刷新</button></div>`)}
     <div id="centralOperations" class="center-operations"></div>
     <div class="layer-heading"><span>联</span><div><p class="eyebrow">TERMINAL INTEGRATION</p><h2>本机终端联调链路</h2></div></div>
     <div id="streamMetrics">${queueMarkup(state.snapshot, format)}</div>
