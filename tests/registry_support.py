@@ -120,3 +120,8 @@ class RegistryDatabaseCase(unittest.TestCase):
                                    check_note="隔离测试核对依据")["entity"]
         return {"well_id": well["id"], "device_id": device["id"], "version": current["version"],
                 "map_version": point_map["map_version"], "sha256": point_map["sha256"], "binding_time": bound["committed_at"]}
+
+    def read(self, resource, **filters):
+        from backend.registry.queries import RegistryQueries
+        return RegistryQueries(lambda: self.connect("reader"), online_seconds=120, delayed_seconds=900,
+                               clock_tolerance_seconds=300).read(resource, filters)
