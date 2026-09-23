@@ -9,6 +9,7 @@ import random
 
 from backend.database import Database
 from backend.algorithms.dynagraph_profiles import build_profile_card, profile_condition
+from backend.registry.permissions import REGISTRY_ROLE_PERMISSIONS
 
 
 SIMULATOR = "simulator"
@@ -61,6 +62,8 @@ ROLE_PERMISSIONS = {
     "maintenance_engineer": ("wells.read", "dashboard.read", "telemetry.read", "wells.update", "devices.read", "devices.control", "devices.configure", "commands.read", "maintenance.manage", "acquisition.read", "data_quality.read", "data_quality.repair", "workflow.read"),
     "reviewer": ("wells.read", "dashboard.read", "telemetry.read", "diagnosis.review", "reports.read", "audit.read", "devices.read", "commands.read", "acquisition.read", "data_quality.read", "workflow.read"),
 }
+for _role_code in ROLE_PERMISSIONS:
+    ROLE_PERMISSIONS[_role_code] += REGISTRY_ROLE_PERMISSIONS[_role_code]
 ROLE_PERMISSIONS["administrator"] = tuple(sorted(
     {
         permission
@@ -69,7 +72,7 @@ ROLE_PERMISSIONS["administrator"] = tuple(sorted(
     }
     | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read"}
 ))
-AUTH_BOOTSTRAP_VERSION = 7
+AUTH_BOOTSTRAP_VERSION = 8
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -731,6 +734,17 @@ def bootstrap_local_auth(db: Database) -> None:
                               WHERE role.code='administrator' AND permission.code=?""",
                         (permission,),
                     )
+            if marker["bootstrap_version"] < 8:
+                # Apply the new registry defaults ONCE, including definitions
+                # that an administrator had already created manually. Existing
+                # manual grants/provenance are preserved by INSERT OR IGNORE.
+                for role_code, permissions in REGISTRY_ROLE_PERMISSIONS.items():
+                    for permission in permissions:
+                        connection.execute(
+                            "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,source_type) "
+                            "SELECT r.id,p.id,'system' FROM roles r CROSS JOIN permissions p "
+                            "WHERE r.code=? AND p.code=?", (role_code, permission),
+                        )
             connection.execute(
                 "UPDATE auth_bootstrap_state SET bootstrap_version=? WHERE id=1",
                 (AUTH_BOOTSTRAP_VERSION,),
