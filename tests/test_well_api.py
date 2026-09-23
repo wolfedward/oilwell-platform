@@ -249,10 +249,13 @@ class WellApiTests(unittest.TestCase):
     def test_status_write_is_audited_versioned_permissioned_and_survives_restart(self):
         # Simulate the exact Task 4 manifest projection that included
         # wells.status, then force the one-time Task 5 hash migration.
+        # Stop all writers before constructing that historical snapshot. The
+        # overdue worker can otherwise change old-projection work-order status
+        # between computing its hash and shutdown, creating a corrupt fixture.
+        self.server.shutdown(); self.thread.join(); self.server.server_close()
         old_hash = _previous_content_hash(self.server.database, 202606, "")
         with self.server.database.transaction(None, "test.old_projection", "seed_manifest", "acceptance-history"):
             self.server.database.execute("UPDATE seed_manifests SET content_hash=? WHERE dataset_name=?", (old_hash, "acceptance-history"))
-        self.server.shutdown(); self.thread.join(); self.server.server_close()
         migrated = create_server("127.0.0.1", 0, database_path=self.path)
         migrated_thread = threading.Thread(target=migrated.serve_forever, daemon=True)
         migrated_thread.start()

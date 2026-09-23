@@ -634,3 +634,30 @@ tbody tr:hover { background: #f7fbff; }
   .workspace { overflow: visible; padding: 0; }
   .panel, .metric-card { break-inside: avoid; box-shadow: none; }
 }
+/* Production registry is isolated from the legacy demonstrator's styling. */
+.field-registry { min-width: 0; }
+.field-registry .registry-boundary { color: #52677f; padding: 10px 14px; background: #eef5fa; border-left: 3px solid #7394b2; line-height: 1.7; }
+.field-registry .registry-directories { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.field-registry .panel { min-width: 0; margin-bottom: 18px; }
+.field-registry .registry-filters, .field-registry .registry-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 16px; }
+.field-registry .registry-filters label { display: grid; gap: 5px; font-size: 13px; flex: 1 1 145px; }
+.field-registry input, .field-registry select, .field-registry textarea { max-width: 100%; padding: 9px; border: 1px solid #b9cada; border-radius: 5px; color: #153451; background: white; }
+.field-registry .registry-status-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.field-registry .registry-status-grid article { display: grid; gap: 8px; padding: 16px; background: #f5f8fc; border: 1px solid #dde7f0; border-radius: 8px; overflow-wrap: anywhere; }
+.field-registry .registry-status-grid small, .field-registry .registry-status-grid span, .field-registry .registry-status-grid time { font-size: 12px; color: #536d86; }
+.field-registry .registry-status-grid strong { font-size: 15px; color: #153451; }
+.field-registry .registry-metadata { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin: 20px 0; }
+.field-registry .registry-metadata div { display: grid; grid-template-columns: 150px 1fr; border-bottom: 1px dashed #dde7f0; padding-bottom: 8px; }
+.field-registry .registry-metadata dt { color: #536d86; }
+.field-registry .registry-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.field-registry .table-wrap, .field-registry .table-container { overflow-x: auto; }
+.field-registry table { min-width: 800px; }
+.field-registry .pagination { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+.field-registry .registry-empty { padding: 24px; color: #536d86; }
+.field-registry button:focus-visible, .field-registry input:focus-visible, .field-registry select:focus-visible { outline: 3px solid #93b8ff; outline-offset: 2px; }
+@media (max-width: 1100px) {
+  .field-registry .registry-status-grid, .field-registry .registry-metadata { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 700px) {
+  .field-registry .registry-status-grid, .field-registry .registry-metadata { grid-template-columns: minmax(0,1fr); }
+}

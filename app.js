@@ -24,6 +24,7 @@ import { renderCommands } from "./frontend/pages/commands.js";
 import { renderAlarms } from "./frontend/pages/alarms.js";
 import { renderWorkOrders } from "./frontend/pages/work-orders.js";
 import { renderAcquisitionStream } from "./frontend/pages/acquisition.js";
+import { renderFieldRegistry } from "./frontend/pages/field-registry.js";
 import { renderQualityBoard } from "./frontend/pages/data-quality.js";
 import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
@@ -47,6 +48,7 @@ const NAVIGATION = [
     pages: [
       { id: "acquisition", label: "采集实况", description: "终端报文、序号、校验与接收状态" },
       { id: "data-quality", label: "数据质量", description: "缺测、延迟、漂移与补传处置" },
+      { id: "field-registry", label: "生产设备台账", description: "独立生产目录、点表版本、时效绑定与来源核查", permission: "registry.read" },
       { id: "devices", label: "测控终端", description: "设备心跳、通道、寄存器与运行状态" },
       { id: "device-command", label: "指令详情", description: "签名载荷、执行状态与分阶段回执", hidden: true },
     ],
@@ -162,7 +164,7 @@ function renderChrome() {
     </button>`).join("");
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
-    </div><nav>${context.module.pages.filter((page) => !page.hidden).map((page) => `
+    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission))).map((page) => `
       <button type="button" data-page="${page.id}" class="${page.id === state.activePage ? "active" : ""}"
         aria-label="${escapeHtml(page.label)}" title="${escapeHtml(page.label)}"
         aria-current="${page.id === state.activePage ? "page" : "false"}">
@@ -236,6 +238,7 @@ async function renderPage(pageId, params = {}) {
       alarms: renderAlarms,
       "work-orders": renderWorkOrders,
       acquisition: renderAcquisitionStream,
+      "field-registry": renderFieldRegistry,
       "data-quality": renderQualityBoard,
       dynagraphs: renderDynagraphList,
       "dynagraph-analysis": renderDynagraphAnalysis,

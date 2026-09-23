@@ -1,0 +1,152 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><style>#root{width:100vw;max-width:100vw}</style><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+import { renderFieldRegistry } from REGISTRY_MODULE;
+import { createRegistryClient } from CLIENT_MODULE;
+import { components, escapeHtml } from COMPONENT_MODULE;
+import * as format from FORMAT_MODULE;
+const checks=[];
+const check=(condition,name)=>{if(!condition)throw new Error(name);checks.push(name);};
+const flush=()=>new Promise(resolve=>setTimeout(resolve,0));
+const root=document.querySelector('#root');
+const D='00000000-0000-0000-0000-000000000001';
+const E='00000000-0000-0000-0000-000000000002';
+const W='00000000-0000-0000-0000-000000000003';
+const attack='<img src=x onerror="window.registryInjected=true">井</textarea><script>window.registryInjected=true<\/script>';
+const defaults={
+ administrator:['registry.read','registry.wells.manage','registry.devices.manage','registry.bindings.manage','registry.maps.manage','registry.review','telemetry.read','acquisition.read','audit.read'],
+ production_engineer:['registry.read','registry.wells.manage','registry.bindings.manage','registry.review','telemetry.read','acquisition.read'],
+ algorithm_engineer:['registry.read','registry.maps.manage','telemetry.read','acquisition.read'],
+ maintenance_engineer:['registry.read','registry.devices.manage','registry.bindings.manage','registry.maps.manage','telemetry.read','acquisition.read'],
+ reviewer:['registry.read','registry.review','telemetry.read','acquisition.read','audit.read'],
+};
+let current=true,mode='normal',delayed=null;
+const calls=[];
+const device=id=>({id,name:id===D?attack:'后选终端',manufacturer:attack,model:'RTU-1',serial_number:'SN-1',
+ gateway_id:'GW',device_id:id===D?'D':'E',transport:'modbus_tcp',usage:'commissioning',status:'pending',version:'9007199254740993',
+ created_at:'2026-09-23T00:00:00.123456+00:00',updated_at:'2026-09-23T00:00:00.123456+00:00'});
+function response(items,query,total=items.length){return{items,total,page:Number(query.get('page')||1),page_size:20,registry_revision:'9007199254740993',received_before:'2026-09-23T12:00:00.123456+00:00'};}
+const api={get:async path=>{
+ calls.push(path);
+ const url=new URL(path,'http://localhost');
+ if(mode==='disabled')throw Object.assign(new Error('not configured'),{status:503,code:'registry.disabled'});
+ if(mode==='unavailable')throw Object.assign(new Error('offline'),{status:503,code:'registry.unavailable'});
+ if(url.pathname==='/api/registry/wells')return response(mode==='empty'?[]:[{id:W,area_code:'A',well_code:'W',name:attack,status:'active',version:'1'}],url.searchParams);
+ if(url.pathname==='/api/registry/devices')return response(mode==='empty'?[]:[device(D),device(E)],url.searchParams,mode==='empty'?0:80);
+ if(mode==='race' && url.pathname===`/api/registry/devices/${D}`)return new Promise(resolve=>{delayed=resolve;});
+ if(url.pathname===`/api/registry/devices/${D}` || url.pathname===`/api/registry/devices/${E}`)return device(url.pathname.split('/').at(-1));
+ if(url.pathname.endsWith('/link-status'))return{link_status:'never_reported',last_received_at:null,age_seconds:null};
+ if(url.pathname.endsWith('/bindings'))return response([{id:W,well_id:W,valid_from:'2026-09-23T00:00:00.123456+00:00',valid_to:null}],url.searchParams);
+ if(url.pathname.endsWith('/point-map-assignments'))return response([{id:W,map_version:'1',valid_from:'2026-09-23T00:00:00.123456+00:00',valid_to:null}],url.searchParams);
+ if(url.pathname.endsWith('/point-maps') || url.pathname.endsWith('/state-history'))return response([],url.searchParams);
+ throw new Error('Unexpected request '+path);
+}};
+function context(permissions=['registry.read']){return{workspace:root,api,components,format,escapeHtml,page:{label:'生产设备台账'},
+ pageHeader:()=>'<h1>生产设备台账</h1>',params:{},permissions:new Set(permissions),navigate:()=>{},isCurrent:()=>current};}
+try{
+ // Real client assertions inserted from the prepared client case draft.
+ // Prepared browser assertions. Not yet installed, imported or executed.
+const requests = new Map();
+let active = true;
+const client = createRegistryClient({get: path => new Promise(resolve => requests.set(path, resolve))}, {isCurrent: () => active});
+const first = client.selectDevice("A");
+const second = client.selectDevice("B");
+requests.get("/api/registry/devices/B")({id:"B",version:"9007199254740993"});
+check((await second).version === "9007199254740993", "selection retains large version");
+requests.get("/api/registry/devices/A")({id:"A",version:"1"});
+check(await first === null, "late old selection is discarded");
+const leaving = client.selectDevice("C");
+active = false;
+requests.get("/api/registry/devices/C")({id:"C",version:"1"});
+check(await leaving === null, "response after navigation is discarded");
+active = true;
+const disposed = client.selectDevice("D");
+client.dispose();
+requests.get("/api/registry/devices/D")({id:"D",version:"1"});
+check(await disposed === null, "disposed client cannot repaint");
+
+const sent = [];
+let resolvePost;
+const mutations = createRegistryClient({post:(path,body) => {
+  sent.push({path,body:structuredClone(body)});
+  return new Promise(resolve => {resolvePost=resolve;});
+}}, {isCurrent:()=>true});
+const source = {expected_version:"9007199254740993",reason:"核对铭牌",points:[{point_code:"load",unit:"kN"}]};
+const op = mutations.beginMutation("/api/registry/devices/D/point-maps", source);
+source.points[0].unit = "tampered";
+check(Object.isFrozen(op.body) && Object.isFrozen(op.body.points[0]), "operation payload is deeply immutable");
+check(op.body.points[0].unit === "kN", "operation retains snapshot of original fields");
+const a = mutations.submitMutation(op);
+const b = mutations.submitMutation(op);
+check(sent.length === 1 && op.phase === "sending", "double click sends once");
+resolvePost({entity:{id:"D",version:"9007199254740994"},replayed:false});
+await Promise.all([a,b]);
+check(op.phase === "succeeded", "confirmed reply completes operation");
+const nextOp = mutations.beginMutation(op.path, source);
+check(op.key !== nextOp.key, "new operation gets new idempotency key");
+
+for (const error of [{code:"network_error",status:0},{code:"timeout",status:0},{code:"cancelled",status:0},{status:503},
+                     {status:409},{status:422},{status:401},{status:403}]) {
+  const calls=[];
+  const retry = createRegistryClient({post:async(path,body)=>{
+    calls.push({path,body:structuredClone(body)});
+    if(calls.length===1) throw Object.assign(new Error("请求失败"),error);
+    return {entity:{id:"D",version:"9007199254740994"},replayed:true};
+  }},{isCurrent:()=>true});
+  const operation=retry.beginMutation("/api/registry/devices/D/changes",{name:"设备",expected_version:"9007199254740993",reason:"核对铭牌"});
+  try {await retry.submitMutation(operation);} catch (_) {}
+  const uncertain=!error.status || error.status===503;
+  check(operation.phase===(uncertain?"uncertain":"rejected"),"error classified "+JSON.stringify(error));
+  if(uncertain){
+    await retry.submitMutation(operation);
+    check(JSON.stringify(calls[0])===JSON.stringify(calls[1]),"uncertain retry uses identical route/body/key");
+    check(calls[1].body.expected_version==="9007199254740993","retry preserves large version");
+  }
+}
+
+
+ await renderFieldRegistry(context());
+ check(root.textContent.includes(attack) && !root.querySelector('img') && !window.registryInjected,'real registry list escapes hostile names');
+ check(root.textContent.includes('9007199254740993'),'list keeps full large version');
+ root.querySelector(`[data-registry-device="${D}"]`).click();await flush();
+ check(root.textContent.includes('终端实际版本未确认'),'actual configuration remains unconfirmed');
+ check(!calls.some(path=>path.includes('/link-status')||path.includes('/audit')||path.includes('/resolved-telemetry')),'registry.read alone sends no privileged queries');
+ check(!root.querySelector('[data-action="edit-device"]'),'read-only view has no editor');
+ for(const [role,permissions] of Object.entries(defaults)){
+   calls.length=0;
+   await renderFieldRegistry(context(permissions));
+   root.querySelector(`[data-registry-device="${D}"]`).click();await flush();
+   const expected={'create-well':'registry.wells.manage','create-device':'registry.devices.manage','edit-device':'registry.devices.manage',
+     'bind-device':'registry.bindings.manage','create-map':'registry.maps.manage','enable-device':'registry.review','retire-device':'registry.review'};
+   for(const [action,permission] of Object.entries(expected))check(Boolean(root.querySelector(`[data-action="${action}"]`))===permissions.includes(permission),role+' '+action+' capability');
+   check(root.textContent.includes('从未上报'),'registered never-reported device remains visible '+role);
+   check(!root.textContent.includes('可自动控制'),'observation workspace never promises control');
+ }
+ calls.length=0;await renderFieldRegistry(context([]));
+ check(calls.length===0 && root.textContent.includes('权限'),'no base capability means no request');
+ for(const [state,label] of [['empty','暂无生产设备'],['disabled','生产台账未配置'],['unavailable','生产台账暂不可用']]){
+   mode=state;await renderFieldRegistry(context());
+   check(root.textContent.includes(label),'distinct '+state+' state');
+   check(!root.textContent.includes(attack),'failure/empty state clears old records');
+ }
+ mode='normal';await renderFieldRegistry(context(defaults.administrator));
+ const filter=root.querySelector('[data-registry-filter="devices"]');
+ filter.querySelector('[name="gateway_id"]').value='GW';filter.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await flush();
+ check(calls.filter(path=>new URL(path,'http://localhost').pathname==='/api/registry/devices').at(-1).includes('gateway_id=GW'),'device filter is submitted');
+ root.querySelector('[data-registry-page="devices"][data-page-number="2"]').click();await flush();
+ const page2=new URL(calls.filter(path=>new URL(path,'http://localhost').pathname==='/api/registry/devices').at(-1),'http://localhost');
+ check(page2.searchParams.get('revision')==='9007199254740993' && page2.searchParams.get('received_before')==='2026-09-23T12:00:00.123456+00:00','pagination preserves exact revision/cutoff');
+ check(page2.searchParams.get('page_size')==='20','lists request bounded page size');
+ mode='unavailable';root.querySelector('[data-registry-refresh="devices"]').click();await flush();
+ check(filter.querySelector('[name="gateway_id"]').value==='GW','failed refresh does not erase filter');
+ mode='normal';root.querySelector('[data-registry-refresh="devices"]').click();await flush();
+ mode='race';root.querySelector(`[data-registry-device="${D}"]`).click();await flush();
+ root.querySelector(`[data-registry-device="${E}"]`).click();await flush();
+ check(root.querySelector('[data-registry-detail]').textContent.includes('后选终端'),'later device selection wins');
+ delayed(device(D));await flush();
+ check(root.querySelector('[data-registry-detail]').textContent.includes('后选终端'),'old detail cannot replace newer selection');
+ check(root.scrollWidth<=root.clientWidth+1,'registry fits its viewport-width workspace without horizontal overflow');
+ check([...root.querySelectorAll('.table-wrap')].every(node=>getComputedStyle(node).overflowX==='auto'),'wide tables keep local scroll containers');
+ current=false;
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,checks});}
+</script>
