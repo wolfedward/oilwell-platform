@@ -1,5 +1,7 @@
 import {escapeHtml as esc} from "../components.js";
-import {createRegistryClient, registryError} from "../registry/client.js";
+import {createRegistryClient, registryError, registryTime, registryPagination} from "../registry/client.js";
+import {mountRegistryForms} from "../registry/forms.js";
+import {mountRegistryHistory} from "../registry/history.js";
 
 const mounted = new WeakMap();
 const STATES = {pending: "待核查登记", active: "台账已启用", suspended: "台账停用待复核", retired: "台账已退役（非物理停机）"};
@@ -10,23 +12,6 @@ const filters = {
   wells: [["area_code", "区块编号"], ["well_code", "井编号"]],
   devices: [["gateway_id", "网关编号"], ["device_id", "终端编号"]],
 };
-
-export function registryTime(value) {
-  if (!value) return "至今";
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return String(value);
-  const parts = new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit",
-    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}).format(date);
-  const micros = String(value).match(/\.(\d{1,6})/)?.[1]?.padEnd(6, "0") || "000000";
-  return `${parts}.${micros} +08:00`;
-}
-
-export function registryPagination(resource, result) {
-  const page = result.page || 1, pages = Math.max(1, Math.ceil(result.total / result.page_size));
-  return `<nav class="pagination" aria-label="台账分页"><span>共 ${esc(result.total)} 条 · 第 ${page} / ${pages} 页</span>
-    <button type="button" data-registry-page="${resource}" data-page-number="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
-    <button type="button" data-registry-page="${resource}" data-page-number="${page + 1}" ${page >= pages ? "disabled" : ""}>下一页</button></nav>`;
-}
 
 export async function renderFieldRegistry(context) {
   const {workspace, api, components, permissions, pageHeader, page, isCurrent} = context;
@@ -39,11 +24,11 @@ export async function renderFieldRegistry(context) {
     root.textContent = "没有生产设备台账查看权限。";
     return false;
   }
-  let disposed = false, selection = 0, selected = null;
+  let disposed = false, selection = 0, selected = null, forms = null, history = null, provenance = null;
   const current = () => !disposed && isCurrent() && workspace.contains(root);
   const client = createRegistryClient(api, {isCurrent: current});
   const state = Object.fromEntries(["wells", "devices"].map(key => [key, {filters: {}, generation: 0, result: null}]));
-  const controller = {dispose() { disposed = true; ++selection; client.dispose(); }};
+  const controller = {dispose() { disposed = true; ++selection; forms?.dispose(); history?.dispose(); provenance?.dispose(); client.dispose(); }};
   mounted.set(workspace, controller);
   root.innerHTML = `<p class="registry-boundary">生产目录与原始上行独立管理 · 仅登记、核查和观测；此页面不向设备下发配置或控制指令。</p>
     <div class="registry-directories">${["wells", "devices"].map(key => `<section class="panel">
@@ -54,10 +39,12 @@ export async function renderFieldRegistry(context) {
         <label>登记状态<select name="status"><option value="">全部</option>${Object.entries(key === "wells" ? {active: "在用", archived: "已归档"} : STATES).map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label>
         <button class="button primary" type="submit">查询</button><button class="button secondary" type="button" data-registry-refresh="${key}">刷新</button>
       </form><div data-registry-results="${key}"></div></div></section>`).join("")}</div>
-    <section class="panel registry-detail" data-registry-detail><div class="panel-body">选择终端，查看登记状态和历史。</div></section>`;
+    <section class="panel registry-detail" data-registry-detail><div class="panel-body">选择终端，查看登记状态和历史。</div></section>
+    ${permissions.has("telemetry.read") ? '<section class="panel"><header><h2>原始测点来源核查</h2></header><div class="panel-body" data-registry-provenance></div></section>' : ""}`;
   const detail = root.querySelector("[data-registry-detail]");
   function clearDetail() {
     ++selection; selected = null;
+    root.dispatchEvent(new CustomEvent("registry:selection-start")); history?.dispose(); history = null;
     detail.innerHTML = '<div class="panel-body">选择终端，查看登记状态和历史。</div>';
   }
   function table(key, result) {
@@ -98,6 +85,7 @@ export async function renderFieldRegistry(context) {
   }
   async function selectDevice(id) {
     const generation = ++selection;
+    root.dispatchEvent(new CustomEvent("registry:selection-start")); history?.dispose(); history = null;
     selected = null;
     detail.textContent = "正在核查终端…";
     const valid = () => current() && generation === selection;
@@ -132,10 +120,12 @@ export async function renderFieldRegistry(context) {
         <div class="registry-actions">${action("registry.devices.manage", "edit-device", "编辑设备")}${action("registry.bindings.manage", "bind-device", "绑定 / 迁井")}
           ${binding ? action("registry.bindings.manage", "unbind-device", "解除绑定") : ""}${action("registry.maps.manage", "create-map", "保存新点表")}
           ${device.status !== "active" ? action("registry.review", "enable-device", "核查后启用") : ""}
-          ${device.status !== "suspended" && mutable && (permissions.has("registry.devices.manage") || permissions.has("registry.review")) ? button("suspend-device", "停用台账") : ""}
+          ${device.status === "active" && (permissions.has("registry.devices.manage") || permissions.has("registry.review")) ? button("suspend-device", "停用台账") : ""}
           ${action("registry.review", "retire-device", "退役台账")}</div><p class="registry-boundary">启用、停用和退役只改变平台登记状态，不代表现场电机运行或停止。</p>
         <div data-registry-history></div></div>`;
       root.dispatchEvent(new CustomEvent("registry:selection", {detail: {...selected, generation}}));
+      history = mountRegistryHistory({root: detail.querySelector("[data-registry-history]"), api, permissions, device,
+        params: {}, isCurrent: valid});
     } catch (error) {
       if (valid()) detail.innerHTML = `<div class="panel-body"><p class="inline-error" role="alert">${esc(registryError(error))}</p>${button("refresh-device", "重新读取", `data-device-id="${esc(id)}"`)}</div>`;
     }
@@ -175,6 +165,9 @@ export async function renderFieldRegistry(context) {
     await Promise.all(tasks);
     if (current() && deviceId) await selectDevice(deviceId);
   };
+  forms = mountRegistryForms({root, api, client, components, permissions, onChanged: controller.onChanged, isCurrent: current});
+  if (permissions.has("telemetry.read")) provenance = mountRegistryHistory({root: root.querySelector("[data-registry-provenance]"),
+    api, permissions, device: null, params: context.params || {}, isCurrent: current});
   await Promise.all([loadList("wells"), loadList("devices")]);
   return current();
 }

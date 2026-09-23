@@ -19,6 +19,7 @@ class RegistryBrowserTests(unittest.TestCase):
             "STYLE_MODULE": "styles.css",
             "REGISTRY_MODULE": "frontend/pages/field-registry.js",
             "CLIENT_MODULE": "frontend/registry/client.js",
+            "CENTRAL_MODULE": "frontend/pages/central-telemetry.js",
             "COMPONENT_MODULE": "frontend/components.js",
             "FORMAT_MODULE": "frontend/format.js",
         }.items():
@@ -44,3 +45,9 @@ class RegistryBrowserTests(unittest.TestCase):
 
     def test_list_permissions_selection_and_safe_retry_at_laptop_width(self):
         self.run_fixture("registry_list_check.html", 1024)
+
+    def test_real_forms_history_and_provenance_at_desktop_width(self):
+        self.run_fixture("registry_forms_check.html")
+
+    def test_real_forms_history_and_provenance_at_laptop_width(self):
+        self.run_fixture("registry_forms_check.html", 1024)

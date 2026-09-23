@@ -61,7 +61,7 @@ function renderMessageDetail(components, format, message) {
   </div>`;
 }
 
-export async function renderAcquisitionStream({ api, components, format, workspace, page, pageHeader, params, isCurrent, permissions }) {
+export async function renderAcquisitionStream({ api, components, format, workspace, page, pageHeader, params, isCurrent, permissions, navigate }) {
   const state = {
     cursor: 0,
     paused: false,
@@ -94,7 +94,7 @@ export async function renderAcquisitionStream({ api, components, format, workspa
     workspace.querySelector("#streamCount").textContent = `缓存 ${state.items.length} 条 · 当前显示 ${visible.length} 条`;
   };
   draw();
-  void mountCentralOperations({ api, components, format, root: workspace.querySelector("#centralOperations"), isCurrent, permissions });
+  void mountCentralOperations({ api, components, format, root: workspace.querySelector("#centralOperations"), isCurrent, permissions, navigate });
 
   workspace.querySelector("#streamToggle").addEventListener("click", (event) => {
     state.paused = !state.paused;

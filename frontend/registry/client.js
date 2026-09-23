@@ -1,3 +1,22 @@
+import {escapeHtml as esc} from "../components.js";
+
+export function registryTime(value) {
+  if (!value) return "至今";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value);
+  const parts = new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}).format(date);
+  const micros = String(value).match(/\.(\d{1,6})/)?.[1]?.padEnd(6, "0") || "000000";
+  return `${parts}.${micros} +08:00`;
+}
+
+export function registryPagination(resource, result, attribute = "data-registry-page") {
+  const page = result.page || 1, pages = Math.max(1, Math.ceil(result.total / result.page_size));
+  return `<nav class="pagination" aria-label="台账分页"><span>共 ${esc(result.total)} 条 · 第 ${page} / ${pages} 页</span>
+    <button type="button" ${attribute}="${resource}" data-page-number="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+    <button type="button" ${attribute}="${resource}" data-page-number="${page + 1}" ${page >= pages ? "disabled" : ""}>下一页</button></nav>`;
+}
+
 function freeze(value) {
   if (value && typeof value === "object") {
     Object.values(value).forEach(freeze);
