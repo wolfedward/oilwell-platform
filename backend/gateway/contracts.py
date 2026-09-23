@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 import json
 import math
@@ -10,6 +11,9 @@ import uuid
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_WIRE_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)\Z")
+MAX_WIRE_BYTES = 1_048_576
+MAX_SEQUENCE = 9_223_372_036_854_775_807
 _TYPE_WIDTHS = {
     "uint16": 1,
     "int16": 1,
@@ -44,6 +48,63 @@ def _utc_time(value: datetime, label: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _wire_utc(value, label):
+    if not isinstance(value, str) or not _WIRE_UTC.fullmatch(value):
+        raise ContractValidationError(f"{label} must be RFC3339 UTC with seconds")
+    try:
+        return _utc_time(datetime.fromisoformat(value.replace("Z", "+00:00")), label)
+    except ValueError as error:
+        raise ContractValidationError(f"{label} is not a valid UTC timestamp") from error
+
+
+def _sequence(value):
+    if type(value) is not int or not 0 <= value <= MAX_SEQUENCE:
+        raise ContractValidationError("sequence must be an integer between 0 and 9223372036854775807")
+
+
+def _unit(value):
+    if value is None:
+        return
+    if not isinstance(value, str) or not 1 <= len(value) <= 32:
+        raise ContractValidationError("unit must be null or 1 to 32 Unicode characters")
+    if any(char == "\x00" or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ContractValidationError("unit cannot contain NUL or unpaired Unicode surrogates")
+
+
+def _finite_value(value):
+    try:
+        finite = type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if not finite:
+        raise ContractValidationError("value must be a finite binary64 number")
+    return float(value)
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ContractValidationError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _wire_float(token):
+    # jsonb stores the original number, not the rounded Python float. Check
+    # decimal scale first so an unrepresentable token cannot masquerade as 0.
+    try:
+        exact = Decimal(token)
+    except InvalidOperation as error:
+        raise ContractValidationError("invalid decimal token") from error
+    if exact.as_tuple().exponent < -16383 or exact.adjusted() > 131071:
+        raise ContractValidationError("numeric token exceeds jsonb range")
+    value = _finite_value(float(exact))
+    if value == 0 and exact != 0:
+        raise ContractValidationError("numeric token underflows binary64")
+    return value
+
+
 @dataclass(frozen=True)
 class PointDefinition:
     """One read-only engineering point backed by Modbus input/holding registers."""
@@ -66,6 +127,7 @@ class PointDefinition:
     def __post_init__(self):
         _safe_name(self.point_code, "point_code")
         _safe_name(self.poll_group, "poll_group")
+        _unit(self.unit)
         if not isinstance(self.unit_id, int) or isinstance(self.unit_id, bool) or not 1 <= self.unit_id <= 247:
             raise ContractValidationError("unit_id must be between 1 and 247 for a read request")
         if self.function_code not in (3, 4):
@@ -117,11 +179,9 @@ class TelemetrySample:
         _safe_name(self.point_code, "point_code")
         _safe_name(self.source, "source")
         object.__setattr__(self, "measured_at", _utc_time(self.measured_at, "measured_at"))
-        if not isinstance(self.sequence, int) or isinstance(self.sequence, bool) or self.sequence < 0:
-            raise ContractValidationError("sequence must be a non-negative integer")
-        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)) or not math.isfinite(self.value):
-            raise ContractValidationError("value must be finite")
-        object.__setattr__(self, "value", float(self.value))
+        _sequence(self.sequence)
+        _unit(self.unit)
+        object.__setattr__(self, "value", _finite_value(self.value))
         try:
             object.__setattr__(self, "quality", Quality(self.quality))
         except ValueError as error:
@@ -193,13 +253,21 @@ class UplinkBatch:
         if not isinstance(payload, (str, bytes, bytearray, memoryview)):
             raise ContractValidationError("uplink payload must be JSON text or bytes")
         try:
+            size = payload.nbytes if isinstance(payload, memoryview) else len(payload)
+            if size > MAX_WIRE_BYTES:
+                raise ContractValidationError("uplink payload exceeds 1048576 bytes")
             text = bytes(payload).decode("utf-8") if not isinstance(payload, str) else payload
+            if len(text.encode("utf-8")) > MAX_WIRE_BYTES:
+                raise ContractValidationError("uplink payload exceeds 1048576 bytes")
 
             def reject_constant(value):
                 raise ValueError(f"non-finite JSON number: {value}")
 
-            body = json.loads(text, parse_constant=reject_constant)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            body = json.loads(text, parse_constant=reject_constant,
+                              object_pairs_hook=_unique_object, parse_float=_wire_float)
+        except ContractValidationError:
+            raise
+        except (ValueError, RecursionError) as error:
             raise ContractValidationError("uplink payload is not strict UTF-8 JSON") from error
         expected = {
             "schema", "message_id", "gateway_id", "device_id", "boot_id",
@@ -212,6 +280,8 @@ class UplinkBatch:
         summary = body["sequence"]
         if not isinstance(summary, dict) or set(summary) != {"first", "last"}:
             raise ContractValidationError("sequence summary is invalid")
+        for value in summary.values():
+            _sequence(value)
         rows = body["samples"]
         if not isinstance(rows, list) or not 1 <= len(rows) <= 5000:
             raise ContractValidationError("samples must contain between 1 and 5000 rows")
@@ -221,7 +291,7 @@ class UplinkBatch:
             for row in rows:
                 if not isinstance(row, dict) or set(row) != sample_fields:
                     raise ContractValidationError("sample fields do not match schema v1")
-                measured_at = datetime.fromisoformat(row["measured_at"].replace("Z", "+00:00"))
+                measured_at = _wire_utc(row["measured_at"], "measured_at")
                 samples.append(TelemetrySample(
                     gateway_id=body["gateway_id"],
                     device_id=body["device_id"],
@@ -233,7 +303,7 @@ class UplinkBatch:
                     unit=row["unit"],
                     source=row["source"],
                 ))
-            created_at = datetime.fromisoformat(body["created_at"].replace("Z", "+00:00"))
+            created_at = _wire_utc(body["created_at"], "created_at")
         except (AttributeError, TypeError, ValueError) as error:
             if isinstance(error, ContractValidationError):
                 raise
