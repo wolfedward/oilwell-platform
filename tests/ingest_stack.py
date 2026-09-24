@@ -187,7 +187,14 @@ class Stack:
                    OILWELL_WP03_TEST_MQTT=self.broker.password,
                    PLATFORM_DATABASE_PATH=str(self.platform_db), PLATFORM_LOG_PATH=str(self.root / 'platform-logs'),
                    OILWELL_TEST_UNUSED_MQTT='not-connected-test-value')
-        process = subprocess.Popen([sys.executable, '-u', '-m', 'tests.ingest_worker', name,
+        executable = sys.executable
+        base_executable = getattr(sys, '_base_executable', executable)
+        if os.name == 'nt' and os.path.normcase(executable) != os.path.normcase(base_executable):
+            # Match CPython multiprocessing: own the interpreter, not the venv
+            # redirector whose exit can precede its worker's handle release.
+            env['__PYVENV_LAUNCHER__'] = executable
+            executable = base_executable
+        process = subprocess.Popen([executable, '-u', '-m', 'tests.ingest_worker', name,
                                     '--config', str(path), '--fault', fault], cwd=ROOT, env=env,
                                    stdin=subprocess.PIPE, stdout=output, stderr=output,
                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

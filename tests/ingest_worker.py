@@ -121,6 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', required=True)
     parser.add_argument('--fault', default='')
     args = parser.parse_args()
+    event('worker_identity', pid=os.getpid(), prefix=sys.prefix, executable=sys.executable)
     if args.mode in ('center', 'publisher'):
         result = globals()[args.mode](args.config, args.fault)
     else:

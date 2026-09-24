@@ -1,4 +1,7 @@
 """Every fault must leave evidence of refusal/preservation and actual recovery."""
+import os
+import sys
+
 from tests.ingest_support import IngestDatabaseCase
 from tests.ingest_stack import Stack
 
@@ -6,6 +9,25 @@ from tests.ingest_stack import Stack
 class IngestFailureRecoveryTests(IngestDatabaseCase):
     def stack(self, **kwargs):
         return Stack(self, **kwargs)
+
+    def test_owned_handles_target_workers_and_release_files_before_return(self):
+        # Waiting on a Windows venv redirector does not wait on its worker.
+        # Catch the wrong process boundary before it can invalidate crash evidence.
+        with self.stack(http=True) as stack:
+            stack.start()
+            for name, process in stack.processes.items():
+                with self.subTest(worker=name):
+                    identity = stack.await_process_event(name, 'worker_identity')
+                    self.assertEqual(identity['pid'], process.pid)
+                    self.assertEqual(os.path.normcase(identity['prefix']), os.path.normcase(sys.prefix))
+            for name in reversed(list(stack.processes)):
+                stack.stop_process(name, kill=True)
+            for handle in stack.handles:
+                handle.close()
+            for path in stack.logs.values():
+                moved = path.with_suffix('.released')
+                path.rename(moved)
+                moved.rename(path)
 
     def test_commit_then_lost_receipt_recovers_once_after_gateway_restart(self):
         with self.stack() as stack:
