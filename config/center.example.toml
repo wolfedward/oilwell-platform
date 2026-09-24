@@ -114,6 +114,16 @@ enabled = false
 # Independent MQTT identity: never reuse the receiver username or client_id.
 # Broker ACL must grant only receipt publishing, not telemetry publishing.
 # Remote broker requires ca_cert and normal hostname verification.
+# Run separately from the ingestor:
+# python -m backend.ingest_reliability --config <path> --check
+# --check validates schema, publisher-role permissions and capacity; no MQTT I/O.
+# python -m backend.ingest_reliability --config <path> --once
+# Without either flag, runs continuously with bounded retries; Ctrl+C stops it.
+# No runtime migration or automatic grants. --once exits nonzero on failure.
+# published means Broker PUBACK, NOT gateway confirmation. 0x10 is retryable.
+# lease_seconds must exceed publish_timeout_seconds + 3 seconds for DB writes.
+# Heartbeat proves only sender health; never device connectivity. Clock rollback
+# warnings survive successful heartbeats for the affected worker instance.
 # [mqtt_receipt_publisher]
 # host = "127.0.0.1"
 # port = 1883

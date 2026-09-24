@@ -53,6 +53,38 @@ class OutboxRepository:
         if value >= MAX_COUNTER:
             raise ReliabilityError('ingest.generation_exhausted', '回执投递版本已达上限，未改变发送状态')
 
+    def heartbeat(self, *, success=None, error_code=None, now=None):
+        if success is not None and type(success) is not bool:
+            raise ReliabilityError('ingest.outbox_input', '发送器心跳状态无效')
+        if error_code is not None and (success is not False or not isinstance(error_code, str)
+                                       or not re.fullmatch(r'[a-z][a-z0-9_.]{0,95}', error_code)):
+            raise ReliabilityError('ingest.outbox_input', '发送器错误只能使用有限安全代码')
+        now = _instant(now)
+        try:
+            with self.connect() as connection:
+                with connection.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout='1s'")
+                    cur.execute("SET LOCAL statement_timeout='3s'")
+                    cur.execute("SET LOCAL idle_in_transaction_session_timeout='10s'")
+                    cur.execute("SET LOCAL search_path=pg_catalog,public,pg_temp")
+                    cur.execute("SET LOCAL timezone='UTC'")
+                    if now is None:
+                        cur.execute('SELECT clock_timestamp()')
+                        now = _instant(cur.fetchone()[0])
+                    cur.execute('INSERT INTO ingest_reliability.worker_health '
+                                '(worker_id,last_seen,last_success,last_failure,error_code) VALUES (%s,%s,%s,%s,%s) '
+                                'ON CONFLICT(worker_id) DO UPDATE SET last_seen=EXCLUDED.last_seen,'
+                                'last_success=coalesce(EXCLUDED.last_success,worker_health.last_success),'
+                                'last_failure=coalesce(EXCLUDED.last_failure,worker_health.last_failure),'
+                                'error_code=CASE WHEN %s::boolean IS FALSE THEN EXCLUDED.error_code '
+                                "WHEN %s::boolean IS TRUE AND worker_health.error_code IS DISTINCT FROM 'ingest.clock_rollback' "
+                                'THEN NULL ELSE worker_health.error_code END',
+                                (self.worker_id, now, now if success is True else None,
+                                 now if success is False else None,
+                                 (error_code or 'ingest.publish_failed') if success is False else None, success, success))
+        except psycopg.Error:
+            raise ReliabilityError('ingest.storage_unavailable', '发送器心跳未确认保存，不应报告链路健康') from None
+
     def _clock(self, cur, now):
         cur.execute("SET LOCAL lock_timeout='1s'")
         cur.execute("SET LOCAL statement_timeout='3s'")
