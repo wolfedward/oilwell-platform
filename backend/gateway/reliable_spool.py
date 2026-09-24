@@ -348,3 +348,34 @@ class ReliableSpool:
                 return result
             except sqlite3.Error:
                 raise _error('ingest.spool_read_unavailable') from None
+
+    def status(self):
+        """Local metadata only; no raw bytes and no claim about remote health."""
+        with self._lock:
+            connection = self._open()
+            instant = _instant(self.clock())
+            try:
+                connection.execute('BEGIN')
+                counts = self.counts()
+                capacity = dict(connection.execute('SELECT * FROM spool_capacity WHERE singleton=1').fetchone())
+                pending, oldest, retries = connection.execute(
+                    "SELECT count(*),min(created_at),coalesce(sum(CASE WHEN attempts>=12 THEN 1 ELSE 0 END),0) "
+                    "FROM uplink_queue_v2 WHERE confirmation_mode='application' AND state IN ('pending','inflight','awaiting_receipt')"
+                ).fetchone()
+                security_keys = connection.execute('SELECT count(*) FROM spool_security_events').fetchone()[0]
+                connection.commit()
+                free = shutil.disk_usage(self.path.parent).free
+            except (sqlite3.Error, OSError):
+                self._rollback(connection)
+                raise _error('ingest.spool_read_unavailable') from None
+            rollback = capacity['last_clock_seen'] is not None and instant < capacity['last_clock_seen']
+            return {
+                'counts': counts, 'pending_application': pending,
+                'oldest_application_wait_seconds': None if oldest is None or rollback else max(0, instant - oldest),
+                'retry_alarm_count': retries, 'clock_rollback_detected': rollback,
+                'last_clock_warning': capacity['last_clock_warning'],
+                'security_event_keys': security_keys, 'security_overflow_count': capacity['security_overflow_count'],
+                'capacity': {key: capacity[key] for key in ('max_messages', 'max_payload_bytes', 'min_free_bytes',
+                                                           'used_messages', 'used_payload_bytes')} |
+                            {'free_disk_bytes': free, 'disk_reserve_ok': free >= capacity['min_free_bytes']},
+            }
