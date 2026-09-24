@@ -24,6 +24,7 @@ class CenterConfig:
     mqtt: MqttConfig
     mqtt_session_expiry_seconds: int
     postgres: dict = field(repr=False)
+    reliability: object | None = field(default=None, repr=False)
 
 
 def _loopback(host: str) -> bool:
@@ -67,12 +68,19 @@ def load_center_config(path, *, env=None, credential_reader=None) -> CenterConfi
             raw = tomllib.load(handle)
         center = raw["center"]
         mqtt_raw = raw["mqtt"]
-        postgres_raw = raw["postgres"]
+        postgres_raw = raw.get("postgres")
     except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError) as error:
         raise CenterConfigurationError(f"cannot load center configuration: {error}") from error
     topic_prefix = center.get("topic_prefix", "oilfield")
     if not isinstance(topic_prefix, str) or not _SAFE_NAME.fullmatch(topic_prefix):
         raise CenterConfigurationError("center.topic_prefix is invalid")
+    reliability = None
+    if "reliability" in raw:
+        # Only enabled new mode resolves its own role. An unused legacy secret
+        # must not become a hidden startup dependency of the reliable receiver.
+        from backend.ingest_reliability.config import load_reliability_config
+        reliability = load_reliability_config(config_path, component="ingestor", env=environment,
+                                               credential_reader=credential_reader)
     try:
         session_expiry = mqtt_raw.get("session_expiry_seconds", 604800)
         if not isinstance(session_expiry, int) or isinstance(session_expiry, bool) or not 3600 <= session_expiry <= 2_592_000:
@@ -94,7 +102,8 @@ def load_center_config(path, *, env=None, credential_reader=None) -> CenterConfi
             connect_timeout_seconds=mqtt_raw.get("connect_timeout_seconds", 10),
             publish_timeout_seconds=mqtt_raw.get("publish_timeout_seconds", 10),
         )
-        postgres = _postgres_settings(postgres_raw, config_path, environment, credential_reader)
+        postgres = (reliability.postgres_ingest if reliability is not None else
+                    _postgres_settings(postgres_raw, config_path, environment, credential_reader))
     except (KeyError, TypeError, ValueError, MqttConfigurationError) as error:
         if isinstance(error, CenterConfigurationError):
             raise
@@ -104,6 +113,7 @@ def load_center_config(path, *, env=None, credential_reader=None) -> CenterConfi
         mqtt=mqtt,
         mqtt_session_expiry_seconds=session_expiry,
         postgres=postgres,
+        reliability=reliability,
     )
 
 

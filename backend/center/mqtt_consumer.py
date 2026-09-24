@@ -68,15 +68,19 @@ def create_paho_client(config, consumer: MqttConsumer, *, on_error=None):
     return client
 
 
-def connect_persistent_session(client, config, session_expiry_seconds: int):
+def connect_persistent_session(client, config, session_expiry_seconds: int, *, receive_maximum=None):
     """Resume the durable subscription so the broker queues offline QoS 1 data."""
 
+    if receive_maximum is not None and (type(receive_maximum) is not int or not 1 <= receive_maximum <= 1024):
+        raise MqttConsumerError("receive_maximum must be an integer between 1 and 1024")
     try:
         import paho.mqtt.client as mqtt
     except ImportError as error:
         raise MqttConsumerError("paho-mqtt is required") from error
     properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
     properties.SessionExpiryInterval = session_expiry_seconds
+    if receive_maximum is not None:
+        properties.ReceiveMaximum = receive_maximum
     return client.connect(
         config.host,
         config.port,
@@ -86,7 +90,7 @@ def connect_persistent_session(client, config, session_expiry_seconds: int):
     )
 
 
-def run_persistent_session(client, config, session_expiry_seconds: int, *, on_retry=None):
+def run_persistent_session(client, config, session_expiry_seconds: int, *, on_retry=None, receive_maximum=None):
     """Supervise initial connects AND application-triggered disconnects.
 
     Paho handles unplanned transport loss inside loop_forever, but deliberately
@@ -100,7 +104,8 @@ def run_persistent_session(client, config, session_expiry_seconds: int, *, on_re
             started = time.monotonic()
             error_type = None
             try:
-                result = connect_persistent_session(client, config, session_expiry_seconds)
+                options = {} if receive_maximum is None else {"receive_maximum": receive_maximum}
+                result = connect_persistent_session(client, config, session_expiry_seconds, **options)
                 if result not in (0, None):
                     error_type = "ConnectRejected"
                 else:

@@ -62,3 +62,64 @@ enabled = false
 # Remote writer AND reader require sslmode="verify-full" and sslrootcert.
 # sslrootcert = "certs/postgresql-ca.crt"
 # Registry startup never falls back to [postgres] and never grants/repairs permissions.
+
+# Durable reception is independent of the device registry. Leave disabled
+# until explicit schema migration, least-privilege grants and --check succeed.
+# Never enable by granting administrator rights to the old [postgres] account.
+[reliability]
+enabled = false
+# Logical raw-byte budgets are examples, NOT physical disk capacity guarantees.
+# total_bytes = 1073741824
+# quarantine_bytes = 268435456
+# receipt_gateways = [] # Explicit allowlist; empty means no application receipts.
+# receive_maximum = 20 # Bounded concurrent inbound QoS 1/2 MQTT messages.
+# publish_batch_size = 20
+# lease_seconds = 30
+# retry_max_seconds = 300
+# health_stale_seconds = 120
+# allowed_origins = ["http://127.0.0.1:8765", "http://localhost:8765"]
+
+# Every declared reliability PG section and [postgres] must use the exact same
+# host/port/database, with distinct users. Each process resolves only its roles.
+# A remote connection requires sslmode="verify-full" and sslrootcert.
+# [postgres_reliable_ingest]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_reliable_ingestor"
+# password_credential = "OilWell.PostgreSQL.ReliableIngestor"
+# sslmode = "prefer"
+# [postgres_receipt_publisher]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_receipt_publisher"
+# password_credential = "OilWell.PostgreSQL.ReceiptPublisher"
+# sslmode = "prefer"
+# [postgres_ingest_reader]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_ingest_reader"
+# password_credential = "OilWell.PostgreSQL.IngestReader"
+# sslmode = "prefer"
+# [postgres_ingest_operator]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_ingest_operator"
+# password_credential = "OilWell.PostgreSQL.IngestOperator"
+# sslmode = "prefer"
+
+# Independent MQTT identity: never reuse the receiver username or client_id.
+# Broker ACL must grant only receipt publishing, not telemetry publishing.
+# Remote broker requires ca_cert and normal hostname verification.
+# [mqtt_receipt_publisher]
+# host = "127.0.0.1"
+# port = 1883
+# client_id = "platform-receipts"
+# username = "platform-receipts"
+# password_credential = "OilWell.MQTT.Receipts"
+# keepalive_seconds = 30
+# connect_timeout_seconds = 10
+# publish_timeout_seconds = 10

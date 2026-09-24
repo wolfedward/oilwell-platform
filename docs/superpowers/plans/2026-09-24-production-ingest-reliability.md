@@ -299,6 +299,8 @@ return result
 
 **Files:** Create `backend/ingest_reliability/config.py`, `backend/ingest_reliability/consumer.py`, `tests/test_ingest_consumer.py`, `tests/test_ingest_config.py`; Modify `backend/center/__main__.py`, `config/center.example.toml`。
 
+实施裁定：同时修改 `backend/center/config.py`，在旧配置对象中增加可选且 repr 隐藏的 reliability 字段，新模式不先读取已不用的旧入库凭据。`backend/center/mqtt_consumer.py` 增加可选 `receive_maximum` 参数，仅新模式写入 CONNECT ReceiveMaximum（默认 20、范围 1—1024）；旧模式不发送此新增属性。该窗口限制 QoS 1/2 在途数量，不控制 QoS 0，不将其描述为 QoS 0 的可靠交付能力。新模式还拒绝布尔型端口/超时和无上界超时。依据 MQTT 5.0 §3.1.2.11.3，其他连接行为不变。
+
 **Interfaces:** `ReliabilityConfig` 包含 enabled、receipt_gateways、limits、postgres_ingest/publisher/reader/operator、mqtt_publisher、allowed_origins、重试/健康阈值；秘密字段 repr=False，各组件不使用的连接字段允许 None。`load_reliability_config(path, *, component: str, env=None, credential_reader=None) -> ReliabilityConfig | None`；component 仅 ingestor/publisher/management，分别只要求自身连接和参数。没有 reliability 段或 enabled=false 返回 None，不能以异常返回 None。`ReliableConsumer(repository, *, clock=None).handle_message(client, message) -> CommittedResult`，兼容既有 `create_paho_client` 的 consumer 接口。
 
 - [ ] **1. 写 ACK 顺序和系统故障反例。**
