@@ -10,7 +10,7 @@ TABLES = {
     "schema_migrations", "facts", "fact_observations", "cases", "receipts", "deliveries",
     "audit_events", "operation_receipts", "worker_health", "capacity",
 }
-VIEWS = {"case_metadata", "receipt_metadata", "health_metadata", "audit_metadata"}
+VIEWS = {"case_metadata", "receipt_metadata", "health_metadata", "audit_metadata", "worker_health_metadata"}
 SELECT = {
     "ingestor": {"schema_migrations", "facts", "fact_observations", "cases", "receipts", "deliveries", "capacity"},
     "publisher": {"schema_migrations", "receipts", "deliveries", "worker_health", "capacity"},
@@ -128,6 +128,8 @@ def _permissions(conn, role):
     for oid, name, arguments, owner, schema_owner, unsafe_acl in functions:
         required_execute = (role == "ingestor" and name == "reopen_repeated_case"
                             and arguments == "p_fact uuid, p_instant timestamp with time zone")
+        required_execute |= (role == 'operator' and name == 'audited_raw'
+                             and arguments == 'p_fact uuid, p_actor jsonb, p_preview boolean')
         if owner in reachable or owner != schema_owner or unsafe_acl:
             _fail()
         for identity in reachable:

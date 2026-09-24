@@ -1,7 +1,9 @@
 GRANT USAGE ON SCHEMA ingest_reliability,public TO {ingestor},{publisher},{reader},{operator};
 GRANT SELECT ON ingest_reliability.schema_migrations TO {ingestor},{publisher},{reader},{operator};
 GRANT SELECT ON ingest_reliability.case_metadata,ingest_reliability.receipt_metadata,
-    ingest_reliability.health_metadata,ingest_reliability.audit_metadata TO {reader},{operator};
+    ingest_reliability.health_metadata,ingest_reliability.audit_metadata,
+    ingest_reliability.worker_health_metadata TO {reader},{operator};
+GRANT EXECUTE ON FUNCTION ingest_reliability.audited_raw(UUID,JSONB,BOOLEAN) TO {operator};
 
 GRANT SELECT,INSERT ON public.ingest_messages,public.telemetry_samples TO {ingestor};
 GRANT SELECT,INSERT ON ingest_reliability.facts,ingest_reliability.fact_observations,

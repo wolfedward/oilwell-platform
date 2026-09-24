@@ -12,7 +12,7 @@ from .errors import ReliabilityError
 
 
 SQL_DIR = Path(__file__).with_name("sql")
-MIGRATIONS = ("001_reliability.sql", "002_repeat_reopen.sql")
+MIGRATIONS = ("001_reliability.sql", "002_repeat_reopen.sql", "003_management_access.sql")
 VERSION = len(MIGRATIONS)
 MIGRATION_LOCK = 499001211
 ROLES = {"ingestor", "publisher", "reader", "operator"}

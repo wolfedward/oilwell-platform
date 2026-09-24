@@ -288,7 +288,8 @@ class LiveStartupTests(IngestDatabaseCase):
         self.assertEqual(self.scalar("SELECT total_bytes FROM ingest_reliability.capacity", role="migrator"), LIMITS.total_bytes)
 
     def test_runtime_migrate_flag_is_rejected_before_any_ddl(self):
+        history = self.guard.execute('SELECT * FROM ingest_reliability.schema_migrations ORDER BY version').fetchall()
         result = self.run_check("--migrate")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ingest.explicit_migration_required", result.stdout)
-        self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability.schema_migrations", role="migrator"), 2)
+        self.assertEqual(self.guard.execute('SELECT * FROM ingest_reliability.schema_migrations ORDER BY version').fetchall(), history)
