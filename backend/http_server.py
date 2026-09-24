@@ -3,8 +3,10 @@
 import json
 import mimetypes
 import secrets
+import socket
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -506,6 +508,29 @@ class PlatformHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = False
     daemon_threads = True
+
+    def shutdown_request(self, request):
+        # An early rejection can leave request bytes still in flight. Immediate
+        # full close resets TCP on Windows and can discard the JSON response.
+        # RFC 9112 section 9.6: half-close, bounded drain, then full close.
+        try:
+            request.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + .5
+            remaining = MAX_JSON_BYTES
+            while remaining > 0:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    break
+                request.settimeout(budget)
+                chunk = request.recv(min(8192, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            self.close_request(request)
+
     def serve_forever(self, *args, **kwargs):
         self.acquisition_worker.start()
         try:

@@ -56,6 +56,9 @@ class IngestDatabaseCase(unittest.TestCase):
             self.assertEqual(self.guard.execute("SELECT count(*) FROM ingest_reliability.facts").fetchone()[0], 0)
         with self.connect("migrator") as conn:
             self.migrations.grant_roles(conn, roles={role: self.settings[role]["user"] for role in ROLES[1:]})
+        # Keep ACL/catalog updates out of the TRUNCATE transaction (ANALYZE
+        # takes its table/catalog locks in the opposite order).
+        with self.connect("migrator") as conn:
             self.assertEqual(conn.execute("SELECT current_database()").fetchone()[0], TEST_DATABASE)
             conn.execute(RESET_SQL)
             conn.execute("UPDATE ingest_reliability.capacity SET used_total_bytes=0, used_quarantine_bytes=0, "

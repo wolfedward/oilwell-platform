@@ -58,6 +58,9 @@ class RegistryDatabaseCase(unittest.TestCase):
         with self.connect("migrator") as conn:
             self.migrations.grant_roles(conn, writer=self.settings["writer"]["user"],
                                        reader=self.settings["reader"]["user"])
+        # Commit pg_class ACL updates before taking TRUNCATE's exclusive locks;
+        # ANALYZE may already hold a table lock while waiting for those updates.
+        with self.connect("migrator") as conn:
             # Identity must be checked on the exact connection doing the reset.
             self.assertEqual(conn.execute("SELECT current_database()").fetchone()[0], TEST_DATABASE)
             conn.execute(RESET_SQL)

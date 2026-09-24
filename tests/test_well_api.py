@@ -246,6 +246,14 @@ class WellApiTests(unittest.TestCase):
                 response, payload = self.request("GET", path, token=token)
                 self.assertEqual((response.status, payload["error"]["code"]), (404, "not_found"))
 
+    def test_rejected_route_preserves_response_with_request_body_in_flight(self):
+        # HTTPConnection sends headers and body separately. On Windows an
+        # immediate full close could reset the unread 404 response (10053).
+        for _ in range(30):
+            response, payload = self.request('PATCH', '/api/wells/W-001/extra/status',
+                                             {'reason': 'x' * 32768})
+            self.assertEqual((response.status, payload['error']['code']), (404, 'not_found'))
+
     def test_status_write_is_audited_versioned_permissioned_and_survives_restart(self):
         # Simulate the exact Task 4 manifest projection that included
         # wells.status, then force the one-time Task 5 hash migration.
