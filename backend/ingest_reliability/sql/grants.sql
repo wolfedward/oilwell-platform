@@ -14,6 +14,7 @@ GRANT UPDATE(last_seen,duplicate_count,transport_anomaly_count,counters_saturate
 GRANT UPDATE(requested_generation,requested_at,next_attempt_at,version)
     ON ingest_reliability.deliveries TO {ingestor},{operator};
 GRANT INSERT ON ingest_reliability.audit_events TO {ingestor},{operator};
+GRANT EXECUTE ON FUNCTION ingest_reliability.reopen_repeated_case(UUID,TIMESTAMPTZ) TO {ingestor};
 
 GRANT SELECT ON ingest_reliability.receipts,ingest_reliability.deliveries TO {publisher};
 GRANT UPDATE(sent_generation,lease_token,lease_generation,lease_until,next_attempt_at,

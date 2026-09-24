@@ -38,8 +38,10 @@ class SchemaTests(IngestDatabaseCase):
     def test_migration_rerun_keeps_version_and_does_not_seed_business_data(self):
         result = self.migrations.migrate(self.settings["migrator"], expected_database=TEST_DATABASE, limits=LIMITS)
         self.assertFalse(result["applied"])
-        self.assertEqual(result["version"], "1")
-        self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability.schema_migrations", role="migrator"), 1)
+        self.assertEqual(result["version"], "2")
+        self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability.schema_migrations", role="migrator"), 2)
+        self.assertEqual(self.scalar("SELECT sha256 FROM ingest_reliability.schema_migrations WHERE version=1", role="migrator"),
+                         self.migrations._source(1)[1])
         for table in ("facts", "cases", "receipts", "deliveries"):
             self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability." + table, role="migrator"), 0)
         self.assertEqual(self.scalar("SELECT count(*) FROM public.ingest_messages", role="migrator"), 0)
@@ -48,7 +50,7 @@ class SchemaTests(IngestDatabaseCase):
         with self.assertRaises(ReliabilityError) as caught:
             self.migrations.migrate(self.settings["migrator"], expected_database="oilwell", limits=LIMITS)
         self.assertEqual(caught.exception.code, "ingest.migration_target")
-        self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability.schema_migrations", role="migrator"), 1)
+        self.assertEqual(self.scalar("SELECT count(*) FROM ingest_reliability.schema_migrations", role="migrator"), 2)
 
     def test_reader_cannot_obtain_original_bytes(self):
         with self.assertRaises(psycopg.errors.InsufficientPrivilege):

@@ -252,6 +252,8 @@ CHECK ((status = 'stored' AND accepted_message_id IS NOT NULL AND reason_code = 
 
 **Files:** Create `backend/ingest_reliability/repository.py`, `backend/ingest_reliability/facts.py`, `tests/test_ingest_repository.py`, `tests/test_ingest_concurrency.py`; Modify `backend/center/postgres.py`。
 
+实施裁定：自动重开不授予接收身份通用案件 UPDATE 权限；增加显式 `002_repeat_reopen.sql`、受限 `reopen_repeated_case(uuid,timestamptz)` 与 `tests/test_ingest_reopen_function.py`，并扩展 migrate/privileges/grants 及版本回归测试。001 已应用，不改写历史迁移；002 与固定系统审计一并纳入摘要和越权检查。容量按每份新原文 `max(1, payload_bytes)` 扣除逻辑预算，空原文的证据仍为 0 字节，避免用空报文绕过有限预算；逻辑配额不等于物理磁盘占用。
+
 **Interfaces:** B 节 `ReliableRepository.ingest`、`schedule_receipt`；在旧仓储提取 `insert_batch(cursor, batch, *, topic, payload_sha256, raw_payload, received_at) -> bool`，不自行 commit；旧 `store` 调用它并保持原返回/错误语义。
 
 - [ ] **1. 写幂等、摘要变化及跨网关编号冲突测试。**

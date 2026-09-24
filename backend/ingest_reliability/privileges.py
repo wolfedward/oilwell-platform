@@ -121,11 +121,19 @@ def _permissions(conn, role):
         for column in may_update:
             if not conn.execute("SELECT has_column_privilege(current_user,%s,%s,'UPDATE')", (oid, column)).fetchone()[0]:
                 _fail()
-    for identity in reachable:
-        if conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
-            "WHERE n.nspname='ingest_reliability' AND "
-            "(p.proowner=%s OR has_function_privilege(%s,p.oid,'EXECUTE')))", (identity, identity)).fetchone()[0]:
+    functions = conn.execute(
+        "SELECT p.oid,p.proname,pg_get_function_identity_arguments(p.oid),p.proowner,n.nspowner,"
+        "EXISTS(SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee=0 OR a.is_grantable) "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='ingest_reliability'").fetchall()
+    for oid, name, arguments, owner, schema_owner, unsafe_acl in functions:
+        required_execute = (role == "ingestor" and name == "reopen_repeated_case"
+                            and arguments == "p_fact uuid, p_instant timestamp with time zone")
+        if owner in reachable or owner != schema_owner or unsafe_acl:
+            _fail()
+        for identity in reachable:
+            if conn.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')", (identity, oid)).fetchone()[0] and not required_execute:
+                _fail()
+        if required_execute and not conn.execute("SELECT has_function_privilege(current_user,%s,'EXECUTE')", (oid,)).fetchone()[0]:
             _fail()
     # Constraint triggers are PostgreSQL-generated, so check their enabled
     # state independently from the migration's application-object fingerprint.

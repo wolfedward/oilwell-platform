@@ -12,13 +12,14 @@ from .errors import ReliabilityError
 
 
 SQL_DIR = Path(__file__).with_name("sql")
-VERSION = 1
+MIGRATIONS = ("001_reliability.sql", "002_repeat_reopen.sql")
+VERSION = len(MIGRATIONS)
 MIGRATION_LOCK = 499001211
 ROLES = {"ingestor", "publisher", "reader", "operator"}
 
 
-def _source():
-    source = (SQL_DIR / "001_reliability.sql").read_text(encoding="utf-8")
+def _source(version=1):
+    source = (SQL_DIR / MIGRATIONS[version - 1]).read_text(encoding="utf-8")
     return source, hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
@@ -58,22 +59,27 @@ def structure_digest(connection):
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def check_schema(connection, *, expected_database):
+def _check_history(connection, *, expected_database, require_current):
     _target(connection, expected_database)
     connection.execute("SET LOCAL search_path=pg_catalog,public,pg_temp")
-    _, digest = _source()
     if connection.execute("SELECT to_regclass('ingest_reliability.schema_migrations')").fetchone()[0] is None:
         raise ReliabilityError("ingest.schema_missing", "接收可靠性结构未显式初始化")
     rows = connection.execute("SELECT version,sha256,structure_sha256 FROM ingest_reliability.schema_migrations ORDER BY version").fetchall()
-    if len(rows) != 1 or rows[0][:2] != (VERSION, digest):
+    if not rows or len(rows) > VERSION or (require_current and len(rows) != VERSION):
         raise ReliabilityError("ingest.schema_mismatch", "接收可靠性迁移版本或摘要不匹配")
-    if structure_digest(connection) != rows[0][2]:
+    for version, row in enumerate(rows, 1):
+        if row[:2] != (version, _source(version)[1]):
+            raise ReliabilityError("ingest.schema_mismatch", "接收可靠性迁移版本或摘要不匹配")
+    if structure_digest(connection) != rows[-1][2]:
         raise ReliabilityError("ingest.schema_incomplete", "接收可靠性结构或保护约束发生变化")
-    return {"version": str(VERSION), "sha256": digest, "applied": False}
+    return {"version": str(len(rows)), "sha256": rows[-1][1], "applied": False}
+
+
+def check_schema(connection, *, expected_database):
+    return _check_history(connection, expected_database=expected_database, require_current=True)
 
 
 def migrate(settings: dict, *, expected_database: str, limits: CapacityLimits) -> dict:
-    source, digest = _source()
     try:
         with psycopg.connect(**(settings | {"connect_timeout": 3})) as conn:
             _target(conn, expected_database)
@@ -82,18 +88,23 @@ def migrate(settings: dict, *, expected_database: str, limits: CapacityLimits) -
             conn.execute("SET LOCAL search_path=pg_catalog,public,pg_temp")
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK,))
             if conn.execute("SELECT to_regnamespace('ingest_reliability')").fetchone()[0] is not None:
-                result = check_schema(conn, expected_database=expected_database)
+                result = _check_history(conn, expected_database=expected_database, require_current=False)
+                applied_version = int(result["version"])
                 existing = conn.execute("SELECT total_bytes,quarantine_bytes FROM ingest_reliability.capacity WHERE singleton=1").fetchone()
                 if existing != (limits.total_bytes, limits.quarantine_bytes):
                     raise ReliabilityError("ingest.capacity_mismatch", "已有容量设置不一致，拒绝自动覆盖")
             else:
+                applied_version = 0
+            for version in range(applied_version + 1, VERSION + 1):
+                source, digest = _source(version)
                 conn.execute(source)
-                conn.execute("INSERT INTO ingest_reliability.capacity(singleton,total_bytes,quarantine_bytes) VALUES (1,%s,%s)",
-                             (limits.total_bytes, limits.quarantine_bytes))
+                if version == 1:
+                    conn.execute("INSERT INTO ingest_reliability.capacity(singleton,total_bytes,quarantine_bytes) VALUES (1,%s,%s)",
+                                 (limits.total_bytes, limits.quarantine_bytes))
                 fingerprint = structure_digest(conn)
                 conn.execute("INSERT INTO ingest_reliability.schema_migrations(version,sha256,structure_sha256) VALUES (%s,%s,%s)",
-                             (VERSION, digest, fingerprint))
-                result = {"version": str(VERSION), "sha256": digest, "applied": True}
+                             (version, digest, fingerprint))
+                result = {"version": str(version), "sha256": digest, "applied": True}
         return result
     except psycopg.Error as error:
         raise ReliabilityError("ingest.migration_failed", "接收可靠性迁移失败，请核对独立迁移身份与数据库日志") from error
