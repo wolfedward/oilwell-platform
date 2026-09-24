@@ -1,0 +1,159 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE>
+<style>#result, #app:empty, #root:empty {display:none}</style>
+<div id="app"></div><div id="toastRegion"></div><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+import {renderIngestReliability} from INGEST_MODULE;
+import {components} from COMPONENT_MODULE;
+const checks=[],calls=[],mode='FIXTURE_MODE';
+const check=(value,name)=>{if(!value)throw Error(name);checks.push(name);};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
+const root=document.querySelector('#root'),BASE='/api/ingest-reliability';
+const A='00000000-0000-0000-0000-000000000001',B='00000000-0000-0000-0000-000000000002';
+const F='00000000-0000-0000-0000-000000000003',R='00000000-0000-0000-0000-000000000004';
+const stamp='2026-09-24T08:00:00.123456+00:00';
+const attack='<img src=x onerror="window.ingestInjected=true">异常</pre><svg onload="window.ingestInjected=true"></svg>';
+function item(id){return{id,fact_id:F,state:'open',version:'9007199254740993',updated_at:stamp,topic:attack,
+ payload_sha256:'a'.repeat(64),payload_bytes:'4097',gateway_id:'GW-01',device_id:id===A?'DEVICE-A':'DEVICE-B',message_id:'MSG-1',
+ reason_code:'contract_invalid',validator_version:'telemetry.v1',received_at:stamp,qos:'1',retain:false,dup:false,
+ first_seen:stamp,last_seen:stamp,duplicate_count:'9007199254740993',transport_anomaly_count:'2',counters_saturated:false,receipt_id:R};}
+const receipt={id:R,fact_id:F,topic:'oilwell/v2/GW-01/DEVICE-A/ingest-ack',gateway_id:'GW-01',device_id:'DEVICE-A',message_id:'MSG-1',payload_sha256:'a'.repeat(64),
+ status:'quarantined',reason_code:'contract_invalid',recorded_at:stamp,requested_generation:'4',sent_generation:'4',lease_until:null,next_attempt_at:null,
+ requested_at:stamp,attempts:'4',last_error_code:null,broker_acked_at:stamp,version:'9007199254740993',delivery_state:'broker_confirmed'};
+const health={total_bytes:'16777216',quarantine_bytes:'8388608',used_total_bytes:'4097',used_quarantine_bytes:'4097',last_clock_seen:stamp,
+ open_cases:'9007199254740993',oldest_open_at:stamp,pending_receipts:'2',oldest_pending_at:stamp,publisher_last_seen:stamp,
+ quarantined_cases:'9007199254740993',new_cases_24h:'7',oldest_open_age_seconds:600,oldest_pending_age_seconds:90,healthy:false,
+ reasons:['publisher.failed'],publisher_error_code:'mqtt.connection_failed',publisher_workers:{workers:'1',active:'1',future:'0',failed:'1',unverified:'0'},queried_at:stamp};
+const roles={administrator:['ingest.read','ingest.raw.read','ingest.manage','audit.read'],production_engineer:['ingest.read'],
+ algorithm_engineer:['ingest.read','ingest.raw.read'],maintenance_engineer:['ingest.read','ingest.raw.read','ingest.manage'],reviewer:['ingest.read']};
+let current=true,state='normal',heldA=null,heldList=null,holdList=false,holdDetail=false,heldRaw=null,holdRaw=false,version='9007199254740993';
+function listing(items,total=String(items.length),query=new URLSearchParams()){
+ return{items,total,page:Number(query.get('page')||1),page_size:20,from_time:'2026-09-23T08:00:00.123456+00:00',to_time:stamp,queried_at:stamp};
+}
+const api={get:async path=>{
+ calls.push(path);const url=new URL(path,'http://127.0.0.1');
+ if(state==='unavailable')throw Object.assign(Error('secret diagnostic'),{status:503});
+ if(url.pathname===BASE+'/health')return structuredClone(health);
+ if(url.pathname===BASE+'/cases'){
+   if(holdList){holdList=false;heldList=deferred();return heldList.promise;}
+   return listing(state==='empty'?[]:[item(A),item(B)],state==='empty'?'0':'9007199254740993',url.searchParams);
+ }
+ if(url.pathname===BASE+'/receipts')return listing(state==='empty'?[]:[receipt],state==='empty'?'0':'1',url.searchParams);
+ if(url.pathname===BASE+'/cases/'+A){if(holdDetail){heldA=deferred();return heldA.promise;}return{entity:{...item(A),version}};}
+ if(url.pathname===BASE+'/cases/'+B)return{entity:item(B)};
+ if(url.pathname===BASE+'/receipts/'+R)return{entity:receipt};
+ if(url.pathname===BASE+'/facts/'+F+'/preview'){
+   if(holdRaw){heldRaw=deferred();return heldRaw.promise;}
+   return{fact_id:F,payload_sha256:'a'.repeat(64),payload_bytes:'4097',text:attack,truncated:true,raw_bytes:null};
+ }
+ if(url.pathname===BASE+'/audit')return listing([{id:'00000000-0000-0000-0000-000000000009',fact_id:F,case_id:A,receipt_id:R,
+   actor:{domain:'platform-local',user_id:'1',username:'maint',display_name:attack,role_code:'maintenance_engineer'},
+   action:'case.close',reason:attack,before_data:{state:'open',version:'1'},after_data:{state:'closed',version:'2'},recorded_at:stamp}], '1',url.searchParams);
+ throw Error('Unexpected request '+path);
+},download:async(path,name)=>{calls.push({download:path,name});},post:async(path,body)=>{calls.push({post:path,body:structuredClone(body)});version='9007199254740994';return{entity:{id:A,version,state:'closed'},replayed:false};}};
+try{
+ if(mode.startsWith('shell-')){
+   const capability=mode.replace('shell-','');window.location.hash='#/ingest-reliability';
+   window.fetch=async(path)=>{
+     if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'1',username:'tester',display_name:'测试岗位',role_code:'production_engineer',permissions:capability==='denied'?[]:['ingest.read'],
+       ...(capability==='missing'?{}:{capabilities:{registry:{enabled:false,status:'disabled'},ingest_reliability:{enabled:capability!=='disabled',status:capability}}})}}),{status:200,headers:{'Content-Type':'application/json'}});
+     if(capability==='unavailable')return new Response(JSON.stringify({error:{code:'ingest.unavailable',message:'internal secret'}}),{status:503,headers:{'Content-Type':'application/json'}});
+     const data=await api.get(path);return new Response(JSON.stringify({data}),{status:200,headers:{'Content-Type':'application/json'}});
+   };
+   await import(APP_MODULE);
+   await new Promise((resolve,reject)=>{
+     const timer=setTimeout(()=>{observer.disconnect();reject(Error('shell render timed out'));},2500);
+     function done(){if(document.querySelector('#workspace')?.getAttribute('aria-busy')==='false'){clearTimeout(timer);observer.disconnect();resolve();}}
+     const observer=new MutationObserver(done);observer.observe(document.body,{subtree:true,attributes:true,childList:true});done();
+   });
+   const nav=document.querySelector('#sidebar [data-page="ingest-reliability"]'),workspace=document.querySelector('#workspace');
+   if(['disabled','missing'].includes(capability)){
+     check(!nav,'disabled/missing capability has no sidebar entry');check(workspace.textContent.includes('未配置'),'direct disabled route explains configuration');
+     check(!calls.length,'disabled capability makes no ingest query');
+   }else if(capability==='denied'){
+     check(!nav&&workspace.textContent.includes('权限')&&!calls.length,'missing grant hides entry and prevents API access');
+   }else{
+     check(nav,'enabled capability has navigation');
+     check(workspace.querySelector('.ingest-reliability'),'shell uses actual module');
+     if(capability==='unavailable')check(workspace.textContent.includes('不可用')&&!workspace.textContent.includes('暂无符合'),'fault never looks empty');
+     else{
+       check(workspace.textContent.includes('9007199254740993'),'actual response reaches shell');
+       check(document.querySelector('.ingest-reliability').getBoundingClientRect().right<=innerWidth,'workspace fits real shell at viewport width');
+     }
+   }
+ }else{
+   const context=(permissions=roles.administrator,capability={enabled:true,status:'ready'})=>({workspace:root,api,components,permissions:new Set(permissions),
+     capabilities:{ingest_reliability:capability},page:{label:'接收异常与回执'},pageHeader:()=>'<h1>接收异常与回执</h1>',isCurrent:()=>current});
+   const select=async(id=A,kind='cases')=>{root.querySelector(`[data-ingest-select="${kind}"][data-id="${id}"]`).click();await tick();await tick();};
+   for(const [role,permissions] of Object.entries(roles)){
+     state='normal';await renderIngestReliability(context(permissions));await select();
+     check(Boolean(root.querySelector('[data-ingest-raw="preview"]'))===permissions.includes('ingest.raw.read'),`${role} raw controls follow grant`);
+     check(Boolean(root.querySelector('[data-ingest-action="close"]'))===permissions.includes('ingest.manage'),`${role} manage controls follow grant`);
+     check(Boolean(root.querySelector('[data-ingest-audit]'))===permissions.includes('audit.read'),`${role} audit follows grant`);
+   }
+   await renderIngestReliability(context());await select();
+   check([...root.querySelectorAll('.inline-error')].filter(x=>!x.textContent).every(x=>x.getBoundingClientRect().height===0),'empty validation messages are not rendered as errors');
+   check(root.textContent.includes('9007199254740993'),'counts and versions remain exact past JS safe integer');
+   check(root.textContent.includes('450359962737050'),'pagination uses exact integer division');
+   check(root.textContent.includes('原始事实')&&root.textContent.includes('人工处置'),'fact and manual state have separate headings');
+   check(root.textContent.includes('回执已交 Broker')&&!root.textContent.includes('网关已确认'),'center does not fabricate remote confirmation');
+   check(root.textContent.includes('600')&&root.textContent.includes('90')&&root.textContent.includes('mqtt.connection_failed'),'health exposes wait ages and safe error code');
+   check(root.textContent.includes('2026/09/24')&&root.textContent.includes('+08:00'),'timestamps explicitly use Beijing timezone');
+   root.querySelector('[data-ingest-raw="preview"]').click();await tick();
+   check(root.querySelector('[data-ingest-raw-text]').textContent===attack,'raw HTML appears as exact text');
+   check(root.textContent.includes('4 KiB')&&root.textContent.includes('截断'),'preview advertises byte truncation');
+   check(!root.querySelector('img,svg,script')&&!window.ingestInjected,'untrusted metadata/raw/history cannot execute');
+   root.querySelector('[data-ingest-raw="download"]').click();await tick();
+   check(calls.some(x=>x.download===BASE+'/facts/'+F+'/raw'&&x.name===`ingest-${F}.bin`),'download uses authenticated exact-byte endpoint and safe name');
+   root.querySelector('[data-ingest-audit]').click();await tick();
+   check(root.textContent.includes(attack)&&!root.querySelector('img,svg'),'audit actor/reason are safe text');
+   check(root.scrollWidth<=innerWidth,'long raw and audit values remain within viewport');
+   const historyFilter=root.querySelector('[data-ingest-audit-filter]');
+   check(historyFilter,'historical audits have explicit time selection');
+   historyFilter.querySelector('[name="from_time"]').value='2026-08-01T00:00';historyFilter.querySelector('[name="to_time"]').value='2026-08-31T00:00';
+   historyFilter.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+   const auditQuery=new URL(calls.filter(x=>typeof x==='string'&&x.startsWith(BASE+'/audit?')).at(-1),'http://localhost').searchParams;
+   check(auditQuery.get('fact_id')===F&&auditQuery.get('from_time')==='2026-08-01T00:00:00+08:00','old fact audits can be queried beyond default day');
+   await select(R,'receipts');check(root.querySelector('[data-ingest-action="resend"]'),'actual receipt selection offers resend');
+   check(root.querySelector('[data-ingest-detail]').textContent.includes('回执主题')&&!root.querySelector('[data-ingest-detail]').textContent.includes('原始主题'),'receipt delivery topic is not mislabeled as original telemetry');
+   check(root.textContent.includes('quarantined')&&root.textContent.includes('回执已交 Broker'),'immutable rejection and transport delivery visible together');
+
+   const filter=root.querySelector('[data-ingest-filter="cases"]');
+   filter.querySelector('[name="gateway_id"]').value='GW-02';filter.querySelector('[name="from_time"]').value='2026-09-01T08:00';
+   filter.querySelector('[name="to_time"]').value='2026-09-24T08:00';filter.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+   const query=new URL(calls.filter(x=>typeof x==='string'&&x.startsWith(BASE+'/cases?')).at(-1),'http://localhost').searchParams;
+   check(query.get('gateway_id')==='GW-02'&&query.get('from_time')==='2026-09-01T08:00:00+08:00','filters transmit explicit Beijing timestamps');
+   root.querySelector('[data-ingest-page="cases"][data-direction="next"]').click();await tick();
+   const second=new URL(calls.filter(x=>typeof x==='string'&&x.startsWith(BASE+'/cases?')).at(-1),'http://localhost').searchParams;
+   check(second.get('page')==='2'&&second.get('to_time')===stamp,'pagination pins returned time window');
+
+   await renderIngestReliability(context());holdDetail=true;
+   root.querySelector(`[data-ingest-select="cases"][data-id="${A}"]`).click();await tick();await select(B);heldA.resolve({entity:item(A)});await tick();
+   check(root.querySelector('[data-ingest-detail]').textContent.includes('DEVICE-B')&&!root.querySelector('[data-ingest-detail]').textContent.includes('DEVICE-A'),'late A detail cannot overwrite B');holdDetail=false;
+   holdList=true;root.querySelector('[data-ingest-refresh="cases"]').click();await tick();root.querySelector('[data-ingest-refresh="cases"]').click();await tick();
+   heldList.resolve(listing([],'0'));await tick();check(root.querySelector(`[data-ingest-select="cases"][data-id="${B}"]`),'old list cannot replace newer result');
+   await select(A);holdRaw=true;root.querySelector('[data-ingest-raw="preview"]').click();await tick();await select(B);
+   heldRaw.resolve({text:'LATE RAW SECRET',truncated:false,payload_bytes:'15'});await tick();check(!root.textContent.includes('LATE RAW SECRET'),'old raw response does not reach new selection');holdRaw=false;
+
+   await select(A);holdList=true;root.querySelector('[data-ingest-action="close"]').click();
+   const form=root.querySelector('[data-ingest-action-form]');form.querySelector('[name="reason"]').value='写入成功后刷新';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+   await select(B);heldList.resolve(listing([item(A),item(B)]));await tick();await tick();
+   check(root.querySelector('[data-ingest-detail]').textContent.includes('DEVICE-B'),'old write refresh cannot change new selection');
+
+   state='empty';await renderIngestReliability(context());check(root.textContent.includes('暂无符合'),'genuine empty response has empty notice');
+   state='unavailable';await renderIngestReliability(context());check(root.textContent.includes('不可用')&&!root.textContent.includes('暂无符合')&&!root.textContent.includes('secret diagnostic'),'query failure is safe unavailable, not fake empty');
+   const prior=calls.length;await renderIngestReliability(context(roles.administrator,{enabled:false,status:'disabled'}));check(calls.length===prior&&root.textContent.includes('未配置'),'disabled direct workspace performs no read');
+   await renderIngestReliability(context([]));check(root.textContent.includes('权限')&&calls.length===prior,'no read permission blocks all requests');
+   state='normal';current=true;await renderIngestReliability(context());holdDetail=true;
+   root.querySelector(`[data-ingest-select="cases"][data-id="${A}"]`).click();await tick();current=false;root.innerHTML='<p>新页面</p>';heldA.resolve({entity:item(A)});await tick();
+   check(root.textContent==='新页面','navigation discards late detail');current=true;holdDetail=false;
+   await renderIngestReliability(context());
+   check(root.scrollWidth<=innerWidth,'page fits desktop/laptop width '+JSON.stringify({innerWidth,rootWidth:root.scrollWidth,bodyWidth:document.body.scrollWidth,min:getComputedStyle(document.body).minWidth}));
+   if(mode==='workspace-detail'){
+     await select(A);root.querySelector('[data-ingest-raw="preview"]').click();root.querySelector('[data-ingest-audit]').click();await tick();
+   }
+ }
+ if(mode==='workspace-detail')root.querySelector('[data-ingest-detail]').scrollIntoView();else window.scrollTo(0,0);await tick();
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,checks,calls,body:root.textContent});}
+</script>
