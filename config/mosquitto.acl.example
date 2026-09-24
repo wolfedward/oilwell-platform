@@ -1,7 +1,12 @@
 # Use one explicit section per provisioned gateway identity.
 user gateway-GW-001
 topic write oilfield/v1/GW-001/+/telemetry
+topic read oilfield/v2/GW-001/+/ingest-ack
 
 # Provision the central ingestor as a separate, read-only identity.
 user platform-ingestor
 topic read oilfield/v1/+/+/telemetry
+
+# Separate application receipt publisher; no telemetry writes or receipt reads.
+user platform-receipt-publisher
+topic write oilfield/v2/+/+/ingest-ack

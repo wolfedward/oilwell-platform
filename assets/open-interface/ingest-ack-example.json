@@ -1,0 +1,11 @@
+{
+  "schema": "OWP-INGEST-ACK/1.0",
+  "receipt_id": "00000000-0000-4000-8000-000000000001",
+  "gateway_id": "GW-EXAMPLE",
+  "device_id": "D-EXAMPLE",
+  "message_id": "example-20260923-000001",
+  "payload_sha256": "f1f776362252b5ec092a7f17392cc88a5ba07394dc732fe4f2a6e3a9513c95e1",
+  "status": "stored",
+  "reason_code": "accepted",
+  "recorded_at": "2026-09-23T08:00:01.000000Z"
+}
