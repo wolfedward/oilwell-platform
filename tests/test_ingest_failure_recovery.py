@@ -48,8 +48,13 @@ class IngestFailureRecoveryTests(IngestDatabaseCase):
             stack.enqueue_one()
             stack.await_process_exit('center', 71)
             stack.await_counts(messages=1, samples=1)
+            # Keep the gateway offline so its receipt-timeout retry cannot
+            # impersonate recovery of the broker's unacknowledged delivery.
+            stack.stop_process('gateway')
+            before_redelivery = stack.duplicate_observations()
             stack.restart_center()
-            stack.await_condition(lambda: stack.duplicate_observations() >= 1, 'broker redelivery')
+            stack.await_condition(lambda: stack.duplicate_observations() > before_redelivery, 'broker redelivery with gateway offline')
+            stack.restart_gateway()
             stack.enable_receipt_delivery()
             stack.await_gateway_state('stored')
             self.assertEqual(stack.database_counts(), {'messages': 1, 'samples': 1, 'facts': 1, 'receipts': 1})
