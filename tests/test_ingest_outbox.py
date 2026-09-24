@@ -125,6 +125,17 @@ class OutboxTests(IngestDatabaseCase):
         self.assertFalse(self.outbox().finish(lease, success=True, now=self.now + timedelta(seconds=5)))
         self.assertEqual(self.row()['sent_generation'], 0)
 
+    def test_clock_rollback_cannot_resurrect_an_already_expired_lease(self):
+        outbox = self.outbox()
+        expired = outbox.claim(now=self.now, lease_seconds=5)[0]
+        self.assertFalse(outbox.finish(expired, success=True, now=self.now + timedelta(seconds=10)))
+        rollback = self.now - timedelta(seconds=900)
+        self.assertFalse(outbox.finish(expired, success=True, now=rollback))
+        self.assertFalse(outbox.finish(expired, success=False, now=rollback))
+        current = outbox.claim(now=rollback)[0]
+        self.assertNotEqual(current.token, expired.token)
+        self.assertEqual(self.row()['sent_generation'], 0)
+
     def test_reclaimed_lease_fences_late_success_and_failure(self):
         old = self.claim(lease_seconds=5)[0]
         current = self.outbox().claim(now=self.now + timedelta(seconds=6))[0]

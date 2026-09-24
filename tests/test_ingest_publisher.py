@@ -351,6 +351,10 @@ class PublisherDatabaseTests(IngestDatabaseCase):
                          'mqtt.no_matching_subscribers')
 
     def test_network_publish_does_not_hold_the_delivery_database_lock(self):
+        # This hook opens a real PostgreSQL connection before simulating PUBACK.
+        # NOWAIT is the lock assertion; an 80 ms network-unit-test deadline must
+        # not also constrain unrelated database connection setup/scheduling.
+        self.config = replace(self.config, publish_timeout_seconds=2)
         observed = []
         def inspect(_client):
             with self.connect('publisher') as connection:

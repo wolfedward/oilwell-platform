@@ -102,16 +102,19 @@ class OutboxRepository:
         previous = row[0]
         if previous is not None and now < previous:
             retry_bound, lease_bound = now + timedelta(seconds=self.retry_max_seconds), now + timedelta(seconds=300)
-            cur.execute('SELECT receipt_id,version FROM ingest_reliability.deliveries '
-                        'WHERE requested_generation>sent_generation AND '
-                        '(next_attempt_at>%s OR lease_until>%s) FOR UPDATE', (retry_bound, lease_bound))
+            # Expiry already observed on the old timeline remains expired;
+            # bounding it to now+300 would revive an invalid callback token.
+            changed = ('requested_generation>sent_generation AND (next_attempt_at>%s OR lease_until>%s '
+                       'OR (next_attempt_at>%s AND next_attempt_at<=%s) OR (lease_until>%s AND lease_until<=%s))')
+            bounds = (retry_bound, lease_bound, now, previous, now, previous)
+            cur.execute('SELECT receipt_id,version FROM ingest_reliability.deliveries WHERE ' + changed + ' FOR UPDATE', bounds)
             for _receipt, version in cur.fetchall():
                 self._version(version)
-            cur.execute('UPDATE ingest_reliability.deliveries SET next_attempt_at=least(next_attempt_at,%s),'
-                        'lease_until=CASE WHEN lease_until IS NULL THEN NULL ELSE least(lease_until,%s) END,'
-                        'version=version+1 WHERE requested_generation>sent_generation '
-                        'AND (next_attempt_at>%s OR lease_until>%s)',
-                        (retry_bound, lease_bound, retry_bound, lease_bound))
+            cur.execute('UPDATE ingest_reliability.deliveries SET next_attempt_at=CASE WHEN next_attempt_at<=%s '
+                        'THEN least(next_attempt_at,%s) ELSE least(next_attempt_at,%s) END,'
+                        'lease_until=CASE WHEN lease_until IS NULL THEN NULL WHEN lease_until<=%s '
+                        'THEN least(lease_until,%s) ELSE least(lease_until,%s) END,version=version+1 WHERE ' + changed,
+                        (previous, now, retry_bound, previous, now, lease_bound, *bounds))
             cur.execute('INSERT INTO ingest_reliability.worker_health(worker_id,last_seen,last_failure,error_code) '
                         "VALUES (%s,%s,%s,'ingest.clock_rollback') ON CONFLICT(worker_id) DO UPDATE SET "
                         'last_seen=EXCLUDED.last_seen,last_failure=EXCLUDED.last_failure,error_code=EXCLUDED.error_code',
