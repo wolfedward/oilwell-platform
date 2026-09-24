@@ -6,7 +6,7 @@ import unittest
 
 from backend.auth import AuthService
 from backend.database import Database
-from backend.seed import bootstrap_local_auth
+from backend.seed import AUTH_BOOTSTRAP_VERSION, bootstrap_local_auth
 
 
 EXPECTED = {
@@ -48,7 +48,7 @@ class RegistryPermissionsTests(unittest.TestCase):
         for role,want in EXPECTED.items():
             with self.subTest(role=role):
                 self.assertEqual(self.grants(role),want)
-        self.assertEqual(self.db.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id=1"),8)
+        self.assertEqual(self.db.scalar("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id=1"),AUTH_BOOTSTRAP_VERSION)
 
     def test_v7_upgrade_preserves_passwords_and_existing_unrelated_grants(self):
         self.simulate_v7()

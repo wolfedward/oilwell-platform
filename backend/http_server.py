@@ -22,6 +22,8 @@ from backend.database import Database
 from backend.seed import seed_database
 from backend.registry.api import RegistryApi
 from backend.registry.runtime import build_registry_runtime
+from backend.ingest_reliability.api import IngestReliabilityApi
+from backend.ingest_reliability.runtime import build_reliability_runtime
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -39,6 +41,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if IngestReliabilityApi(self).get(self.path): return
         if RegistryApi(self).get(self.path): return
         if CentralTelemetryApi(self).get(self.path): return
         if ReportApi(self).get(self.path): return
@@ -60,6 +63,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self):
+        if IngestReliabilityApi(self).post(self.path): return
         if RegistryApi(self).post(self.path): return
         path = urlsplit(self.path).path
         if WorkflowApi(self).post(self.path): return
@@ -81,6 +85,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
         if StrategyApi(self).patch(self.path): return
         if DeviceApi(self).patch(self.path): return
@@ -92,6 +97,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
 
     def _unsupported_method(self):
+        if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
         self.send_error(HTTPStatus.NOT_IMPLEMENTED, "Unsupported method")
 
@@ -265,8 +271,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(HTTPStatus.UNAUTHORIZED, self._error("unauthenticated", "Authentication required"))
         status = self.server.registry_runtime.status
         capability = {"enabled": status != "disabled", "status": status}
+        ingest_status = self.server.ingest_runtime.status
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
-            "capabilities": {"registry": capability}}})
+            "capabilities": {"registry": capability,
+                             "ingest_reliability": {"enabled": ingest_status != "disabled", "status": ingest_status}}}})
 
     def _users_get(self, path):
         if self._require("users.read") is None: return
@@ -563,6 +571,7 @@ def create_server(
     central_repository=None,
     center_config_path=None,
     registry_runtime=None,
+    ingest_runtime=None,
 ) -> ThreadingHTTPServer:
     if central_repository is not None and center_config_path is not None:
         raise ValueError("central_repository and center_config_path are mutually exclusive")
@@ -574,6 +583,7 @@ def create_server(
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
     server.central_telemetry = central_repository
     server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
+    server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker
