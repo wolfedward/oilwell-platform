@@ -8,7 +8,7 @@
 
 **Tech Stack:** 项目现有 Python 3.13、PostgreSQL 18 / psycopg 3、SQLite、Paho MQTT 5、Mosquitto、标准库 HTTP、原生 JavaScript/CSS、unittest 与本机 Edge；不增加 Web 框架、CDN 或消息中间件。
 
-**Spec:** [已确认书面设计](../specs/2026-09-24-production-ingest-reliability-design.md)。实施者先完整阅读设计和本计划。用户已确认设计；本计划与执行方式待确认。这里的代码是测试和实现约束，不表示文件已实现、测试已通过或服务已部署。
+**Spec:** [已确认书面设计](../specs/2026-09-24-production-ingest-reliability-design.md)。实施者先完整阅读设计和本计划。用户已确认设计及本计划，采用方式①本会话逐项实现、最后独立整体审查。这里的代码是测试和实现约束，不表示文件已实现、测试已通过或服务已部署。
 
 ## Global Constraints
 
@@ -240,6 +240,8 @@ CHECK ((status = 'stored' AND accepted_message_id IS NOT NULL AND reason_code = 
 ```
 
 固定表名：`schema_migrations/facts/cases/receipts/deliveries/audit_events/operation_receipts/worker_health/capacity`。facts 的 accepted_message_id 外键到 public.ingest_messages；cases、receipts 外键 facts；deliveries 外键 receipts。facts/receipts/audit_events/operation_receipts 禁止 UPDATE/DELETE；cases 只改状态/版本/统计，deliveries 只改租约/发送进度。receipts 必须与 facts 身份/摘要/结果一致，由不可变约束触发器校验。capacity 单行存总/隔离字节上限及已用量，计数更新与写入同事务。视图 `case_metadata/receipt_metadata/health_metadata` 不暴露 BYTEA；所有 PK/FK/计数约束与保护触发器由预检核验。若采用 SECURITY DEFINER 函数，须固定 search_path、禁止 PUBLIC 执行并审计精确可调用权限，不得提供任意 SQL 通道。每条 DDL 单独补 rollback/越权负例。
+
+实施前接口核对补充：新增 `fact_observations`，以 fact_id 唯一外键存有界重复计数、末见时间及传输异常统计。接受记录即使未启用回执，也能统计重复而不修改不可变 facts。任务 3 同事务更新、任务 10 通过元数据视图读取，任务 2 纳入角色及结构检查。该实施裁定不改变线协议或既有消息。
 
 - [ ] **4. 跑 GREEN，核对固定库名和测试证据不带密码。** `& $taskPython -m unittest tests.test_ingest_schema tests.test_ingest_privileges -v`；测试不能因缺库被悄悄 skip 后宣称完成。
 - [ ] **5. 提交迁移、工具及测试，私密 TOML/凭据不提交。** `git commit -m "feat: add isolated ingest reliability schema and least-privilege roles"`。
@@ -761,4 +763,4 @@ git status --short
 
 完成 WP-03 的门槛是：软件功能、真实故障验证、权限验证、页面操作、最终回归和审查证据均完成。不能只做到中心隔离就宣布应用确认完成，不能只用模拟 publisher 证明 Broker 恢复，不能只用临时表替代新库完整 DDL。
 
-**待用户确认：** 请审阅本计划，并选择执行方式：① 本会话逐项实现，最后做一次独立整体验证/审查（本计划推荐，接口串联较多，避免反复交接）；② 每任务由独立实现者和审查者把关，再做最终整体审查（更细、上下文与时间开销更高）。此前 WP-02 的方式选择不自动当作本计划已获批准。确认前不实施产品改动。
+**执行确认：** 用户已确认本计划，按推荐方式①在本会话逐项实现，最后独立整体验证/审查；此次确认不授权生产部署、改动冻结演示版或推送合并。
