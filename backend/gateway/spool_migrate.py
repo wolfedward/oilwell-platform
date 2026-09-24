@@ -23,9 +23,12 @@ def _error(code):
     return ReliabilityError(code, '队列操作未确认完成，原始记录保留；请检查版本、容量、备份与独占状态')
 
 
-def _path(path):
+def _path(path, *, allow_missing_parent=False):
     result = Path(path).resolve()
-    if str(result).startswith('\\\\') or not result.parent.is_dir():
+    parent = result.parent
+    if allow_missing_parent and not parent.exists():
+        parent = next((candidate for candidate in result.parents if candidate.exists()), None)
+    if str(result).startswith('\\\\') or parent is None or not parent.is_dir():
         raise _error('ingest.spool_path_invalid')
     if result.exists() and (not result.is_file() or result.stat().st_nlink != 1):
         raise _error('ingest.spool_path_invalid')
@@ -248,7 +251,9 @@ def initialize_spool(path, *, limits):
 
 def read_spool_version(path):
     try:
-        path = _path(path)
+        # Inspection must not create anything. Legacy broker initialization may
+        # create a safe missing directory later; application mode still refuses.
+        path = _path(path, allow_missing_parent=True)
         if not path.exists():
             return 0
         with closing(_connect(path, readonly=True)) as connection:

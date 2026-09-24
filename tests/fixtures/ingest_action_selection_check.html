@@ -1,0 +1,70 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE>
+<div id="root" class="ingest-reliability"><section data-ingest-actions></section></div><pre id="result">pending</pre>
+<script type="module">
+import {createIngestClient} from CLIENT_MODULE;
+import {mountIngestActions} from ACTIONS_MODULE;
+const mode='FIXTURE_MODE',checks=[];
+const check=(value,name)=>{if(!value)throw Error(name);checks.push(name);};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+const error=status=>Object.assign(Error('private transport detail'),{status});
+const A='00000000-0000-0000-0000-000000000001',B='00000000-0000-0000-0000-000000000002';
+const root=document.querySelector('#root');
+try {
+ let generation=0,selected,heldReject,heldResolve,authorized=true;
+ const sent=[],audits=new Map(),changed=[];
+ const api={post:async(path,body)=>{
+   sent.push({path,body:structuredClone(body)});
+   if(!authorized)throw error(403);
+   const replayed=audits.has(body.idempotency_key);
+   if(!replayed)audits.set(body.idempotency_key,{path,body:structuredClone(body)});
+   if(sent.length===1){
+     if(mode==='settled'||mode==='revoked'||mode==='closed-command')throw error(503);
+     return new Promise((resolve,reject)=>{heldReject=reject;heldResolve=resolve;});
+   }
+   return {entity:{id:A,version:'2',state:'closed'},replayed};
+ }};
+ const client=createIngestClient(api,{isCurrent:()=>true});
+ const mounted=mountIngestActions({root,client,permissions:new Set(['ingest.read','ingest.manage']),isCurrent:()=>true,
+   onChanged:async event=>{changed.push(event);return {...selected.entity};}});
+ function select(id,version,state){
+   root.dispatchEvent(new CustomEvent('ingest:selection-start'));
+   selected={kind:'cases',entity:{id,version,state},generation:++generation};
+   root.dispatchEvent(new CustomEvent('ingest:selection',{detail:selected}));
+ }
+ const form=()=>root.querySelector('[data-ingest-action-form]');
+ select(A,'1','open');root.querySelector(`[data-ingest-action="${mode==='closed-command'?'close':'note'}"]`).click();
+ form().querySelector('[name="reason"]').value='核对后补充原始说明';
+ form().dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+ const original=sent[0];select(B,'7','closed');
+ if(mode==='late') {heldReject(error(503));await tick();}
+ if(mode==='success') {
+   heldResolve({entity:{id:A,version:'2',state:'closed'},replayed:false});await tick();await tick();
+   check(changed.length===0&&!form(),'late confirmed write cannot refresh or repaint B');
+   select(A,'2','closed');check(!form()&&root.querySelector('[data-ingest-action="note"]'),'known success releases pending action on return');
+ } else {
+   select(A,'2','closed');
+   check(!!form(),'return to A restores the original pending operation instead of a new command');
+   check(form().querySelector('[name="reason"]').value==='核对后补充原始说明'&&form().querySelector('[name="reason"]').disabled,'restored original body remains visible and immutable');
+   check(form().querySelector('.ingest-muted').textContent.endsWith(' 1'),'original expected version is visible after newer detail is selected');
+   if(mode==='sending') {
+     check(!root.querySelector('[data-ingest-retry]')&&form().querySelector('[type="submit"]').disabled,'return during flight cannot duplicate submission');
+     heldReject(error(503));await tick();await tick();
+   }
+   const retry=root.querySelector('[data-ingest-retry]');check(!!retry&&!retry.disabled,'uncertain operation remains retryable across selection generations');
+   if(mode==='revoked')authorized=false;
+   retry.click();await tick();await tick();
+   check(sent.length===2&&JSON.stringify(original)===JSON.stringify(sent[1]),'resumed retry preserves exact path reason version and idempotency key');
+   check(audits.size===1,'a response-loss retry creates only one business audit');
+   if(mode==='revoked'){
+     check(root.textContent.includes('权限')&&!root.querySelector('[data-ingest-retry]'),'resumed retry reauthorizes and stops on revoked permission');
+     form().dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+     check(sent.length===2,'permission rejection cannot automatically resubmit');
+   }else{
+     check(changed.length===1&&changed[0].id===A&&changed[0].generation===generation,'successful resumed retry refreshes current A selection only');
+     check(root.textContent.includes('重试确认'),'resumed replay shown without a second action');
+   }
+ }
+ mounted.dispose();client.dispose();
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,checks,body:root.textContent});}
+</script>

@@ -2,12 +2,13 @@
 
 from contextlib import contextmanager
 import importlib
+from uuid import uuid4
 
 import psycopg
 from psycopg import sql
 
 from backend.ingest_reliability.errors import ReliabilityError
-from tests.ingest_support import IngestDatabaseCase
+from tests.ingest_support import IngestDatabaseCase, TEST_DATABASE
 
 
 class PrivilegeTests(IngestDatabaseCase):
@@ -17,6 +18,11 @@ class PrivilegeTests(IngestDatabaseCase):
 
     def probe(self, role):
         return self.privileges.probe_role(lambda: self.connect(role), role)
+
+    def registry_schema(self):
+        from backend.registry.migrate import migrate
+        migrate(self.settings['migrator'], expected_database=TEST_DATABASE)
+        self.registry_devices_oid = self.scalar("SELECT 'device_registry.devices'::regclass::oid", role='migrator')
 
     @contextmanager
     def changed(self, setup, restore, *, admin=False):
@@ -160,3 +166,70 @@ class PrivilegeTests(IngestDatabaseCase):
         with self.changed(sql.SQL("GRANT TEMP ON DATABASE oilwell_ingest_reliability_test TO {}").format(role),
                           sql.SQL("REVOKE TEMP ON DATABASE oilwell_ingest_reliability_test FROM {}").format(role)):
             self.denied("reader")
+
+    def test_existing_registry_does_not_require_data_access_from_reliability_roles(self):
+        self.registry_schema()
+        for role in ('ingestor', 'publisher', 'reader', 'operator'):
+            with self.subTest(role=role):
+                self.assertIsNone(self.probe(role))
+                self.assertFalse(self.scalar("SELECT has_table_privilege(current_user,%s,'SELECT')", (self.registry_devices_oid,), role=role))
+
+    def test_registry_direct_and_public_column_writes_fail_closed_without_repair(self):
+        self.registry_schema()
+        for runtime in ('ingestor', 'publisher', 'reader', 'operator'):
+            for who in (sql.Identifier(self.settings[runtime]['user']), sql.SQL('PUBLIC')):
+                with self.subTest(runtime=runtime, who=str(who)), self.changed(
+                    sql.SQL('GRANT UPDATE(name) ON device_registry.devices TO {}').format(who),
+                    sql.SQL('REVOKE UPDATE(name) ON device_registry.devices FROM {}').format(who)):
+                    self.denied(runtime)
+                    self.assertTrue(self.scalar("SELECT has_column_privilege(current_user,%s,'name','UPDATE')", (self.registry_devices_oid,), role=runtime))
+
+    def test_registry_schema_create_and_object_ownership_are_rejected(self):
+        self.registry_schema()
+        role = sql.Identifier(self.settings['ingestor']['user'])
+        owner = sql.Identifier(self.settings['migrator']['user'])
+        for who in (role, sql.SQL('PUBLIC')):
+            with self.subTest(create=str(who)), self.changed(
+                sql.SQL('GRANT CREATE ON SCHEMA device_registry TO {}').format(who),
+                sql.SQL('REVOKE CREATE ON SCHEMA device_registry FROM {}').format(who)):
+                self.denied('ingestor')
+        for target in ('SCHEMA device_registry', 'TABLE device_registry.devices'):
+            with self.subTest(owner=target), self.changed(
+                sql.SQL('ALTER ' + target + ' OWNER TO {}').format(role),
+                sql.SQL('ALTER ' + target + ' OWNER TO {}').format(owner), admin=True):
+                self.denied('ingestor')
+
+    def test_registry_write_through_inherit_set_and_admin_paths_is_rejected(self):
+        self.registry_schema()
+        group = sql.Identifier('wp03_drift_' + uuid4().hex)
+        reader = sql.Identifier(self.settings['reader']['user'])
+        with self.changed(sql.SQL('CREATE ROLE {} NOLOGIN').format(group),
+                          sql.SQL('DROP ROLE {}').format(group), admin=True):
+            with self.changed(sql.SQL('GRANT UPDATE(name) ON device_registry.devices TO {}').format(group),
+                              sql.SQL('REVOKE UPDATE(name) ON device_registry.devices FROM {}').format(group)):
+                for options in ('WITH INHERIT TRUE, SET FALSE', 'WITH INHERIT FALSE, SET TRUE',
+                                'WITH ADMIN TRUE, INHERIT FALSE, SET FALSE'):
+                    with self.subTest(options=options), self.changed(
+                        sql.SQL('GRANT {} TO {} ' + options).format(group, reader),
+                        sql.SQL('REVOKE {} FROM {}').format(group, reader), admin=True):
+                        self.denied('reader')
+
+    def test_registry_functions_and_sequences_do_not_offer_an_indirect_capability(self):
+        self.registry_schema()
+        reader = sql.Identifier(self.settings['reader']['user'])
+        owner = sql.Identifier(self.settings['migrator']['user'])
+        with self.subTest(capability='function'), self.changed(
+            sql.SQL('GRANT EXECUTE ON FUNCTION device_registry.immutable_row() TO {}').format(reader),
+            sql.SQL('REVOKE EXECUTE ON FUNCTION device_registry.immutable_row() FROM {}').format(reader)):
+            self.denied('reader')
+        with self.subTest(capability='function owner'), self.changed(
+            sql.SQL('ALTER FUNCTION device_registry.immutable_row() OWNER TO {}').format(reader),
+            sql.SQL('ALTER FUNCTION device_registry.immutable_row() OWNER TO {}').format(owner), admin=True):
+            self.denied('reader')
+        sequence = sql.Identifier('device_registry', 'wp03_probe_' + uuid4().hex)
+        with self.changed(sql.SQL('CREATE SEQUENCE {}').format(sequence), sql.SQL('DROP SEQUENCE {}').format(sequence)):
+            self.assertIsNone(self.probe('reader'))
+            with self.subTest(capability='sequence'), self.changed(
+                sql.SQL('GRANT USAGE ON SEQUENCE {} TO {}').format(sequence, reader),
+                sql.SQL('REVOKE USAGE ON SEQUENCE {} FROM {}').format(sequence, reader)):
+                self.denied('reader')

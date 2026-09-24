@@ -57,13 +57,12 @@ def _reachable(conn):
         if powerful or name in {"pg_execute_server_program", "pg_read_server_files", "pg_write_server_files"}:
             _fail()
         unsafe = conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('ingest_reliability','public') AND nspowner=%s) "
+            "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('ingest_reliability','public','device_registry') "
+            "AND (nspowner=%s OR has_schema_privilege(%s,oid,'CREATE'))) "
             "OR EXISTS(SELECT 1 FROM pg_database WHERE datname=current_database() AND datdba=%s) "
             "OR has_database_privilege(%s,current_database(),'CREATE,TEMP') "
-            "OR has_schema_privilege(%s,'ingest_reliability','CREATE') "
-            "OR has_schema_privilege(%s,'public','CREATE') "
             "OR has_parameter_privilege(%s,'session_replication_role','SET,ALTER SYSTEM')",
-            (oid,) * 6).fetchone()[0]
+            (oid,) * 5).fetchone()[0]
         if unsafe:
             _fail()
     return [row[0] for row in rows]
@@ -77,7 +76,7 @@ def _permissions(conn, role):
         "UNION SELECT i.inhrelid FROM pg_inherits i JOIN raw r ON i.inhparent=r.oid) "
         "SELECT c.oid,n.nspname,c.relname,c.relowner,c.relkind FROM pg_class c "
         "JOIN pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE (n.nspname='ingest_reliability' AND c.relkind IN ('r','p','v','m','f','S')) "
+        "WHERE (n.nspname IN ('ingest_reliability','device_registry') AND c.relkind IN ('r','p','v','m','f','S')) "
         "OR c.oid IN (SELECT oid FROM raw)").fetchall()
     actual = {(schema, name): kind for _, schema, name, _, kind in tables}
     required = {("ingest_reliability", name): "r" for name in TABLES}
@@ -86,9 +85,14 @@ def _permissions(conn, role):
     if any(actual.get(name) != kind for name, kind in required.items()):
         raise ReliabilityError("ingest.schema_incomplete", "接收可靠性数据表或视图不完整")
     for oid, schema, name, owner, kind in tables:
-        if owner in reachable or kind == "S":
-            _fail()
         internal = schema == "ingest_reliability"
+        if owner in reachable or internal and kind == "S":
+            _fail()
+        if kind == "S":
+            if any(conn.execute("SELECT has_sequence_privilege(%s,%s,'USAGE,SELECT,UPDATE')",
+                                (identity, oid)).fetchone()[0] for identity in reachable):
+                _fail()
+            continue
         parent = schema == "public" and name in {"ingest_messages", "telemetry_samples"}
         may_select = internal and name in SELECT[role] or parent and role == "ingestor"
         may_insert = internal and name in INSERT[role] or parent and role == "ingestor"
@@ -136,6 +140,15 @@ def _permissions(conn, role):
             if conn.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')", (identity, oid)).fetchone()[0] and not required_execute:
                 _fail()
         if required_execute and not conn.execute("SELECT has_function_privilege(current_user,%s,'EXECUTE')", (oid,)).fetchone()[0]:
+            _fail()
+    # The registry is optional: inspect catalog capabilities only, never its
+    # business rows or migration state. No reliability role needs its routines.
+    registry_functions = conn.execute(
+        "SELECT p.oid,p.proowner FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname='device_registry'").fetchall()
+    for oid, owner in registry_functions:
+        if owner in reachable or any(conn.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                                                 (identity, oid)).fetchone()[0] for identity in reachable):
             _fail()
     # Constraint triggers are PostgreSQL-generated, so check their enabled
     # state independently from the migration's application-object fingerprint.

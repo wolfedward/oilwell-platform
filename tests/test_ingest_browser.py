@@ -61,6 +61,14 @@ class IngestBrowserTests(unittest.TestCase):
     def test_immutable_retry_actions_and_stale_write_laptop(self):
         self.run_fixture('ingest_actions_check.html', width=1024)
 
+    def test_uncertain_action_survives_selection_change(self):
+        for mode in ('settled', 'late', 'sending', 'revoked', 'success', 'closed-command'):
+            with self.subTest(mode=mode):
+                self.run_fixture('ingest_action_selection_check.html', mode=mode)
+
+    def test_uncertain_action_survives_selection_change_laptop(self):
+        self.run_fixture('ingest_action_selection_check.html', width=1024, mode='settled')
+
     def test_shell_ready_uses_actual_workspace(self):
         self.run_fixture('ingest_workspace_check.html', mode='shell-ready')
 

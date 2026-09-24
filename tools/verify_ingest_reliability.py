@@ -63,6 +63,8 @@ def protected_snapshot():
                 names.append(str(name))
         files = {name: sha256((FROZEN / name).read_bytes()).hexdigest() for name in sorted(names)}
         archive_files = {name: sha256(archive.read(name)).hexdigest() for name in sorted(names)}
+    if files != archive_files:
+        raise AssertionError('Frozen sources no longer match recorded archive baseline')
     tag = git('rev-parse', 'demo-v2.0-20260912^{}')
     if tag != TAG_COMMIT:
         raise AssertionError('Frozen tag moved')
