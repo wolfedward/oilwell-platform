@@ -232,7 +232,7 @@ class SchemaTests(IngestDatabaseCase):
 - [ ] **3. 建立事实、案件、回执、投递、审计、操作幂等、健康、配额和版本表。** 核心约束至少包含：
 
 ```sql
-UNIQUE (topic, payload_sha256),
+UNIQUE (topic_sha256, payload_sha256),
 CHECK (octet_length(raw_payload) = payload_bytes),
 CHECK (payload_bytes BETWEEN 0 AND 2097152),
 CHECK ((status = 'stored' AND accepted_message_id IS NOT NULL AND reason_code = 'accepted')
@@ -242,6 +242,8 @@ CHECK ((status = 'stored' AND accepted_message_id IS NOT NULL AND reason_code = 
 固定表名：`schema_migrations/facts/cases/receipts/deliveries/audit_events/operation_receipts/worker_health/capacity`。facts 的 accepted_message_id 外键到 public.ingest_messages；cases、receipts 外键 facts；deliveries 外键 receipts。facts/receipts/audit_events/operation_receipts 禁止 UPDATE/DELETE；cases 只改状态/版本/统计，deliveries 只改租约/发送进度。receipts 必须与 facts 身份/摘要/结果一致，由不可变约束触发器校验。capacity 单行存总/隔离字节上限及已用量，计数更新与写入同事务。视图 `case_metadata/receipt_metadata/health_metadata` 不暴露 BYTEA；所有 PK/FK/计数约束与保护触发器由预检核验。若采用 SECURITY DEFINER 函数，须固定 search_path、禁止 PUBLIC 执行并审计精确可调用权限，不得提供任意 SQL 通道。每条 DDL 单独补 rollback/越权负例。
 
 实施前接口核对补充：新增 `fact_observations`，以 fact_id 唯一外键存有界重复计数、末见时间及传输异常统计。接受记录即使未启用回执，也能统计重复而不修改不可变 facts。任务 3 同事务更新、任务 10 通过元数据视图读取，任务 2 纳入角色及结构检查。该实施裁定不改变线协议或既有消息。
+
+长主题边界裁定：隔离原文同时保留完整 topic 与 topic_sha256；物理唯一索引使用两个固定长度摘要，避免非法长主题超出 B-tree 索引项限制。复用事实前必须比较完整主题及正文，数据库约束核对摘要与内容一致；不把摘要相同直接视为字节相同。测试覆盖 65535 字节主题及末尾不同的两个长主题。
 
 - [ ] **4. 跑 GREEN，核对固定库名和测试证据不带密码。** `& $taskPython -m unittest tests.test_ingest_schema tests.test_ingest_privileges -v`；测试不能因缺库被悄悄 skip 后宣称完成。
 - [ ] **5. 提交迁移、工具及测试，私密 TOML/凭据不提交。** `git commit -m "feat: add isolated ingest reliability schema and least-privilege roles"`。
