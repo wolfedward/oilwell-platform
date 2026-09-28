@@ -118,7 +118,8 @@ class OpenInterfaceTests(unittest.TestCase):
             self.assertTrue((KIT / path).is_file(), path)
         expected = {"index.html", "portal.css", "INTERFACE.md", "HARDWARE.md", "ROADMAP.md",
                     "LICENSE.txt", "telemetry.schema.json", "telemetry-example.json",
-                    "validate_telemetry.py", "hardware-overview.svg", "terminal-interfaces.svg"}
+                    "validate_telemetry.py", "hardware-overview.svg", "terminal-interfaces.svg",
+                    "ingest-ack.schema.json", "ingest-ack-example.json", "validate_ingest_ack.py"}
         with ZipFile(KIT / "open-interface-r1.zip") as archive:
             self.assertEqual(set(archive.namelist()), expected)
             for path in expected:

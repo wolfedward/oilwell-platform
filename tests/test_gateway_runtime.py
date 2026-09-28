@@ -1,6 +1,7 @@
 """Gateway cycle orchestration tests."""
 
 from datetime import datetime, timezone
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ from backend.gateway.contracts import PointDefinition, Quality, TelemetrySample
 from backend.gateway.mqtt_uplink import MqttConfig, MqttPublishError
 from backend.gateway.poller import ModbusDevice, PollError, PollResult
 from backend.gateway.runtime import GatewayRuntime
+from backend.ingest_reliability.errors import ReliabilityError
 
 
 NOW = datetime(2026, 9, 12, 9, 0, tzinfo=timezone.utc)
@@ -102,6 +104,40 @@ class GatewayRuntimeTests(unittest.TestCase):
         self.assertEqual(result.messages_enqueued, 0)
         self.assertEqual(result.poll_errors[0].code, "connection_failed")
         self.assertEqual(runtime.spool.counts()["pending"], 0)
+
+    def test_legacy_first_start_creates_nested_queue_and_keeps_offline_observation(self):
+        path = Path(self.temporary.name) / 'new-install' / 'queue' / 'uplink.db'
+        config = replace(self.config, spool_database=path)
+        sample = TelemetrySample('GW-001', 'D-001', 'motor.current', NOW, 0, 12.5,
+                                 Quality.GOOD, 'A', 'modbus-tcp')
+        try:
+            runtime = GatewayRuntime(config, poller_factory=lambda *_: FakePoller(
+                PollResult('D-001', NOW, 0, (sample,), ())), uplink_factory=OfflineUplink)
+        except ReliabilityError as error:
+            self.fail('Safe new broker queue must start: ' + error.code)
+        self.addCleanup(runtime.close)
+        result = runtime.run_cycle()
+        self.assertEqual((result.messages_enqueued, result.uplink_error), (1, 'broker offline'))
+        self.assertTrue(path.is_file())
+        row = runtime.spool.claim(now=10**12)[0]
+        self.assertEqual(json.loads(row.payload)['samples'][0]['value'], 12.5)
+
+    def test_application_first_start_does_not_create_missing_parent_or_queue(self):
+        path = Path(self.temporary.name) / 'uninitialized' / 'queue' / 'uplink.db'
+        config = replace(self.config, spool_database=path, confirmation_mode='application')
+        with self.assertRaises(ReliabilityError) as caught:
+            GatewayRuntime(config, uplink_factory=OfflineUplink)
+        self.assertEqual(caught.exception.code, 'ingest.spool_migration_required')
+        self.assertFalse(path.parent.parent.exists())
+
+    def test_version_probe_does_not_accept_a_file_as_missing_directory_ancestor(self):
+        from backend.gateway.spool_migrate import read_spool_version
+        ancestor = Path(self.temporary.name) / 'not-a-directory'
+        ancestor.write_bytes(b'preserve')
+        with self.assertRaises(ReliabilityError) as caught:
+            read_spool_version(ancestor / 'nested' / 'uplink.db')
+        self.assertEqual(caught.exception.code, 'ingest.spool_path_invalid')
+        self.assertEqual(ancestor.read_bytes(), b'preserve')
 
 
 if __name__ == "__main__":

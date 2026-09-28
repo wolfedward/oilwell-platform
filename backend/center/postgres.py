@@ -13,6 +13,41 @@ class IdempotencyConflict(PostgresRepositoryError):
     pass
 
 
+def insert_batch(cursor, batch, *, topic, payload_sha256, raw_payload, received_at) -> bool:
+    """Insert into the caller's transaction; retain legacy unqualified tables.
+
+    New callers set a safe search_path. Legacy session-local verification tables
+    intentionally continue to resolve through their existing connection context.
+    """
+    raw_text = bytes(raw_payload).decode("utf-8")
+    cursor.execute(
+        """INSERT INTO ingest_messages
+           (message_id,topic,gateway_id,device_id,boot_id,sequence_first,sequence_last,
+            created_at,received_at,payload_sha256,raw_payload)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+           ON CONFLICT (message_id) DO NOTHING RETURNING message_id""",
+        (batch.message_id, topic, batch.gateway_id, batch.device_id, batch.boot_id,
+         batch.samples[0].sequence, batch.samples[-1].sequence,
+         batch.created_at, received_at, payload_sha256, raw_text),
+    )
+    if cursor.fetchone() is None:
+        cursor.execute("SELECT payload_sha256 FROM ingest_messages WHERE message_id=%s", (batch.message_id,))
+        existing = cursor.fetchone()
+        if existing is None or existing[0] != payload_sha256:
+            raise IdempotencyConflict("message_id was reused with a different payload")
+        return False
+    rows = [(batch.message_id, index, sample.gateway_id, sample.device_id,
+             sample.point_code, sample.measured_at, sample.sequence, sample.value,
+             sample.quality.value, sample.unit, sample.source, received_at)
+            for index, sample in enumerate(batch.samples)]
+    cursor.executemany(
+        """INSERT INTO telemetry_samples
+           (message_id,sample_index,gateway_id,device_id,point_code,measured_at,
+            sequence,value,quality,unit,source,received_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", rows)
+    return True
+
+
 class PostgresTelemetryRepository:
     def __init__(self, dsn: str | None = None, *, connect_kwargs=None, connect_factory=None):
         if not dsn and not connect_kwargs:
@@ -47,48 +82,14 @@ class PostgresTelemetryRepository:
             connection.execute(schema)
 
     def store(self, batch, *, topic, payload_sha256, raw_payload, received_at) -> bool:
-        raw_text = bytes(raw_payload).decode("utf-8")
+        # Preserve the legacy rejection boundary before any connection attempt.
+        raw_payload = bytes(raw_payload)
+        raw_payload.decode("utf-8")
         with self._connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """INSERT INTO ingest_messages
-                       (message_id,topic,gateway_id,device_id,boot_id,sequence_first,sequence_last,
-                        created_at,received_at,payload_sha256,raw_payload)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-                       ON CONFLICT (message_id) DO NOTHING RETURNING message_id""",
-                    (
-                        batch.message_id, topic, batch.gateway_id, batch.device_id, batch.boot_id,
-                        batch.samples[0].sequence, batch.samples[-1].sequence,
-                        batch.created_at, received_at, payload_sha256, raw_text,
-                    ),
-                )
-                if cursor.fetchone() is None:
-                    cursor.execute(
-                        "SELECT payload_sha256 FROM ingest_messages WHERE message_id=%s",
-                        (batch.message_id,),
-                    )
-                    existing = cursor.fetchone()
-                    if existing is None or existing[0] != payload_sha256:
-                        raise IdempotencyConflict(
-                            "message_id was reused with a different payload"
-                        )
-                    return False
-                rows = [
-                    (
-                        batch.message_id, index, sample.gateway_id, sample.device_id,
-                        sample.point_code, sample.measured_at, sample.sequence, sample.value,
-                        sample.quality.value, sample.unit, sample.source, received_at,
-                    )
-                    for index, sample in enumerate(batch.samples)
-                ]
-                cursor.executemany(
-                    """INSERT INTO telemetry_samples
-                       (message_id,sample_index,gateway_id,device_id,point_code,measured_at,
-                        sequence,value,quality,unit,source,received_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    rows,
-                )
-        return True
+                result = insert_batch(cursor, batch, topic=topic, payload_sha256=payload_sha256,
+                                      raw_payload=raw_payload, received_at=received_at)
+        return result
 
 
 class PostgresTelemetryQueryRepository:

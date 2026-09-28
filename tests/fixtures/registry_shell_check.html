@@ -1,0 +1,41 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><a class="skip-link" href="#workspace">跳到工作区</a><div id="app"></div><div id="toastRegion"></div><pre id="result">pending</pre>
+<script>
+const calls=[];
+const mode='CAPABILITY_MODE';
+window.location.hash='#/field-registry';
+window.fetch=async(path,options)=>{
+  calls.push(path);
+  if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'1',username:'tester',display_name:'测试管理员',role_code:'administrator',permissions:['registry.read'],capabilities:{registry:{enabled:mode!=='disabled',status:mode}}}}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(path.startsWith('/api/registry/'))return new Response(JSON.stringify({data:{items:[],total:0,page:1,page_size:20,registry_revision:'1',received_before:'2026-09-23T00:00:00+00:00'}}),{status:200,headers:{'Content-Type':'application/json'}});
+  throw new Error('unexpected endpoint '+path);
+};
+ </script>
+<script type="module">
+import APP_MODULE;
+import {mountCentralOperations} from CENTRAL_MODULE;
+import {components} from COMPONENT_MODULE;
+import * as format from FORMAT_MODULE;
+try{
+  await new Promise((resolve,reject)=>{
+    const observer=new MutationObserver(check);
+    const timer=setTimeout(()=>{observer.disconnect();reject(new Error('workspace did not finish rendering'));},1500);
+    function check(){if(document.querySelector('#workspace')?.getAttribute('aria-busy')==='false'){clearTimeout(timer);observer.disconnect();resolve();}}
+    observer.observe(document.body,{childList:true,subtree:true,attributes:true});check();
+  });
+  const nav=document.querySelector('#sidebar [data-page="field-registry"]');
+  if(mode==='disabled'){
+    if(nav)throw new Error('disabled registry remains in sidebar');
+    if(!document.querySelector('#workspace').textContent.includes('生产台账未配置'))throw new Error('direct route fails to explain disabled module');
+    if(calls.some(path=>path.startsWith('/api/registry/')))throw new Error('disabled module still reads registry');
+    // The old acquisition page must not advertise a disabled registry feature.
+    const extra=document.createElement('div');document.body.append(extra);
+    const api={get:async path=>path==='/api/central/health'?{status:'available',summary:{},links:[]}:{items:[{gateway_id:'GW',device_id:'D',value:1,quality:'good'}],total:1,page:1,page_size:100}};
+    await mountCentralOperations({root:extra,api,components,format,permissions:new Set(['registry.read','telemetry.read']),capabilities:{registry:{enabled:false,status:'disabled'}},isCurrent:()=>true,navigate:()=>{throw new Error('disabled route');}});
+    if(extra.querySelector('[data-registry-inspect]'))throw new Error('disabled registry advertised from central records');
+  }else{
+    if(!nav)throw new Error('enabled registry missing from sidebar');
+    if(!document.querySelector('#workspace').textContent.includes('暂无生产设备'))throw new Error('enabled workspace failed to render');
+  }
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,calls,mode});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,calls,mode,workspace:document.querySelector('#workspace')?.textContent});}
+</script>

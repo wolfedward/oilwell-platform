@@ -634,3 +634,85 @@ tbody tr:hover { background: #f7fbff; }
   .workspace { overflow: visible; padding: 0; }
   .panel, .metric-card { break-inside: avoid; box-shadow: none; }
 }
+/* Production registry is isolated from the legacy demonstrator's styling. */
+.field-registry { min-width: 0; }
+.field-registry .registry-boundary { color: #52677f; padding: 10px 14px; background: #eef5fa; border-left: 3px solid #7394b2; line-height: 1.7; }
+.field-registry .registry-directories { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.field-registry .panel { min-width: 0; margin-bottom: 18px; }
+.field-registry .registry-filters, .field-registry .registry-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 16px; }
+.field-registry .registry-filters label { display: grid; gap: 5px; font-size: 13px; flex: 1 1 145px; }
+.field-registry input, .field-registry select, .field-registry textarea { max-width: 100%; padding: 9px; border: 1px solid #b9cada; border-radius: 5px; color: #153451; background: white; }
+.field-registry .registry-status-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.field-registry .registry-status-grid article { display: grid; gap: 8px; padding: 16px; background: #f5f8fc; border: 1px solid #dde7f0; border-radius: 8px; overflow-wrap: anywhere; }
+.field-registry .registry-status-grid small, .field-registry .registry-status-grid span, .field-registry .registry-status-grid time { font-size: 12px; color: #536d86; }
+.field-registry .registry-status-grid strong { font-size: 15px; color: #153451; }
+.field-registry .registry-metadata { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin: 20px 0; }
+.field-registry .registry-metadata div { display: grid; grid-template-columns: 150px 1fr; border-bottom: 1px dashed #dde7f0; padding-bottom: 8px; }
+.field-registry .registry-metadata dt { color: #536d86; }
+.field-registry .registry-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.field-registry .table-wrap, .field-registry .table-container { overflow-x: auto; }
+.field-registry table { min-width: 800px; }
+.field-registry .pagination { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+.field-registry .registry-empty { padding: 24px; color: #536d86; }
+.field-registry.registry-form { display: grid; gap: 14px; }
+.field-registry .registry-field { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+.field-registry .registry-field input[type="checkbox"] { width: 20px; height: 20px; }
+.field-registry .registry-point-row { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; border: 1px solid #d9e5ef; margin: 12px 0; padding: 14px; }
+.field-registry .registry-point-row legend { color: #345578; padding: 0 6px; }
+.field-registry .registry-identity, .field-registry .registry-digest { overflow-wrap: anywhere; line-height: 1.6; }
+.field-registry .registry-snapshot { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 600px; max-height: 360px; overflow: auto; padding: 12px; background: #f4f7fb; font-size: 12px; }
+.field-registry .registry-history-table { overflow-x: auto; max-width: 100%; }
+.field-registry .registry-history-table td { max-width: 320px; overflow-wrap: anywhere; }
+.field-registry [hidden] { display: none !important; }
+.field-registry button:focus-visible, .field-registry input:focus-visible, .field-registry select:focus-visible { outline: 3px solid #93b8ff; outline-offset: 2px; }
+/* Only this new workspace relaxes the legacy shell's 1180px lower bound. */
+html:has(.ingest-reliability), body:has(.ingest-reliability) { min-width: 0; }
+.ingest-reliability { min-width: 0; max-width: 100%; display: grid; gap: 18px; font-size: 13px; line-height: 1.65; }
+.ingest-reliability .panel { min-width: 0; overflow: hidden; }
+.ingest-reliability .panel > header { gap: 14px; flex-wrap: wrap; }
+.ingest-reliability h3 { margin: 20px 0 10px; color: #183955; font-size: 15px; }
+.ingest-reliability p { overflow-wrap: anywhere; }
+.ingest-reliability .ingest-boundary { margin: 0; padding: 11px 14px; color: #425f77; background: #edf5fa; border-left: 3px solid #6b8ba5; }
+.ingest-reliability .ingest-muted { color: #60798c; font-size: 12px; }
+.ingest-reliability .ingest-directories { display: grid; grid-template-columns: minmax(0,1fr); gap: 18px; }
+.ingest-reliability .ingest-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.ingest-reliability label { display: grid; min-width: 0; gap: 5px; color: #405c73; font-size: 12px; }
+.ingest-reliability .ingest-filters label { flex: 1 1 180px; }
+.ingest-reliability input, .ingest-reliability select, .ingest-reliability textarea { width: 100%; min-width: 0; max-width: 100%; padding: 9px 10px; border: 1px solid #bdcfdd; border-radius: 5px; background: #fff; color: #1a3a53; font: inherit; }
+.ingest-reliability textarea { resize: vertical; min-height: 92px; font-size: 14px; }
+.ingest-reliability input:disabled, .ingest-reliability textarea:disabled { background: #f0f4f7; color: #607588; }
+.ingest-reliability .ingest-metadata { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px 22px; margin: 12px 0 20px; }
+.ingest-reliability .ingest-metadata > div { min-width: 0; padding: 9px 0; border-bottom: 1px dashed #d9e4ed; }
+.ingest-reliability dt { margin-bottom: 3px; color: #647e91; font-size: 12px; }
+.ingest-reliability dd { margin: 0; color: #1c3b52; font-weight: 600; overflow-wrap: anywhere; }
+.ingest-reliability [data-ingest-health] .ingest-metadata { grid-template-columns: repeat(auto-fit,minmax(195px,1fr)); }
+.ingest-reliability [data-ingest-health] > label { margin: 12px 0; }
+.ingest-reliability progress { width: 100%; height: 9px; accent-color: #20818a; }
+.ingest-reliability .ingest-health-warning { color: #93581a; padding: 7px 10px; background: #fff5df; border-radius: 5px; }
+.ingest-reliability .ingest-health-ok, .ingest-reliability .ingest-notice { color: #14635b; padding: 9px 12px; background: #eaf7f2; border-radius: 5px; }
+.ingest-reliability .ingest-table-wrap { width: 100%; overflow: auto; border: 1px solid #dae5ef; border-radius: 7px; }
+.ingest-reliability table { width: 100%; min-width: 650px; border-collapse: collapse; }
+.ingest-reliability th, .ingest-reliability td { padding: 11px; text-align: left; border-bottom: 1px solid #e3ebf2; font-size: 12px; overflow-wrap: anywhere; }
+.ingest-reliability th { color: #3c5a75; background: #f3f7fb; white-space: nowrap; }
+.ingest-reliability td { max-width: 225px; }
+.ingest-reliability td small { display: block; color: #73889a; margin-top: 4px; }
+.ingest-reliability td button { white-space: normal; text-align: left; }
+.ingest-reliability .pagination { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; align-items: center; margin: 13px 0 0; }
+.ingest-reliability .pagination span { overflow-wrap: anywhere; }
+.ingest-reliability .ingest-empty { padding: 26px 14px; color: #5e788e; text-align: center; background: #f7f9fc; }
+.ingest-reliability .ingest-action-panel { padding: 0 18px 18px; }
+.ingest-reliability .ingest-action-panel:empty { display: none; }
+.ingest-reliability .inline-error:empty { display: none; }
+.ingest-reliability .ingest-actions-bar { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.ingest-reliability [data-ingest-action-form] > button { margin: 0 8px 8px 0; }
+.ingest-reliability .ingest-raw, .ingest-reliability .ingest-audit, .ingest-reliability .ingest-receipt-summary { margin-top: 18px; padding-top: 3px; border-top: 1px solid #dce6ee; }
+.ingest-reliability pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; background: #f3f6fa; border: 1px solid #dce6ee; border-radius: 6px; padding: 14px; font: 12px/1.7 Consolas, monospace; }
+.ingest-reliability .ingest-audit-event { padding: 4px 0 14px; border-bottom: 1px solid #dce6ee; }
+.ingest-reliability button:focus-visible, .ingest-reliability input:focus-visible, .ingest-reliability select:focus-visible, .ingest-reliability textarea:focus-visible { outline: 3px solid #8db2f8; outline-offset: 2px; }
+@media (min-width: 1700px) { .ingest-reliability .ingest-directories { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 1100px) {
+  .field-registry .registry-status-grid, .field-registry .registry-metadata { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 700px) {
+  .field-registry .registry-status-grid, .field-registry .registry-metadata { grid-template-columns: minmax(0,1fr); }
+}

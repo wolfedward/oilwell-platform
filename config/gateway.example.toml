@@ -4,6 +4,21 @@
 id = "GW-001"
 boot_id_file = "data/gateway-boot-id"
 spool_database = "data/uplink-spool.db"
+poll_interval_seconds = 5
+# New installations should use application confirmation AFTER center allowlist
+# and MQTT ACL verification. Runtime never initializes or upgrades this queue.
+# First create/migrate it explicitly with backend.gateway.spool_migrate and the
+# same three budgets below; size them for the site's retention/outage policy.
+# Old configurations default to broker: transport ACK only, NOT center storage.
+confirmation_mode = "application"
+receipt_timeout_seconds = 60
+base_backoff_seconds = 2
+max_backoff_seconds = 300
+
+[gateway.spool_limits]
+max_messages = 100000
+max_payload_bytes = 1073741824
+min_free_bytes = 1073741824
 
 [mqtt]
 host = "127.0.0.1"

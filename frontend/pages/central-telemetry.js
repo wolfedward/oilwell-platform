@@ -77,7 +77,7 @@ export function centralQualityMarkup(health, components, format) {
   </section>`;
 }
 
-export function centralOperationsMarkup(snapshot, components, format) {
+export function centralOperationsMarkup(snapshot, components, format, canInspect = false) {
   const telemetry = snapshot?.telemetry || EMPTY();
   const pages = Math.max(1, Math.ceil(telemetry.total / telemetry.page_size));
   const available = snapshot?.health?.status === "available";
@@ -90,13 +90,15 @@ export function centralOperationsMarkup(snapshot, components, format) {
         { key: "quality", label: "质量", render: (value) => components.statusTag({ good: "success", uncertain: "warning", bad: "failed" }[value], { good: "良好", uncertain: "可疑", bad: "无效" }[value]) },
         { key: "sequence", label: "序号" }, { key: "received_at", label: "中心接收", render: (value) => format.dateTime(value) },
         { key: "message_id", label: "报文标识" }, { key: "source", label: "采集来源" },
+        ...(canInspect ? [{key: "device_id", label: "归属", render: (value, row) => components.trusted(`<button type="button" class="text-button" data-registry-inspect data-gateway-id="${escapeHtml(row.gateway_id)}" data-device-id="${escapeHtml(value)}">核查归属</button>`)}] : []),
       ], telemetry.items, { emptyText: available ? "当前时间和筛选条件下暂无测点记录" : "中心不可查询，未提供测点数据", rowKey: "message_id" })}
       <nav class="pagination" aria-label="中心测点分页"><span>第 ${telemetry.page || 1} / ${pages} 页</span><button type="button" data-central-page="${(telemetry.page || 1) - 1}" ${!available || telemetry.page <= 1 ? "disabled" : ""}>上一页</button><button type="button" data-central-page="${(telemetry.page || 1) + 1}" ${!available || telemetry.page >= pages ? "disabled" : ""}>下一页</button></nav>
     </div></section>`;
 }
 
-export async function mountCentralOperations({ api, components, format, root, isCurrent, permissions }) {
+export async function mountCentralOperations({ api, components, format, root, isCurrent, permissions, navigate, capabilities }) {
   const canReadTelemetry = permissions?.has("telemetry.read") ?? true;
+  const canInspect = canReadTelemetry && permissions?.has("registry.read") && capabilities?.registry?.enabled !== false && typeof navigate === "function";
   const state = { filters: {}, paused: false, generation: 0, lastWindow: null, frozenWindow: null };
   root.innerHTML = `<section class="panel filter-panel"><form id="centralFilters" class="central-filters">
     ${[["gateway_id", "网关编号"], ["device_id", "终端编号"], ["point_code", "测点编码"]].map(([name, label]) => `<div class="form-field"><label for="central-${name}">${label}</label><input id="central-${name}" name="${name}" maxlength="128" placeholder="全部" /></div>`).join("")}
@@ -117,7 +119,7 @@ export async function mountCentralOperations({ api, components, format, root, is
       const snapshot = await loadCentralSnapshot(api, { ...state.filters, ...state.frozenWindow }, canReadTelemetry);
       if (!isCurrent() || generation !== state.generation) return;
       state.lastWindow = snapshot.telemetry?.window || null;
-      results.innerHTML = canReadTelemetry ? centralOperationsMarkup(snapshot, components, format) : centralQualityMarkup(snapshot.health, components, format);
+      results.innerHTML = canReadTelemetry ? centralOperationsMarkup(snapshot, components, format, canInspect) : centralQualityMarkup(snapshot.health, components, format);
     } catch (error) {
       if (isCurrent() && generation === state.generation) results.innerHTML = components.errorPanel(error);
     } finally {
@@ -143,6 +145,11 @@ export async function mountCentralOperations({ api, components, format, root, is
     if (!state.paused) { state.filters.page = 1; state.frozenWindow = null; refresh(); }
   });
   results.addEventListener("click", (event) => {
+    const inspect = event.target.closest("[data-registry-inspect]");
+    if (inspect && canInspect && isCurrent()) {
+      navigate("field-registry", {gateway_id: inspect.dataset.gatewayId, device_id: inspect.dataset.deviceId, view: "resolution"});
+      return;
+    }
     const button = event.target.closest("[data-central-page]");
     if (!button || button.disabled) return;
     state.filters = { ...state.filters, page: Number(button.dataset.centralPage) };

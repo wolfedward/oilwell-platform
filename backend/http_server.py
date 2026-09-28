@@ -3,8 +3,10 @@
 import json
 import mimetypes
 import secrets
+import socket
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +20,10 @@ from backend.center.postgres import PostgresTelemetryQueryRepository
 from backend.config import Config
 from backend.database import Database
 from backend.seed import seed_database
+from backend.registry.api import RegistryApi
+from backend.registry.runtime import build_registry_runtime
+from backend.ingest_reliability.api import IngestReliabilityApi
+from backend.ingest_reliability.runtime import build_reliability_runtime
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -35,6 +41,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if IngestReliabilityApi(self).get(self.path): return
+        if RegistryApi(self).get(self.path): return
         if CentralTelemetryApi(self).get(self.path): return
         if ReportApi(self).get(self.path): return
         if WorkflowApi(self).get(self.path): return
@@ -55,6 +63,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self):
+        if IngestReliabilityApi(self).post(self.path): return
+        if RegistryApi(self).post(self.path): return
         path = urlsplit(self.path).path
         if WorkflowApi(self).post(self.path): return
         if CommandApi(self).post(self.path): return
@@ -75,6 +85,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if IngestReliabilityApi(self).unsupported(self.path): return
+        if RegistryApi(self).unsupported(self.path): return
         if StrategyApi(self).patch(self.path): return
         if DeviceApi(self).patch(self.path): return
         if WellApi(self).patch(self.path): return
@@ -83,6 +95,16 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/roles/"): return self._roles_patch(path)
         if path.startswith("/api/"): return self._send_api_not_found()
         self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
+
+    def _unsupported_method(self):
+        if IngestReliabilityApi(self).unsupported(self.path): return
+        if RegistryApi(self).unsupported(self.path): return
+        self.send_error(HTTPStatus.NOT_IMPLEMENTED, "Unsupported method")
+
+    do_DELETE = _unsupported_method
+    do_PUT = _unsupported_method
+    do_OPTIONS = _unsupported_method
+    do_HEAD = _unsupported_method
 
     def _health(self):
         try:
@@ -247,7 +269,12 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             user = self.server.auth.me(self._token())
         except (AuthError, SessionExpired):
             return self._send_json(HTTPStatus.UNAUTHORIZED, self._error("unauthenticated", "Authentication required"))
-        self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user)})
+        status = self.server.registry_runtime.status
+        capability = {"enabled": status != "disabled", "status": status}
+        ingest_status = self.server.ingest_runtime.status
+        self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
+            "capabilities": {"registry": capability,
+                             "ingest_reliability": {"enabled": ingest_status != "disabled", "status": ingest_status}}}})
 
     def _users_get(self, path):
         if self._require("users.read") is None: return
@@ -461,7 +488,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload, cookie=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8"); self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Content-Length", str(len(body)))
         if cookie: self.send_header("Set-Cookie", cookie)
-        self.end_headers(); self.wfile.write(body)
+        self.end_headers()
+        if self.command != "HEAD": self.wfile.write(body)
     def _send_api_not_found(self): self._send_json(HTTPStatus.NOT_FOUND, self._error("not_found", "API route not found"))
     def _has_shutdown_token(self):
         return self.client_address[0] in {"127.0.0.1", "::1"} and bool(getattr(self.server, "shutdown_token", None) and self.headers.get("X-Platform-Shutdown-Token") and secrets.compare_digest(self.server.shutdown_token, self.headers["X-Platform-Shutdown-Token"]))
@@ -488,6 +516,29 @@ class PlatformHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = False
     daemon_threads = True
+
+    def shutdown_request(self, request):
+        # An early rejection can leave request bytes still in flight. Immediate
+        # full close resets TCP on Windows and can discard the JSON response.
+        # RFC 9112 section 9.6: half-close, bounded drain, then full close.
+        try:
+            request.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + .5
+            remaining = MAX_JSON_BYTES
+            while remaining > 0:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    break
+                request.settimeout(budget)
+                chunk = request.recv(min(8192, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            self.close_request(request)
+
     def serve_forever(self, *args, **kwargs):
         self.acquisition_worker.start()
         try:
@@ -519,6 +570,8 @@ def create_server(
     *,
     central_repository=None,
     center_config_path=None,
+    registry_runtime=None,
+    ingest_runtime=None,
 ) -> ThreadingHTTPServer:
     if central_repository is not None and center_config_path is not None:
         raise ValueError("central_repository and center_config_path are mutually exclusive")
@@ -529,6 +582,8 @@ def create_server(
     database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
     server.central_telemetry = central_repository
+    server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
+    server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker

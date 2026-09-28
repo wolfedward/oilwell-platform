@@ -1,0 +1,103 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE>
+<style>#result{display:none}</style>
+<div id="root" class="ingest-reliability"><section data-ingest-actions></section></div><pre id="result">pending</pre>
+<script type="module">
+import {createIngestClient} from CLIENT_MODULE;
+import {mountIngestActions} from ACTIONS_MODULE;
+const checks=[];
+const check=(value,name)=>{if(!value)throw Error(name);checks.push(name);};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
+const error=status=>Object.assign(Error('transport detail must not leak'),{status});
+const A='00000000-0000-0000-0000-000000000001',B='00000000-0000-0000-0000-000000000002';
+const root=document.querySelector('#root');
+try{
+ let active=true,pending=deferred();const calls=[];
+ const api={post:(path,body)=>{calls.push({path,body:structuredClone(body)});return pending.promise;}};
+ const client=createIngestClient(api,{isCurrent:()=>active});
+ const fields={reason:'核对后关闭',expected_version:'9007199254740993'};
+ const op=client.prepareChange(`/api/ingest-reliability/cases/${A}/close`,fields);
+ fields.reason='调用方后续改动';fields.expected_version='2';
+ check(/^[0-9a-f-]{36}$/.test(op.key),'cryptographic UUID operation key');
+ const one=op.run(),two=op.run();check(one===two&&calls.length===1,'double click shares one in-flight operation');
+ pending.reject(error(503));await one.catch(()=>{});
+ pending=deferred();const retry=op.run();pending.resolve({entity:{id:A,version:'9007199254740994',state:'closed'},replayed:true});
+ check((await retry).replayed,'uncertain retry resolves replay');
+ check(JSON.stringify(calls[0])===JSON.stringify(calls[1]),'503 retry preserves path and exact body');
+ check(calls[0].body.reason==='核对后关闭'&&calls[0].body.expected_version==='9007199254740993','snapshot independent from caller mutation');
+ await op.run();check(calls.length===2,'successful operation is not submitted again');
+ for(const status of [401,403,404,409,422]){
+   pending=deferred();const terminal=client.prepareChange(`/api/ingest-reliability/cases/${A}/note`,{reason:'测试拒绝',expected_version:'1'});
+   const response=terminal.run();pending.reject(error(status));await response.catch(()=>{});
+   const count=calls.length;await terminal.run().catch(()=>{});check(calls.length===count,`${status} is not automatically retried`);
+ }
+ pending=deferred();const timeout=client.prepareChange(`/api/ingest-reliability/cases/${A}/note`,{reason:'连接断开',expected_version:'1'});
+ const timed=timeout.run();pending.reject(Error('network'));await timed.catch(()=>{});const before=calls.at(-1);
+ pending=deferred();const again=timeout.run();pending.resolve({entity:{id:A,version:'2',state:'open'}});await again;
+ check(JSON.stringify(before)===JSON.stringify(calls.at(-1)),'network failure keeps original request');
+ let resolveRead;const reader=createIngestClient({get:()=>new Promise(resolve=>{resolveRead=resolve;})},{isCurrent:()=>true});
+ const read=reader.read('/api/ingest-reliability/health');reader.dispose();resolveRead({healthy:true});check(await read===null,'disposed reads are ignored');
+ client.dispose();const count=calls.length;await op.run().catch(()=>{});check(calls.length===count,'disposed client cannot submit');
+
+ let generation=1,selected={kind:'cases',entity:{id:A,version:'9007199254740993',state:'open'},generation};
+ let responseMode='uncertain',held=null,changed=[],sent=[];
+ const actionApi={post:async(path,body)=>{
+   sent.push({path,body:structuredClone(body)});
+   if(responseMode==='uncertain')throw error(503);
+   if(responseMode==='forbidden')throw error(403);
+   if(responseMode==='conflict')throw error(409);
+   if(responseMode==='hold'){held=deferred();return held.promise;}
+   return{entity:{id:body.expected_version==='1'?B:A,version:'9007199254740994',state:'closed'},replayed:responseMode==='replay'};
+ }};
+ let changeMode='normal',heldRefresh=null;
+ const realClient=createIngestClient(actionApi,{isCurrent:()=>active});
+ const mounted=mountIngestActions({root,client:realClient,permissions:new Set(['ingest.read','ingest.manage']),isCurrent:()=>active,
+   onChanged:async event=>{changed.push(event);if(changeMode==='hold'){heldRefresh=deferred();return heldRefresh.promise;}if(changeMode==='fail')throw error(503);return{...selected.entity,version:'9007199254740994'};}});
+ function select(entity,kind='cases'){
+   root.dispatchEvent(new CustomEvent('ingest:selection-start'));
+   selected={kind,entity,generation:++generation};root.dispatchEvent(new CustomEvent('ingest:selection',{detail:selected}));
+ }
+ function form(){return root.querySelector('[data-ingest-action-form]');}
+ function submit(){form().dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}
+ function open(action='close'){root.querySelector(`[data-ingest-action="${action}"]`).click();}
+ select(selected.entity);open();
+ form().querySelector('[name="reason"]').value=' ';submit();await tick();check(sent.length===0,'blank reason blocked');
+ form().querySelector('[name="reason"]').value='核对原报文后处理';submit();await tick();
+ check(root.textContent.includes('尚未确认'),'uncertain write not reported uncommitted');
+ check(form().querySelector('[name="reason"]').disabled,'uncertain body cannot be edited');
+ const original=sent[0];responseMode='replay';root.querySelector('[data-ingest-retry]').click();await tick();await tick();
+ check(JSON.stringify(original)===JSON.stringify(sent[1]),'retry button uses original UUID and body');
+ check(changed.length===1&&root.textContent.includes('重试确认'),'replayed success is shown and refreshed once');
+
+ responseMode='conflict';select({id:A,version:'1',state:'open'});open();form().querySelector('[name="reason"]').value='版本冲突仍保留说明';submit();await tick();await tick();
+ check(form().querySelector('[name="reason"]').value==='版本冲突仍保留说明','409 refresh preserves reason');
+ check(root.textContent.includes('已变化')&&!form().querySelector('[name="reason"]').disabled,'409 asks explicit review before a new request');
+ const rejected=sent.at(-1);responseMode='success';submit();await tick();await tick();
+ check(sent.at(-1).body.expected_version==='9007199254740994'&&sent.at(-1).body.idempotency_key!==rejected.body.idempotency_key,'explicit conflict resubmit uses refreshed version and new key');
+
+ responseMode='forbidden';select({id:A,version:'1',state:'open'});open('note');form().querySelector('[name="reason"]').value='权限已被撤销';submit();await tick();
+ const deniedCount=sent.length;check(root.textContent.includes('权限')&&!root.querySelector('[data-ingest-retry]'),'403 shows permission failure without retry');
+ submit();await tick();check(sent.length===deniedCount,'403 form cannot resubmit');
+
+ responseMode='hold';select({id:A,version:'1',state:'open'});open();form().querySelector('[name="reason"]').value='迟到写请求';submit();await tick();
+ const oldChanges=changed.length;select({id:B,version:'7',state:'closed'});held.resolve({entity:{id:A,version:'2',state:'closed'}});await tick();await tick();
+ check(changed.length===oldChanges&&root.querySelector('[data-ingest-action="reopen"]'),'late write cannot repaint new selection or start old refresh');
+
+ responseMode='success';changeMode='hold';select({id:A,version:'1',state:'open'});open();form().querySelector('[name="reason"]').value='迟到刷新';submit();await tick();
+ select({id:B,version:'7',state:'closed'});heldRefresh.resolve({id:A,version:'2',state:'closed'});await tick();
+ check(!root.querySelector('[data-ingest-action-form]')&&root.querySelector('[data-ingest-action="reopen"]'),'late post-success refresh cannot restore old form');
+ changeMode='fail';responseMode='success';select({id:A,version:'1',state:'open'});open();form().querySelector('[name="reason"]').value='提交成功但刷新失败';submit();await tick();await tick();
+ check(root.textContent.includes('操作已提交')&&!root.querySelector('[data-ingest-retry]'),'confirmed commit plus refresh failure is not an uncertain write');
+ responseMode='conflict';select({id:A,version:'1',state:'open'});open();form().querySelector('[name="reason"]').value='等待最新版本';submit();await tick();await tick();
+ check(form().querySelector('[name="reason"]').value==='等待最新版本'&&form().querySelector('[type="submit"]').disabled,'failed 409 refresh preserves reason and blocks stale resubmit');
+ changeMode='normal';root.querySelector('[data-ingest-refresh-version]').click();await tick();
+ check(!form().querySelector('[type="submit"]').disabled,'explicit version refresh restores submit only after read');
+ select({id:A,version:'4',delivery_state:'broker_confirmed',status:'quarantined'},'receipts');
+ check(root.querySelector('[data-ingest-action="resend"]')&&!root.querySelector('[data-ingest-action="close"]'),'receipt has only resend operation');
+ mounted.dispose();realClient.dispose();root.querySelector('[data-ingest-actions]').replaceChildren();
+ const readonly=mountIngestActions({root,client:createIngestClient(actionApi,{isCurrent:()=>true}),permissions:new Set(['ingest.read']),onChanged:()=>{},isCurrent:()=>true});
+ select({id:A,version:'1',state:'open'});check(!root.querySelector('[data-ingest-action]'),'reader has no management controls');readonly.dispose();
+ check(!document.querySelector('.ingest-reliability img, .ingest-reliability script'),'actions never inject content');
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,checks,body:root.textContent});}
+</script>

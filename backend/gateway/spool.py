@@ -29,13 +29,27 @@ class DurableSpool:
     ):
         if max_attempts < 1 or base_backoff_seconds <= 0 or max_backoff_seconds < base_backoff_seconds:
             raise ValueError("invalid retry policy")
-        self.path = Path(path)
+        self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.max_attempts = max_attempts
         self.base_backoff_seconds = float(base_backoff_seconds)
         self.max_backoff_seconds = float(max_backoff_seconds)
         self._lock = threading.RLock()
-        self._connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        self._connection = None
+        self._ownership = None
+        try:
+            from .spool_migrate import acquire_spool_lock
+            from backend.ingest_reliability.errors import ReliabilityError
+            self._ownership = acquire_spool_lock(self.path)
+            self._connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+            if self._connection.execute('PRAGMA user_version').fetchone()[0] not in (0, 1):
+                raise ReliabilityError('ingest.spool_version_incompatible', '旧版网关不能打开已升级或未知版本的队列')
+            self._initialize_legacy_schema()
+        except BaseException:
+            self.close()
+            raise
+
+    def _initialize_legacy_schema(self):
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=FULL")
@@ -63,9 +77,14 @@ class DurableSpool:
 
     def close(self):
         with self._lock:
-            if self._connection is not None:
-                self._connection.close()
-                self._connection = None
+            try:
+                if self._connection is not None:
+                    self._connection.close()
+                    self._connection = None
+            finally:
+                if self._ownership is not None:
+                    self._ownership.release()
+                    self._ownership = None
 
     def enqueue(self, message_id: str, topic: str, payload: bytes, *, qos: int = 1, now: float | None = None) -> bool:
         timestamp = time.time() if now is None else float(now)

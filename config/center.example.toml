@@ -36,3 +36,100 @@ sslmode = "prefer"
 # user = "oilwell_reader"
 # password_credential = "OilWell.PostgreSQL.Reader"
 # sslmode = "prefer"
+
+# Independent production device registry (observation only; no remote control).
+# Keep disabled until an administrator explicitly applies registry DDL/grants.
+# No production wells/devices are seeded, and no credentials are reused here.
+[registry]
+enabled = false
+# Required when enabled. Exact browser Origin; default 80/443 omitted, no wildcard.
+# allowed_origins = ["http://127.0.0.1:8765", "http://localhost:8765"]
+# Integer seconds, at most 86400; delayed must be greater than online.
+# online_seconds = 120
+# delayed_seconds = 900
+# clock_tolerance_seconds = 300
+
+# Required together with [postgres_query] when registry.enabled = true.
+# All three PG sections must have exactly equal host/port/database and distinct users.
+# Runtime connection timeout is fixed at 3 seconds; lock/statement waits at 1/3 seconds.
+# [postgres_registry]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_registry_writer"
+# password_credential = "OilWell.PostgreSQL.RegistryWriter"
+# sslmode = "prefer"
+# Remote writer AND reader require sslmode="verify-full" and sslrootcert.
+# sslrootcert = "certs/postgresql-ca.crt"
+# Registry startup never falls back to [postgres] and never grants/repairs permissions.
+
+# Durable reception is independent of the device registry. Leave disabled
+# until explicit schema migration, least-privilege grants and --check succeed.
+# Never enable by granting administrator rights to the old [postgres] account.
+[reliability]
+enabled = false
+# Logical raw-byte budgets are examples, NOT physical disk capacity guarantees.
+# total_bytes = 1073741824
+# quarantine_bytes = 268435456
+# receipt_gateways = [] # Explicit allowlist; empty means no application receipts.
+# receive_maximum = 20 # Bounded concurrent inbound QoS 1/2 MQTT messages.
+# publish_batch_size = 20
+# lease_seconds = 30
+# retry_max_seconds = 300
+# health_stale_seconds = 120
+# allowed_origins = ["http://127.0.0.1:8765", "http://localhost:8765"]
+
+# Every declared reliability PG section and [postgres] must use the exact same
+# host/port/database, with distinct users. Each process resolves only its roles.
+# A remote connection requires sslmode="verify-full" and sslrootcert.
+# [postgres_reliable_ingest]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_reliable_ingestor"
+# password_credential = "OilWell.PostgreSQL.ReliableIngestor"
+# sslmode = "prefer"
+# [postgres_receipt_publisher]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_receipt_publisher"
+# password_credential = "OilWell.PostgreSQL.ReceiptPublisher"
+# sslmode = "prefer"
+# [postgres_ingest_reader]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_ingest_reader"
+# password_credential = "OilWell.PostgreSQL.IngestReader"
+# sslmode = "prefer"
+# [postgres_ingest_operator]
+# host = "127.0.0.1"
+# port = 5432
+# database = "oilwell_platform"
+# user = "oilwell_ingest_operator"
+# password_credential = "OilWell.PostgreSQL.IngestOperator"
+# sslmode = "prefer"
+
+# Independent MQTT identity: never reuse the receiver username or client_id.
+# Broker ACL must grant only receipt publishing, not telemetry publishing.
+# Remote broker requires ca_cert and normal hostname verification.
+# Run separately from the ingestor:
+# python -m backend.ingest_reliability --config <path> --check
+# --check validates schema, publisher-role permissions and capacity; no MQTT I/O.
+# python -m backend.ingest_reliability --config <path> --once
+# Without either flag, runs continuously with bounded retries; Ctrl+C stops it.
+# No runtime migration or automatic grants. --once exits nonzero on failure.
+# published means Broker PUBACK, NOT gateway confirmation. 0x10 is retryable.
+# lease_seconds must exceed publish_timeout_seconds + 3 seconds for DB writes.
+# Heartbeat proves only sender health; never device connectivity. Clock rollback
+# warnings survive successful heartbeats for the affected worker instance.
+# [mqtt_receipt_publisher]
+# host = "127.0.0.1"
+# port = 1883
+# client_id = "platform-receipts"
+# username = "platform-receipt-publisher"
+# password_credential = "OilWell.MQTT.Receipts"
+# keepalive_seconds = 30
+# connect_timeout_seconds = 10
+# publish_timeout_seconds = 10

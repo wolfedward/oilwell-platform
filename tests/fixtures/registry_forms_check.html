@@ -1,0 +1,168 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+import {renderFieldRegistry} from REGISTRY_MODULE;
+import {mountCentralOperations} from CENTRAL_MODULE;
+import {components,escapeHtml} from COMPONENT_MODULE;
+import * as format from FORMAT_MODULE;
+const checks=[],check=(ok,label)=>{if(!ok)throw new Error(label);checks.push(label);};
+const flush=()=>new Promise(resolve=>setTimeout(resolve,0));
+const root=document.querySelector('#root');
+const D='00000000-0000-0000-0000-000000000001', E='00000000-0000-0000-0000-000000000002';
+const W='00000000-0000-0000-0000-000000000003', X='00000000-0000-0000-0000-000000000004';
+const attack='</textarea><script>window.registryInjected=true<\/script><img src=x onerror="window.registryInjected=true">';
+const unitAttack='</textarea><script>x=1<\/script>';
+let current=true, postError=null, heldPost=null, hold=false, rejectRead=false, holdWells=false, releaseWells=null;
+let holdNextDeviceList=false, releaseDeviceList=null;
+const calls=[],sent=[],maps=[];
+const devices=new Map([[D,{id:D,name:'终端甲',gateway_id:'GW',device_id:'D',transport:'modbus_tcp',usage:'commissioning',usage_locked:false,status:'pending',version:'9007199254740993'}],
+  [E,{id:E,name:'终端乙',gateway_id:'GW',device_id:'E',transport:'mqtt_direct',usage:'commissioning',usage_locked:false,status:'pending',version:'1'}]]);
+const wells=[{id:W,area_code:'A',well_code:'W',name:'井甲',status:'active',version:'1'}, {id:X,area_code:'A',well_code:'X',name:'井乙',status:'active',version:'1'}];
+let bound=null,assignment=null;
+const contextData={registry_revision:'9007199254740993',received_before:'2026-09-23T12:00:00.123456+00:00'};
+const paged=(items,url,total=items.length)=>({items:structuredClone(items),total,page:Number(url.searchParams.get('page')||1),page_size:20,...contextData});
+const api={get:async path=>{
+  calls.push(path);const url=new URL(path,'http://localhost'), route=url.pathname;
+  if(route==='/api/registry/wells'){
+    const response=paged(wells.filter(w=>!url.searchParams.get('status') || w.status===url.searchParams.get('status')),url);
+    if(holdWells)return new Promise(resolve=>{releaseWells=()=>resolve(response);});
+    return response;
+  }
+  if(route==='/api/registry/devices'){
+    const response=paged([...devices.values()],url);
+    if(holdNextDeviceList){holdNextDeviceList=false;return new Promise(resolve=>{releaseDeviceList=()=>resolve(response);});}
+    return response;
+  }
+  const id=route.split('/')[4];
+  if(devices.has(id) && route===`/api/registry/devices/${id}`)return{...structuredClone(devices.get(id)),...contextData};
+  if(route.endsWith('/link-status'))return{link_status:'never_reported',last_received_at:null,...contextData};
+  if(route.endsWith('/bindings'))return paged(bound?[{well_id:bound,valid_from:'2026-09-23T00:00:00.123456+00:00',valid_to:null,audit_event_id:'event'}]:[],url);
+  if(route.endsWith('/point-map-assignments'))return paged(assignment?[{map_version:assignment,valid_from:'2026-09-23T00:00:00.123456+00:00',valid_to:null}]:[],url);
+  if(route.endsWith('/point-maps'))return paged(maps.filter(m=>m.device_id===id).toReversed(),url);
+  if(route.endsWith('/state-history'))return paged([{status:devices.get(id).status,valid_from:'2026-09-23T00:00:00.123456+00:00',valid_to:null,audit_event_id:'event'}],url);
+  if(route==='/api/registry/audit')return paged([{id:'event',actor:{display_name:attack,username:'tester'},reason:attack,action:'device.bind',event_at:'2026-09-23T00:00:00.123456+00:00',before_data:{},after_data:{}}],url);
+  if(route==='/api/registry/resolved-telemetry'){
+    if(rejectRead)throw Object.assign(new Error('changed'),{status:409});
+    return {...paged([{gateway_id:'UNKNOWN',device_id:'D',point_code:'load',value:32.4,unit:'kN',sequence:'9007199254740993',source:attack,quality:'bad',reasons:['not_registered','quality_bad'],matched:false,eligible_for_automation:false,application_status:'unverified',expected_map_version:null,reported_map_version:null,measured_at:'2026-09-23T00:00:00.123456+00:00'}],url,25),query_total:'25',from_time:'2026-09-22T12:00:00.123456+00:00',to_time:'2026-09-23T12:00:00.123456+00:00'};
+  }
+  throw new Error('Unexpected GET '+path);
+},post:async(path,body)=>{
+  sent.push({path,body:structuredClone(body)});
+  if(postError){const error=postError;postError=null;throw error;}
+  if(hold)return new Promise(resolve=>{heldPost=resolve;});
+  const id=path.split('/')[4],device=devices.get(id);
+  if(path==='/api/registry/wells'){wells.push({id:'00000000-0000-0000-0000-000000000005',...body,status:'active',version:'1'});return{entity:wells.at(-1)};}
+  if(path==='/api/registry/devices'){const created={id:'00000000-0000-0000-0000-000000000006',...body,status:'pending',version:'1'};devices.set(created.id,created);return{entity:created};}
+  if(path.startsWith('/api/registry/wells/')){const well=wells.find(w=>w.id===id);Object.assign(well,body,{version:String(BigInt(well.version)+1n)});return{entity:well};}
+  check(body.expected_version===device.version,'mutation uses current device string version');
+  device.version=String(BigInt(device.version)+1n);
+  if(path.endsWith('/changes'))Object.assign(device,body);
+  if(path.endsWith('/bindings')){bound=body.well_id;assignment=null;if(device.status==='active')device.status='suspended';}
+  if(path.endsWith('/unbind')){bound=null;assignment=null;if(device.status==='active')device.status='suspended';}
+  if(path.endsWith('/point-maps'))maps.push({device_id:id,version:String(maps.length+1),parent_version:body.parent_version,sha256:'a'.repeat(64),status:'draft',content:{transport:device.transport,points:body.points},created_at:'2026-09-23T00:00:00.123456+00:00'});
+  if(path.endsWith('/review'))maps.find(m=>m.version===path.split('/')[6]).status=body.decision;
+  if(path.endsWith('/point-map-assignment'))assignment=body.map_version;
+  if(path.endsWith('/state'))device.status=body.status;
+  return{entity:structuredClone(device),replayed:false};
+}};
+const permissions=['registry.read','registry.wells.manage','registry.devices.manage','registry.bindings.manage','registry.maps.manage','registry.review','acquisition.read','telemetry.read','audit.read'];
+const context=(extra={})=>({workspace:root,api,components,format,escapeHtml,permissions:new Set(permissions),params:{},page:{},pageHeader:()=>'<h1>台账</h1>',isCurrent:()=>current,navigate:()=>{},...extra});
+const click=async(action,scope=root)=>{const el=scope.querySelector(`[data-action="${action}"]`);check(Boolean(el),'available '+action);el.click();await flush();return document.querySelector('[role="dialog"]');};
+const set=(dialog,name,value)=>{const field=dialog.querySelector(`[name="${name}"]`);check(Boolean(field),'field '+name);field.value=value;};
+const submit=async(dialog)=>{await click('submit-registry',dialog);await flush();};
+const select=async(id=D)=>{root.querySelector(`[data-registry-device="${id}"]`).click();await flush();await flush();};
+try{
+ await renderFieldRegistry(context());await select();
+ check(!root.querySelector('[data-action="suspend-device"]'),'pending registry cannot offer invalid suspension transition');
+ let dialog=await click('edit-device');set(dialog,'name','修改后的终端');set(dialog,'reason','核对设备铭牌');await submit(dialog);
+ check(sent.at(-1).body.expected_version==='9007199254740993','actual form preserves unsafe-integer version as string');
+ check(!document.querySelector('[role="dialog"]') && root.textContent.includes('修改后的终端'),'confirmed write rereads current entity');
+ dialog=await click('create-well');set(dialog,'area_code','B');set(dialog,'well_code','Y');set(dialog,'name','新井');set(dialog,'reason','核对井场编号');await submit(dialog);
+ check(sent.at(-1).path==='/api/registry/wells','well registration posts collection');
+ dialog=await click('edit-well');set(dialog,'name','修正井名');set(dialog,'reason','核对生产目录');await submit(dialog);
+ check(sent.at(-1).path===`/api/registry/wells/${W}/changes`,'well rename uses changes route');
+ const count=sent.length;dialog=await click('archive-well');await click('cancel-registry',dialog);check(sent.length===count,'archive cancel makes no write');
+ await select();dialog=await click('bind-device');set(dialog,'well_id',W);set(dialog,'reason','核对设备和井号');await submit(dialog);
+ check(bound===W && sent.at(-1).path.endsWith('/bindings'),'actual binding action');
+ dialog=await click('create-map');const row=dialog.querySelector('[data-point-row]');check(Boolean(row),'point editor has real fieldset');
+ set(row,'point_code','load');set(row,'unit',unitAttack);set(row,'unit_id','1');set(row,'function_code','4');set(row,'address','0');set(row,'data_type','float32');
+ set(dialog,'reason','核对厂家寄存器表');await submit(dialog);
+ check(sent.at(-1).body.parent_version===null && sent.at(-1).body.points[0].address===0 && sent.at(-1).body.points[0].function_code===4 && sent.at(-1).body.points[0].writable===false,'readonly zero-based Modbus point payload');
+ dialog=await click('review-map');check(dialog.textContent.includes('a'.repeat(64)) && dialog.textContent.includes('load'),'review displays exact digest and full content');
+ check(dialog.textContent.includes(unitAttack) && !dialog.querySelector('script') && !window.x,'review snapshot with closing tags is only text');
+ set(dialog,'decision','approved');set(dialog,'reason','核对点表定义');await submit(dialog);
+ check(sent.at(-1).path.endsWith('/point-maps/1/review') && sent.at(-1).body.sha256==='a'.repeat(64) && !('map_version' in sent.at(-1).body),'review route owns version and body exact displayed SHA');
+ dialog=await click('assign-map');check(dialog.textContent.includes('不下发到设备'),'assignment clearly platform-only');set(dialog,'reason','关联核实点表');set(dialog,'confirm','');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
+ check(assignment==='1','separate assignment action');
+ dialog=await click('enable-device');set(dialog,'reason','核对后启用台账');set(dialog,'check_note','核实接线与身份，仅观测');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
+ check(devices.get(D).status==='active','manual evidence enables registry');
+ check(Boolean(root.querySelector('[data-action="suspend-device"]')),'active registry offers authorized suspension');
+ dialog=await click('suspend-device');set(dialog,'reason','暂停台账待核查');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
+ check(sent.at(-1).body.status==='suspended','explicit suspension uses state endpoint');
+ dialog=await click('enable-device');set(dialog,'reason','重新核查后启用');set(dialog,'check_note','重核身份和平台点表');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
+ dialog=await click('bind-device');set(dialog,'well_id',X);set(dialog,'reason','设备迁移井乙');await submit(dialog);
+ check(devices.get(D).status==='suspended' && assignment===null,'migration refresh shows suspension and cleared expected map');
+ dialog=await click('unbind-device');set(dialog,'reason','确认解除绑定');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);check(bound===null,'unbind action');
+ await click('history-state');check(root.textContent.includes('08:00:00.123456 +08:00'),'microseconds in explicit Beijing time');
+ await click('history-audit');check(root.textContent.includes(attack) && !root.querySelector('img') && !window.registryInjected,'audit actor and reason render text');
+ const auditForm=root.querySelector('[data-registry-audit-filter]');set(auditForm,'action','device.bind');auditForm.requestSubmit();await flush();check(calls.at(-1).includes('action=device.bind'),'audit filter uses explicit action');
+ // New MQTT device has no register editor and no hidden Modbus payload fields.
+ await select(E);dialog=await click('create-map');check(!dialog.querySelector('[name="address"]'),'MQTT hides register fields');set(dialog,'point_code','p');set(dialog,'unit','kW');set(dialog,'reason','核对直连测点');await submit(dialog);
+ check(!('address' in sent.at(-1).body.points[0]) && !('scale' in sent.at(-1).body.points[0]),'MQTT does not transmit hidden register fields');
+ dialog=await click('create-map');await click('add-point',dialog);check(dialog.querySelectorAll('[data-point-row]').length===2,'point add button');await click('remove-point',dialog.querySelectorAll('[data-point-row]')[1]);check(dialog.querySelectorAll('[data-point-row]').length===1,'point remove button');set(dialog,'point_code','p');set(dialog,'reason','');const beforeInvalid=sent.length;await submit(dialog);check(sent.length===beforeInvalid,'blank reason blocked');
+ const fieldset=dialog.querySelector('[data-point-row]');for(let i=1;i<257;i++)fieldset.parentElement.append(fieldset.cloneNode(true));set(dialog,'reason','校验过量测点');await submit(dialog);check(sent.length===beforeInvalid && dialog.textContent.includes('256'),'257 points blocked locally');await click('cancel-registry',dialog);
+ dialog=await click('create-device');set(dialog,'gateway_id','GW2');set(dialog,'device_id','D2');set(dialog,'name','新终端');set(dialog,'transport','mqtt_direct');set(dialog,'usage','commissioning');set(dialog,'reason','核实组合身份');await submit(dialog);
+ check(sent.at(-1).path==='/api/registry/devices' && sent.at(-1).body.transport==='mqtt_direct','device registration sends chosen protocol');await select(E);
+ // Failed submission retains exact request across uncertain retries, but current GET wins over old receipt.
+ for(const status of [0,500,502,503,504,599]){
+   dialog=await click('edit-device');set(dialog,'name','网络重试');set(dialog,'reason','核对设备名称');postError=Object.assign(new Error('lost'),{status,code:'unconfirmed'});await submit(dialog);
+   check(dialog.textContent.includes('未确认') && dialog.querySelector('[name="name"]').disabled,'uncertain locks original input '+status);
+   check(dialog.querySelector('[data-action="submit-registry"]').textContent.includes('重试原操作'),'uncertain retry remains available '+status);
+   const original=structuredClone(sent.at(-1)),beforeRetry=sent.length;await submit(dialog);
+   check(sent.length===beforeRetry+1 && JSON.stringify(original)===JSON.stringify(sent.at(-1)),'form retry preserves exact route/body/key '+status);
+   check(!document.querySelector('[role="dialog"]'),'confirmed retry closes form '+status);
+ }
+ for(const status of [401,403,409,422,503]){
+   dialog=await click('edit-device');set(dialog,'reason','错误提示测试');postError=Object.assign(new Error('failure'),{status});await submit(dialog);
+   check(dialog.textContent.includes(({401:'登录',403:'权限',409:'变更',422:'输入',503:'未确认'})[status]),'actionable HTTP '+status);
+   window.confirm=()=>true;await click('cancel-registry',dialog);
+ }
+ holdWells=true;dialog=await click('bind-device');const loadingSubmit=new Event('submit',{bubbles:true,cancelable:true});dialog.querySelector('form').dispatchEvent(loadingSubmit);
+ check(loadingSubmit.defaultPrevented,'loading form prevents native navigation on Enter');await select(D);releaseWells();holdWells=false;await flush();check(!document.querySelector('[role="dialog"]'),'stale well-picker response cannot reopen closed form');
+ // In-flight old form must not repaint a newly selected device, even on successful late reply.
+ await select(D);dialog=await click('edit-device');set(dialog,'reason','旧设备操作');hold=true;dialog.querySelector('[data-action="submit-registry"]').click();await flush();await select(E);heldPost({entity:{id:D,version:'2'},replayed:true});hold=false;await flush();await flush();
+ check(root.querySelector('[data-registry-detail]').textContent.includes('网络重试'),'late old form cannot redraw newer device');components.closeAllModals();
+ // The post is already confirmed, but its automatic list refresh R1 is still pending.
+ await select(D);dialog=await click('edit-device');set(dialog,'reason','成功后刷新竞态');holdNextDeviceList=true;await submit(dialog);
+ check(typeof releaseDeviceList==='function' && !document.querySelector('[role="dialog"]'),'successful write awaits held automatic refresh R1');
+ root.querySelector('[data-registry-refresh="devices"]').click();await flush();await select(E);
+ dialog=await click('edit-device');set(dialog,'name','新选择的未提交编辑');const beforeOldRefresh=calls.length;
+ releaseDeviceList();releaseDeviceList=null;await flush();await flush();
+ check(root.querySelector('[data-registry-detail]').textContent.includes('网络重试'),'stale post-success refresh cannot replace newer device');
+ check(document.querySelector('[role="dialog"]')===dialog && dialog.querySelector('[name="name"]').value==='新选择的未提交编辑','stale post-success refresh cannot close or overwrite newer form');
+ check(!calls.slice(beforeOldRefresh).some(path=>new URL(path,'http://localhost').pathname===`/api/registry/devices/${D}`),'stale refresh does not request old device again');
+ await click('cancel-registry',dialog);
+ await select(D);dialog=await click('retire-device');set(dialog,'reason','结束隔离联调登记');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);
+ check(!root.querySelector('[data-action="edit-device"]') && !root.querySelector('[data-action="create-map"]') && root.textContent.includes('非物理停机'),'retired entity has read-only UI');
+ dialog=await click('archive-well');set(dialog,'reason','井目录归档核对');dialog.querySelector('[name="confirm"]').checked=true;await submit(dialog);check(sent.at(-1).body.status==='archived','archive submits explicit status');
+ // Unknown pair provenance can be queried without creating a registry device.
+ await renderFieldRegistry(context({params:{view:'resolution',gateway_id:'UNKNOWN',device_id:'D'}}));await flush();
+ const queryForm=root.querySelector('[data-registry-resolution]');check(Boolean(queryForm),'resolution filter available');queryForm.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await flush();
+ check(root.textContent.includes('not_registered') && root.textContent.includes(attack) && !root.querySelector('img'),'provenance separates original source/quality and matching reasons');
+ root.querySelector('[data-history-page="resolution"][data-page-number="2"]').click();await flush();
+ const second=new URL(calls.filter(p=>p.startsWith('/api/registry/resolved-telemetry')).at(-1),'http://localhost');
+ check(second.searchParams.get('query_total')==='25' && second.searchParams.get('revision')===contextData.registry_revision,'raw page preserves count and revision');
+ set(queryForm,'mode','well');queryForm.elements.mode.dispatchEvent(new Event('change'));set(queryForm,'well_id',W);queryForm.requestSubmit();await flush();const byWell=new URL(calls.at(-1),'http://localhost');check(byWell.searchParams.get('well_id')===W && !byWell.searchParams.has('gateway_id'),'well provenance excludes hidden pair');
+ rejectRead=true;queryForm.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await flush();check(root.textContent.includes('台账已变更') && !root.querySelector('[data-resolution-results]').textContent.includes(attack),'409 clears previous provenance rows');rejectRead=false;
+ calls.length=0;await renderFieldRegistry(context({permissions:new Set(['registry.read'])}));await select();check(!root.querySelector('[data-action="history-audit"]') && !calls.some(p=>p.startsWith('/api/registry/audit')),'audit permission prevents button and requests');
+ const noWriteBefore=sent.length;root.querySelector('.field-registry').dispatchEvent(new CustomEvent('registry:action',{detail:{action:'create-device'}}));await flush();
+ check(!document.querySelector('[role="dialog"]') && sent.length===noWriteBefore,'forms recheck capability even if action is injected into DOM');
+ const centralRoot=document.createElement('div');document.body.append(centralRoot);const navigation=[];
+ const centralApi={get:async path=>path==='/api/central/health'?{status:'available',summary:{},links:[]}:{items:[{gateway_id:'UNKNOWN',device_id:'D',point_code:'load',value:1,quality:'good',unit:'kN',message_id:'M',sequence:'1'}],page:1,page_size:100,total:1}};
+ await mountCentralOperations({root:centralRoot,api:centralApi,components,format,permissions:new Set(['registry.read','telemetry.read']),isCurrent:()=>current,navigate:(...args)=>navigation.push(args)});
+ const inspect=centralRoot.querySelector('[data-registry-inspect]');check(Boolean(inspect),'central raw record has provenance entry');inspect.click();
+ check(navigation[0][0]==='field-registry' && navigation[0][1].gateway_id==='UNKNOWN' && navigation[0][1].device_id==='D' && navigation[0][1].view==='resolution','central navigation retains complete unknown pair');
+ await mountCentralOperations({root:centralRoot,api:centralApi,components,format,permissions:new Set(['telemetry.read']),isCurrent:()=>current,navigate:()=>{throw new Error('unexpected navigation');}});
+ check(!centralRoot.querySelector('[data-registry-inspect]'),'central entry hidden without registry permission');
+ current=false;document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:String(error),stack:error.stack,checks});}
+</script>

@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 Python 3.13、psycopg 3、PostgreSQL 18、标准库 HTTP 服务、原生 JavaScript/HTML/CSS、unittest 与本机 Edge；不增加框架或在线 CDN 依赖。
 
-**Spec:** [已确认详细设计](../specs/2026-09-23-production-device-registry-design.md)。实施者必须同时读设计和本计划；本文是待审阅实施计划，不是实现或测试结果。
+**Spec:** [已确认详细设计](../specs/2026-09-23-production-device-registry-design.md)。实施者必须同时读设计和本计划。用户已选择方式 1（当前会话逐项实施，最终独立审查）；本文描述实施目标，不能当作已经实现或通过测试的证明。
 
 ## Global Constraints
 

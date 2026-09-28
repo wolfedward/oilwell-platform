@@ -246,13 +246,24 @@ class WellApiTests(unittest.TestCase):
                 response, payload = self.request("GET", path, token=token)
                 self.assertEqual((response.status, payload["error"]["code"]), (404, "not_found"))
 
+    def test_rejected_route_preserves_response_with_request_body_in_flight(self):
+        # HTTPConnection sends headers and body separately. On Windows an
+        # immediate full close could reset the unread 404 response (10053).
+        for _ in range(30):
+            response, payload = self.request('PATCH', '/api/wells/W-001/extra/status',
+                                             {'reason': 'x' * 32768})
+            self.assertEqual((response.status, payload['error']['code']), (404, 'not_found'))
+
     def test_status_write_is_audited_versioned_permissioned_and_survives_restart(self):
         # Simulate the exact Task 4 manifest projection that included
         # wells.status, then force the one-time Task 5 hash migration.
+        # Stop all writers before constructing that historical snapshot. The
+        # overdue worker can otherwise change old-projection work-order status
+        # between computing its hash and shutdown, creating a corrupt fixture.
+        self.server.shutdown(); self.thread.join(); self.server.server_close()
         old_hash = _previous_content_hash(self.server.database, 202606, "")
         with self.server.database.transaction(None, "test.old_projection", "seed_manifest", "acceptance-history"):
             self.server.database.execute("UPDATE seed_manifests SET content_hash=? WHERE dataset_name=?", (old_hash, "acceptance-history"))
-        self.server.shutdown(); self.thread.join(); self.server.server_close()
         migrated = create_server("127.0.0.1", 0, database_path=self.path)
         migrated_thread = threading.Thread(target=migrated.serve_forever, daemon=True)
         migrated_thread.start()
