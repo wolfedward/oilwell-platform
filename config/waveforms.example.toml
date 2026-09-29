@@ -63,7 +63,8 @@ password_env = "WAVEFORM_GW_EXAMPLE_PUBLISHER_PASSWORD"
 ca_cert = "certs/ca.pem"
 keepalive_seconds = 30
 connect_timeout_seconds = 3
-session_expiry_seconds = 604800
+# Durable retries belong to the PostgreSQL outbox; each receipt uses a fresh session.
+session_expiry_seconds = 0
 
 [gateways.GW-EXAMPLE.mqtt_sender]
 host = "mqtt.example.invalid"

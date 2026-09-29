@@ -17,7 +17,7 @@ GRANT UPDATE(manifest_fact_id,manifest_outcome_id,manifest_sha256,last_valid_at,
     ON waveforms.captures TO {receiver};
 GRANT UPDATE(requested_generation,next_attempt_at,version) ON waveforms.assembly_jobs TO {receiver};
 GRANT UPDATE(state) ON waveforms.imports TO {receiver};
-GRANT UPDATE(version) ON waveforms.state_head TO {receiver},{assembler},{operator};
+GRANT UPDATE(version) ON waveforms.state_head TO {receiver},{assembler},{operator},{receipt_publisher};
 GRANT UPDATE(requested_generation,requested_at,next_attempt_at,version) ON waveforms.deliveries TO {receiver},{assembler};
 
 GRANT SELECT ON waveforms.facts,waveforms.message_outcomes,waveforms.captures,waveforms.streams,waveforms.chunks,waveforms.chunk_slots,
@@ -29,7 +29,7 @@ GRANT UPDATE(finished_generation,lease_token,lease_generation,lease_until,next_a
 GRANT UPDATE(state,reserved_raw_bytes,version) ON waveforms.captures TO {assembler};
 GRANT UPDATE(reserved_raw_bytes,used_incomplete_captures) ON waveforms.capacity TO {assembler};
 
-GRANT SELECT ON waveforms.receipts,waveforms.deliveries,waveforms.capacity TO {receipt_publisher};
+GRANT SELECT ON waveforms.receipts,waveforms.deliveries,waveforms.capacity,waveforms.state_head TO {receipt_publisher};
 GRANT UPDATE(sent_generation,lease_token,lease_generation,lease_until,next_attempt_at,attempts,last_error_code,broker_acked_at,version)
     ON waveforms.deliveries TO {receipt_publisher};
 GRANT UPDATE(last_clock_seen) ON waveforms.capacity TO {receipt_publisher};

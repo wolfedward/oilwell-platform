@@ -27,7 +27,7 @@ def config_sections():
     for role in ("receive", "publish", "sender"):
         sections["gateways.GW.mqtt_" + role] = {"host": "127.0.0.1", "port": 1883,
             "client_id": "waveform-GW-" + role, "username": "waveform-" + role,
-            "password_env": "TEST_MQTT_" + role.upper(), "session_expiry_seconds": 3600,
+            "password_env": "TEST_MQTT_" + role.upper(), "session_expiry_seconds": 0 if role == 'publish' else 3600,
             "keepalive_seconds": 10, "connect_timeout_seconds": 1}
     return sections
 
@@ -57,6 +57,16 @@ class WaveformConfigTests(unittest.TestCase):
         self.sections = {"waveforms": {"enabled": False}}
         with patch("psycopg.connect", side_effect=AssertionError("disabled connection")):
             self.assertIsNone(self.load())
+
+    def test_publisher_requires_zero_expiry_and_only_publisher_secrets(self):
+        section=self.sections['gateways.GW.mqtt_publish']
+        env={'TEST_WAVE_RECEIPT_PUBLISHER':'x','TEST_MQTT_PUBLISH':'x'}
+        section['session_expiry_seconds']=0
+        config=self.load('publish',env)
+        self.assertEqual(set(config.postgres),{'receipt_publisher'})
+        self.assertEqual(config.gateways[0].session_expiry_seconds,0)
+        section['session_expiry_seconds']=3600
+        with self.assertRaises(WaveformError): self.load('publish',env)
 
     def test_only_selected_credentials_are_resolved(self):
         config = self.load(env={"TEST_WAVE_RECEIVER": "private-value", "TEST_MQTT_RECEIVE": "private-mqtt"})

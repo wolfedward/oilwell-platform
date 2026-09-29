@@ -175,6 +175,7 @@ def load_waveform_config(path, *, component: str) -> WaveformConfig | None:
                 mqtt_users[username] = mqtt_role
             selected = gateway["mqtt_" + component] if component in ("receive", "publish", "sender") else None
             configured.append(GatewayConfig(gateway_id, source, _mqtt(selected, config_path) if selected else None,
+                _integer(selected["session_expiry_seconds"], 0, 0) if selected and component == "publish" else
                 _integer(selected["session_expiry_seconds"], 3600, 2592000) if selected else None))
         bucket = raw.get("management", {}).get("shared_accounting_bucket")
         if component == "management" and bucket not in limits.gateways:

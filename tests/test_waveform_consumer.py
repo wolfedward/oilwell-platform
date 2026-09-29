@@ -271,14 +271,14 @@ class WaveformConsumerTests(WaveformDatabaseCase):
         self.assertEqual(result.reason_code, "qos_not_supported")
         self.assertEqual(peer.ack_calls, [])
 
-    def test_real_cli_check_and_publish_unavailable(self):
+    def test_real_cli_component_checks(self):
         from tests.waveform_stack import Stack
         import os
         import subprocess
         import sys
         with Stack(self) as stack:
             env = dict(os.environ, TEST_WAVEFORM_MQTT=stack.broker.password, PYTHONUTF8="1")
-            for component, expected in (("receive", 0), ("assemble", 0), ("publish", 2)):
+            for component, expected in (("receive", 0), ("assemble", 0), ("publish", 0)):
                 result = subprocess.run([sys.executable, "-m", "backend.waveforms", "--config", str(stack.config), component, "--check"],
                     capture_output=True, text=True, env=env, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)

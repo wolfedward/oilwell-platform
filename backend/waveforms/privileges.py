@@ -8,7 +8,7 @@ VIEWS = set("fact_metadata outcome_metadata capture_metadata receipt_metadata au
 SELECT = {
     "receiver": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines capacity state_head worker_health".split()),
     "assembler": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts completion receipts deliveries assembly_jobs capacity state_head worker_health".split()),
-    "receipt_publisher": set("schema_migrations receipts deliveries capacity worker_health".split()),
+    "receipt_publisher": set("schema_migrations receipts deliveries capacity worker_health state_head".split()),
     "reader": {"schema_migrations"} | VIEWS,
     "operator": {"schema_migrations", "state_head", "operation_receipts"} | VIEWS,
 }
@@ -35,6 +35,7 @@ UPDATE = {
         "worker_health": set("last_seen last_success last_failure error_code".split()),
     },
     "receipt_publisher": {
+        "state_head": {"version"},
         "capacity": {"last_clock_seen"},
         "deliveries": set("sent_generation lease_token lease_generation lease_until next_attempt_at attempts last_error_code broker_acked_at version".split()),
         "worker_health": set("last_seen last_success last_failure error_code".split()),

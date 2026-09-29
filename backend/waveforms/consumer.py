@@ -143,7 +143,7 @@ def check_component(config, connections=None):
     from .privileges import probe_role
     if config is None:
         return
-    if config.component in ("publish", "management"):
+    if config.component == "management":
         raise WaveformError("waveform.component_unavailable", "Component implementation is not yet available")
     connections = connections or DatabaseConnections(config)
     try:
@@ -167,7 +167,7 @@ def check_component(config, connections=None):
                     for key, quota in sorted({"*": config.limits.global_quota, **config.limits.gateways}.items())]
                 if connection.execute(query).fetchall() != expected:
                     raise WaveformError("waveform.capacity_configuration", "Configured capacities differ from storage")
-        if config.component in ("receive", "sender"):
+        if config.component in ("receive", "sender", "publish"):
             # Construct clients to check installed API and certificates, without sockets.
             for gateway in config.gateways:
                 create_client(gateway)

@@ -36,7 +36,7 @@ def sections_for(fixture, *, limits=LIMITS, port=1883):
             sections[prefix + ".mqtt_" + role] = {"host": "127.0.0.1", "port": port,
                 "client_id": "wp04-" + gateway + "-" + role + "-" + uuid4().hex,
                 "username": "waveform-" + gateway + "-" + role, "password_env": "TEST_WAVEFORM_MQTT",
-                "session_expiry_seconds": 3600, "keepalive_seconds": 10, "connect_timeout_seconds": 1}
+                "session_expiry_seconds": 0 if role == 'publish' else 3600, "keepalive_seconds": 10, "connect_timeout_seconds": 1}
     return sections
 
 
@@ -59,7 +59,7 @@ class Broker:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
-        users = ["waveform-" + gateway + "-" + role for gateway in gateways for role in ("receive", "sender")]
+        users = ["waveform-" + gateway + "-" + role for gateway in gateways for role in ("receive", "sender", "publish")]
         password_file = root / "passwords"
         passwd = self.executable.with_name("mosquitto_passwd.exe" if os.name == "nt" else "mosquitto_passwd")
         for index, user in enumerate(users):
@@ -69,7 +69,9 @@ class Broker:
                 raise RuntimeError("Owned broker credential setup failed")
         acl = root / "acl"
         acl.write_text("\n".join(f"user waveform-{gateway}-{role}\ntopic {access} oil/v2/{gateway}/+/waveform\n"
-            for gateway in gateways for role, access in (("receive", "read"), ("sender", "write"))), encoding="utf-8")
+            + (f"topic read oil/v2/{gateway}/+/waveform-ack\n" if role == 'sender' else '')
+            for gateway in gateways for role, access in (("receive", "read"), ("sender", "write")))
+            + '\n' + '\n'.join(f'user waveform-{gateway}-publish\ntopic write oil/v2/{gateway}/+/waveform-ack\n' for gateway in gateways), encoding="utf-8")
         self.config = root / "mosquitto.conf"
         self.config.write_text(f"listener {self.port} 127.0.0.1\nallow_anonymous false\n"
             f"password_file {password_file.as_posix()}\nacl_file {acl.as_posix()}\npersistence false\n"

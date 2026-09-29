@@ -5,6 +5,7 @@ import sys
 import threading
 from backend.waveforms.config import load_waveform_config
 from backend.waveforms.consumer import check_component, run_receive, run_assemble
+from backend.waveforms.publisher import run_publish
 from backend.waveforms.errors import WaveformError
 
 _output_lock = threading.Lock()
@@ -64,6 +65,16 @@ def main():
                     raise WaveformError("waveform.test_timeout", "Owned test delivery wait timed out")
                 return handle(self, session, message)
             consumer.create_client, consumer.WaveformConsumer.handle_message = create_traced, paused
+        elif args.fault == "pause_publish_finish":
+            from backend.waveforms.outbox import WaveOutbox
+            original_finish = WaveOutbox.finish
+            def paused_finish(self, lease, **kwargs):
+                if kwargs['delivered']:
+                    emit('publisher_finish_paused', receipt_id=str(lease.receipt_id))
+                    if not release.wait(30):
+                        raise WaveformError('waveform.test_timeout', 'Owned publisher pause timed out')
+                return original_finish(self, lease, **kwargs)
+            WaveOutbox.finish = paused_finish
         elif args.fault == "query_in_ingest":
             from backend.waveforms.repository import WaveformRepository
             original = WaveformRepository._store
@@ -111,7 +122,7 @@ def main():
                 return connect
             Assembler.claim, DatabaseConnections.factory = claim, factory
         threading.Thread(target=commands, daemon=True).start()
-        runner = run_receive if args.component == "receive" else run_assemble
+        runner = {'receive': run_receive, 'assemble': run_assemble, 'publish': run_publish}[args.component]
         runner(config, stop, on_event=emit)
         emit("stopped", remaining_threads=[thread.name for thread in threading.enumerate()
                                           if thread.name.startswith("waveform-")])

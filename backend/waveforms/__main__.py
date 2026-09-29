@@ -5,6 +5,7 @@ import signal
 import threading
 from .config import load_waveform_config
 from .consumer import check_component, run_receive, run_assemble
+from .publisher import run_publish
 from .errors import WaveformError
 
 
@@ -25,11 +26,9 @@ def main(argv=None):
             check_component(config)
             print(json.dumps({"status": "checked", "component": args.component}), flush=True)
             return 0
-        if args.component == "publish":
-            raise WaveformError("waveform.component_unavailable", "Receipt publisher is not implemented yet")
         for kind in (signal.SIGINT, signal.SIGTERM):
             previous[kind] = signal.signal(kind, lambda *_args: stop.set())
-        runner = run_receive if args.component == "receive" else run_assemble
+        runner = {"receive": run_receive, "assemble": run_assemble, "publish": run_publish}[args.component]
         runner(config, stop)
         return 0
     except (WaveformError, ImportError) as error:
