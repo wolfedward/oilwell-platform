@@ -28,7 +28,7 @@ LIMITS = CapacityLimits(
     gateways={"GW": Quota(raw_bytes=268435456,facts=25000,attachment_bytes=33554432,
         incomplete_captures=4,orphan_bytes=2097152,quarantine_bytes=4194304,
         metadata_rows=250000,orphan_bytes_per_capture=524288)})
-RESET_TABLES = "observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
+RESET_TABLES = "observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
 
 
 class WaveformDatabaseCase(unittest.TestCase):

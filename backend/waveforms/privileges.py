@@ -3,17 +3,17 @@ import psycopg
 from .errors import WaveformError
 from .migrate import RUNTIME_ROLES, check_schema
 
-TABLES = set("schema_migrations capacity facts message_outcomes observations captures streams chunks chunk_slots completion capture_conflicts assembly_jobs receipts deliveries imports import_lines worker_health audit operation_receipts state_head".split())
+TABLES = set("schema_migrations capacity facts message_outcomes observations captures streams chunks chunk_slots completion capture_conflicts assembly_jobs receipts deliveries imports import_lines import_events worker_health audit operation_receipts state_head".split())
 VIEWS = set("fact_metadata outcome_metadata capture_metadata receipt_metadata audit_metadata capacity_metadata worker_metadata".split())
 SELECT = {
-    "receiver": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines capacity state_head worker_health".split()),
+    "receiver": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines import_events operation_receipts capacity state_head worker_health".split()),
     "assembler": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts completion receipts deliveries assembly_jobs capacity state_head worker_health".split()),
     "receipt_publisher": set("schema_migrations receipts deliveries capacity worker_health state_head".split()),
     "reader": {"schema_migrations"} | VIEWS,
     "operator": {"schema_migrations", "state_head", "operation_receipts"} | VIEWS,
 }
 INSERT = {
-    "receiver": set("facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines audit worker_health".split()),
+    "receiver": set("facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines import_events operation_receipts audit worker_health".split()),
     "assembler": {"completion","receipts","deliveries","worker_health"},
     "receipt_publisher": {"worker_health"}, "reader": set(), "operator": {"audit","operation_receipts"},
 }
@@ -23,7 +23,7 @@ UPDATE = {
         "observations": set("last_seen duplicate_count anomaly_count counters_saturated".split()),
         "captures": set("manifest_fact_id manifest_outcome_id manifest_sha256 last_valid_at reserved_raw_bytes used_raw_bytes orphan_bytes version".split()),
         "assembly_jobs": set("requested_generation next_attempt_at version".split()),
-        "imports": {"state"}, "state_head": {"version"},
+        "imports": {"state", "version"}, "state_head": {"version"},
         "deliveries": set("requested_generation requested_at next_attempt_at version".split()),
         "worker_health": set("last_seen last_success last_failure error_code".split()),
     },

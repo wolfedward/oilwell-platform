@@ -11,6 +11,20 @@ ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "
 
 
 class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_import_receiver_rights_are_minimal(self):
+        probe_role(lambda:self.connect("receiver"), "receiver")
+        for role, statements in {
+            "receiver": ("UPDATE waveforms.operation_receipts SET request_hash=repeat('f',64)",
+                         "DELETE FROM waveforms.import_events", "UPDATE waveforms.import_events SET version=2",
+                         "UPDATE waveforms.imports SET final_lf=true", "UPDATE waveforms.imports SET actor='{}'"),
+            "operator": ("INSERT INTO waveforms.imports(import_id) VALUES(gen_random_uuid())",
+                         "INSERT INTO waveforms.facts(fact_id) VALUES(gen_random_uuid())",
+                         "INSERT INTO waveforms.import_events(import_id) VALUES(gen_random_uuid())"),
+        }.items():
+            for statement in statements:
+                with self.subTest(role=role, statement=statement), self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    with self.connect(role) as conn: conn.execute(statement)
+
     def test_assembler_observation_read_is_narrow(self):
         with self.connect("assembler") as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.observations").fetchone()[0], 0)

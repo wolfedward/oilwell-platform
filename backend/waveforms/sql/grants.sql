@@ -7,7 +7,8 @@ GRANT EXECUTE ON FUNCTION waveforms.valid_actor(JSONB) TO {receiver},{operator};
 
 GRANT SELECT,INSERT ON waveforms.facts,waveforms.message_outcomes,waveforms.observations,waveforms.captures,waveforms.streams,
     waveforms.chunks,waveforms.chunk_slots,waveforms.capture_conflicts,waveforms.assembly_jobs,
-    waveforms.receipts,waveforms.deliveries,waveforms.imports,waveforms.import_lines TO {receiver};
+    waveforms.receipts,waveforms.deliveries,waveforms.imports,waveforms.import_lines,
+    waveforms.import_events,waveforms.operation_receipts TO {receiver};
 GRANT INSERT ON waveforms.audit TO {receiver};
 GRANT SELECT ON waveforms.capacity,waveforms.state_head TO {receiver},{assembler};
 GRANT UPDATE(used_raw_bytes,reserved_raw_bytes,used_facts,used_incomplete_captures,used_orphan_bytes,used_quarantine_bytes)
@@ -16,7 +17,7 @@ GRANT UPDATE(last_seen,duplicate_count,anomaly_count,counters_saturated) ON wave
 GRANT UPDATE(manifest_fact_id,manifest_outcome_id,manifest_sha256,last_valid_at,reserved_raw_bytes,used_raw_bytes,orphan_bytes,version)
     ON waveforms.captures TO {receiver};
 GRANT UPDATE(requested_generation,next_attempt_at,version) ON waveforms.assembly_jobs TO {receiver};
-GRANT UPDATE(state) ON waveforms.imports TO {receiver};
+GRANT UPDATE(state,version) ON waveforms.imports TO {receiver};
 GRANT UPDATE(version) ON waveforms.state_head TO {receiver},{assembler},{operator},{receipt_publisher};
 GRANT UPDATE(requested_generation,requested_at,next_attempt_at,version) ON waveforms.deliveries TO {receiver},{assembler};
 

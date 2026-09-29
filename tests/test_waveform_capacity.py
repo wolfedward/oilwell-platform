@@ -160,13 +160,16 @@ class WaveformCapacityTests(WaveformDatabaseCase):
     def test_external_batch_keeps_import_line_outcomes_and_commit_boundary(self):
         from uuid import uuid4
         from psycopg.types.json import Jsonb
+        from hashlib import sha256
+        from backend.waveforms.wire import parse_frame
         raw, chunk = capture()
         repo = self.repo()
         import_id = uuid4()
         with self.connect() as conn:
             pending = [repo.store_in_transaction(conn.cursor(), observation(payload, transport="file")) for payload in (raw, chunk)]
-            conn.execute("INSERT INTO waveforms.imports(import_id,intake_gateway_id,actor,file_sha256,file_bytes,state,line_count,recorded_at) VALUES(%s,'GW',%s,%s,%s,'recorded',2,%s)",
-                         (import_id, Jsonb(dict(domain="test",user_id="1",username="synthetic",role_code="operator")), "a"*64, len(raw)+len(chunk)+1, observation(raw).received_at))
+            key = parse_frame(raw).key
+            conn.execute("INSERT INTO waveforms.imports(import_id,intake_gateway_id,actor,file_sha256,file_bytes,state,line_count,recorded_at,final_lf,device_id,capture_id) VALUES(%s,'GW',%s,%s,%s,'recorded',2,%s,false,%s,%s)",
+                         (import_id, Jsonb(dict(domain="test",user_id="1",username="synthetic",role_code="operator")), sha256(raw+b'\n'+chunk).hexdigest(), len(raw)+len(chunk)+1, observation(raw).received_at, key.device_id,key.capture_id))
             for index, result in enumerate(pending, 1):
                 conn.execute("INSERT INTO waveforms.import_lines(import_id,intake_gateway_id,line_number,fact_id,outcome_id) VALUES(%s,%s,%s,%s,%s)",
                              (import_id,result.intake_gateway_id,index,result.fact_id,result.outcome_id))

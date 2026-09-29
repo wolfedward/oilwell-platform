@@ -12,6 +12,7 @@ SQL_DIR = Path(__file__).with_name("sql")
 MIGRATION_LOCK = 499001212
 ROLES = {"migration_owner", "receiver", "assembler", "receipt_publisher", "reader", "operator"}
 RUNTIME_ROLES = ROLES - {"migration_owner"}
+MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"))
 
 
 def _fail(code, message): raise WaveformError("waveform."+code, message)
@@ -24,8 +25,8 @@ def _target(conn, expected_database):
         _fail("migration_target", "Connected database differs from explicit migration target")
 
 
-def _source():
-    source = (SQL_DIR / "001_capture.sql").read_text(encoding="utf-8")
+def _source(filename="001_capture.sql"):
+    source = (SQL_DIR / filename).read_text(encoding="utf-8")
     return source, hashlib.sha256(source.encode()).hexdigest()
 
 
@@ -44,14 +45,22 @@ def structure_digest(conn):
     return hashlib.sha256(json.dumps(parts, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
-def check_schema(conn, *, expected_database):
-    _target(conn, expected_database)
+def _history(conn, *, complete):
     if conn.execute("SELECT to_regclass('waveforms.schema_migrations')").fetchone()[0] is None:
         _fail("schema_missing", "Waveform schema has not been explicitly initialized")
     rows = conn.execute("SELECT version,sha256,structure_sha256 FROM waveforms.schema_migrations ORDER BY version").fetchall()
-    if len(rows)!=1 or rows[0][:2] != (1,_source()[1]): _fail("schema_mismatch", "Waveform migration history differs")
-    if rows[0][2] != structure_digest(conn): _fail("schema_incomplete", "Waveform schema protections differ")
-    return dict(version="1", sha256=rows[0][1], applied=False)
+    expected = [(version, _source(filename)[1]) for version, filename in MIGRATIONS]
+    if (not rows or len(rows)>len(expected) or complete and len(rows)!=len(expected)
+            or [row[:2] for row in rows] != expected[:len(rows)]):
+        _fail("schema_mismatch", "Waveform migration history differs")
+    if rows[-1][2] != structure_digest(conn): _fail("schema_incomplete", "Waveform schema protections differ")
+    return rows
+
+
+def check_schema(conn, *, expected_database):
+    _target(conn, expected_database)
+    rows = _history(conn, complete=True)
+    return dict(version=str(rows[-1][0]), sha256=rows[-1][1], applied=False)
 
 
 def _capacity_rows(limits):
@@ -70,16 +79,24 @@ def migrate(settings, *, expected_database: str, limits: CapacityLimits) -> dict
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK,))
             columns = sql.SQL(",").join(map(sql.Identifier, ("bucket", *(field.name for field in fields(Quota)))))
             if conn.execute("SELECT to_regnamespace('waveforms')").fetchone()[0] is not None:
-                result = check_schema(conn, expected_database=expected_database)
+                rows = _history(conn, complete=False)
                 existing = conn.execute(sql.SQL("SELECT {} FROM waveforms.capacity ORDER BY bucket").format(columns)).fetchall()
                 if existing != _capacity_rows(limits): _fail("capacity_mismatch", "Existing capacity configuration differs; no automatic overwrite")
             else:
-                source,digest = _source()
+                rows = []
+            # Refuse legacy imports before any pending DDL. Do not infer metadata.
+            if len(rows)==1 and conn.execute("SELECT EXISTS(SELECT 1 FROM waveforms.imports)").fetchone()[0]:
+                _fail("legacy_imports", "Legacy imports require a separately reviewed explicit migration")
+            applied = len(rows)<len(MIGRATIONS)
+            for version, filename in MIGRATIONS[len(rows):]:
+                source,digest = _source(filename)
                 conn.execute(source)
-                for row in _capacity_rows(limits):
-                    conn.execute(sql.SQL("INSERT INTO waveforms.capacity({}) VALUES ({})").format(columns,sql.SQL(",").join(sql.Placeholder() for _ in row)),row)
-                conn.execute("INSERT INTO waveforms.schema_migrations(version,sha256,structure_sha256) VALUES(1,%s,%s)", (digest,structure_digest(conn)))
-                result = dict(version="1",sha256=digest,applied=True)
+                if version==1:
+                    for row in _capacity_rows(limits):
+                        conn.execute(sql.SQL("INSERT INTO waveforms.capacity({}) VALUES ({})").format(columns,sql.SQL(",").join(sql.Placeholder() for _ in row)),row)
+                conn.execute("INSERT INTO waveforms.schema_migrations(version,sha256,structure_sha256) VALUES(%s,%s,%s)", (version,digest,structure_digest(conn)))
+            version, filename = MIGRATIONS[-1]
+            result = dict(version=str(version),sha256=_source(filename)[1],applied=applied)
         return result
     except psycopg.Error as error:
         raise WaveformError("waveform.migration_failed", "Waveform migration failed; inspect isolated database diagnostics") from error
