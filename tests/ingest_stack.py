@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 import socket
 import sqlite3
@@ -36,6 +37,22 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def free_browser_http_port():
+    # Chromium rejects some OS-assigned ephemeral ports (including 1723).
+    # This high range is outside its restricted HTTP port list.
+    lower, upper = 49152, 65536
+    first = random.randrange(lower, upper)
+    for offset in range(upper - lower):
+        port = lower + (first - lower + offset) % (upper - lower)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(('127.0.0.1', port))
+            return port
+        except OSError:
+            continue
+    raise RuntimeError('No available loopback browser HTTP port in 49152..65535')
+
+
 def toml_text(sections):
     # Test fixture values are strings, finite numbers, booleans, or string lists.
     return '\n\n'.join('[' + name + ']\n' + '\n'.join(
@@ -47,12 +64,12 @@ class Stack:
     def __init__(self, fixture, *, http=False, max_messages=5000):
         self.fixture = fixture
         self.with_http = http
+        self.http_port = free_browser_http_port()
         self.temp = tempfile.TemporaryDirectory(prefix='wp03-stack-')
         self.root = Path(self.temp.name)
         self.broker = Broker()
         self.spool = self.root / 'gateway-v2.db'
         self.limits = SpoolLimits(max_messages, 8 * 1024 * 1024, 1024 * 1024)
-        self.http_port = free_port()
         self.url = f'http://127.0.0.1:{self.http_port}'
         self.platform_db = self.root / 'platform.db'
         self.config = self.root / 'center.toml'
@@ -81,15 +98,17 @@ class Stack:
             raise
 
     def __exit__(self, kind, value, traceback):
-        if kind is not None:
-            # Only explicitly safe worker event logs; never credentials/configs or raw payloads.
-            destination = os.environ.get('OILWELL_INGEST_EVIDENCE_DIR')
-            if destination:
-                folder = Path(destination) / ('failure-' + self.run_id)
-                folder.mkdir(parents=True, exist_ok=False)
-                for name, path in self.logs.items():
-                    shutil.copyfile(path, folder / (name + '.log'))
-        self.close()
+        try:
+            if kind is not None:
+                # Only explicit worker/browser logs; never credentials/configs or raw payloads.
+                destination = os.environ.get('OILWELL_INGEST_EVIDENCE_DIR')
+                if destination:
+                    folder = Path(destination) / ('failure-' + self.run_id)
+                    folder.mkdir(parents=True, exist_ok=False)
+                    for name, path in self.logs.items():
+                        shutil.copyfile(path, folder / (name + '.log'))
+        finally:
+            self.close()
 
     def close(self):
         for name in reversed(list(self.processes)):
@@ -502,6 +521,7 @@ class Stack:
         destination.mkdir(parents=True, exist_ok=True)
         output = self.root / 'browser.log'
         with output.open('wb') as handle:
+            self.logs['browser'] = output
             process = subprocess.Popen([node, str(ROOT / 'tests/fixtures/ingest_live_check.cjs'), self.url, str(destination)],
                                        cwd=ROOT, env=dict(os.environ, NODE_PATH=str(node_root / 'node_modules')),
                                        stdout=handle, stderr=handle, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
