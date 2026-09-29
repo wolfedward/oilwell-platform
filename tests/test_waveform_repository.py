@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
+import base64
 import json
 from uuid import uuid4
 
@@ -34,6 +35,18 @@ def observation(payload, *, gateway="GW", transport="mqtt", **kwargs):
         values.update(topic=None, qos=None, retain=None, dup=None)
     values.update(kwargs)
     return Observation(**values)
+
+
+def capture_512():
+    """512 one-frame chunks, with a genuine digest of the repeated samples."""
+    raw, piece = capture()
+    manifest, chunk = json.loads(raw), json.loads(piece)
+    data = base64.b64decode(chunk["data_base64"])
+    manifest["streams"][0].update(frame_count=512, chunk_count=512,
+                                   decoded_bytes=5120, data_sha256=sha256(data * 512).hexdigest())
+    raw = encoded(manifest)
+    chunk["manifest_sha256"] = sha256(raw).hexdigest()
+    return raw, tuple(encoded(chunk | dict(chunk_index=index, sample_start=index)) for index in range(512))
 
 
 class WaveformRepositoryTests(WaveformDatabaseCase):
@@ -77,6 +90,106 @@ class WaveformRepositoryTests(WaveformDatabaseCase):
         self.assertEqual(valid.status, "stored")
         self.assertEqual(self.scalar("SELECT fact_id FROM waveforms.chunk_slots", role="receiver"), valid.fact_id)
         self.assertEqual(self.count("assembly_jobs"), 1)
+
+    def test_wrong_manifest_orphan_does_not_consume_512_valid_slots(self):
+        raw, chunks = capture_512()
+        wrong = json.loads(chunks[0])
+        wrong["manifest_sha256"] = "f" * 64
+        orphan = self.repo().ingest(observation(encoded(wrong), transport="file"))
+        self.repo().ingest(observation(raw, transport="file"))
+        repo = self.repo()
+        with self.connect() as conn:
+            pending = [repo.store_in_transaction(conn.cursor(), observation(chunk, transport="file"))
+                       for chunk in chunks]
+            results = repo.commit_pending(conn, pending)
+        self.assertEqual([index for index, result in enumerate(results) if result.status != "stored"], [])
+        self.assertEqual(self.count("chunks"), 513)
+        self.assertEqual(self.count("chunk_slots"), 512)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.chunk_slots WHERE fact_id=%s", (orphan.fact_id,)).fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT requested_generation,finished_generation FROM waveforms.assembly_jobs").fetchone(), (1, 0))
+            self.assertEqual(conn.execute("SELECT used_orphan_bytes,used_quarantine_bytes,used_raw_bytes+reserved_raw_bytes FROM waveforms.capacity WHERE bucket='GW'").fetchone(), (1024, 1024, 33554432))
+            self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.capture_conflicts WHERE fact_id=%s", (orphan.fact_id,)).fetchone()[0], 1)
+
+    def test_premanifest_orphans_and_rejected_repeat_remain_bounded(self):
+        _, chunks = capture_512()
+        repo = self.repo()
+        with self.connect() as conn:
+            pending = [repo.store_in_transaction(conn.cursor(), observation(chunk, transport="file"))
+                       for chunk in chunks]
+            results = repo.commit_pending(conn, pending)
+        self.assertTrue(all(result.status == "stored" for result in results))
+        extra = json.loads(chunks[0])
+        extra["manifest_sha256"] = "f" * 64
+        rejected_observation = observation(encoded(extra), transport="file")
+        rejected = repo.ingest(rejected_observation)
+        self.assertEqual((rejected.status, rejected.reason_code), ("quarantined", "layout_invalid"))
+        for _ in range(3):
+            self.assertTrue(repo.ingest(rejected_observation).duplicate)
+        self.assertEqual(self.count("chunks"), 512)
+        self.assertEqual(self.count("chunk_slots"), 0)
+        self.assertEqual(self.count("assembly_jobs"), 0)
+        self.assertEqual(self.count("facts"), 513)
+        self.assertEqual(self.count("message_outcomes"), 513)
+        self.assertEqual(self.count("observations"), 513)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute("SELECT used_orphan_bytes,used_quarantine_bytes FROM waveforms.capacity WHERE bucket='GW'").fetchone(), (524288, 1024))
+            self.assertEqual(conn.execute("SELECT duplicate_count FROM waveforms.observations WHERE outcome_id=%s", (rejected.outcome_id,)).fetchone()[0], 3)
+
+    def test_invalid_same_key_orphan_cannot_block_first_valid_slot(self):
+        import struct
+        from backend.waveforms.contracts import WaveReceipt
+        for invalidity in ("layout", "quality"):
+            with self.subTest(invalidity=invalidity):
+                raw, chunk = capture()
+                manifest, valid = json.loads(raw), json.loads(chunk)
+                if invalidity == "quality":
+                    manifest["streams"][0]["channels"][0]["encoding"] = "f32le"
+                    data = struct.pack("<fB", 1.0, 0) + struct.pack("<iB", 0, 0)
+                    manifest["streams"][0]["data_sha256"] = sha256(data).hexdigest()
+                    valid.update(data_base64=base64.b64encode(data).decode(), data_sha256=sha256(data).hexdigest())
+                raw = encoded(manifest)
+                valid["manifest_sha256"] = sha256(raw).hexdigest()
+                invalid = valid.copy()
+                if invalidity == "layout":
+                    invalid["sample_start"] = 1
+                else:
+                    bad_data = struct.pack("<fB", float("inf"), 0) + struct.pack("<iB", 0, 0)
+                    invalid.update(data_base64=base64.b64encode(bad_data).decode(), data_sha256=sha256(bad_data).hexdigest())
+                repo = self.repo()
+                bad_observation = observation(encoded(invalid))
+                good_observation = observation(encoded(valid))
+                orphan = repo.ingest(bad_observation)
+                self.assertEqual(orphan.status, "stored")
+                premature = repo.ingest(good_observation)
+                self.assertEqual(premature.reason_code, "idempotency_conflict")
+                repo.ingest(observation(raw, transport="file"))
+                with self.connect() as conn:
+                    pk = conn.execute("SELECT capture_pk FROM waveforms.chunks WHERE fact_id=%s", (orphan.fact_id,)).fetchone()[0]
+                    self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.chunk_slots WHERE capture_pk=%s", (pk,)).fetchone()[0], 0)
+                    before = conn.execute("SELECT used_orphan_bytes,used_quarantine_bytes,used_facts,used_raw_bytes+reserved_raw_bytes FROM waveforms.capacity WHERE bucket='GW'").fetchone()
+                accepted = repo.ingest(good_observation)
+                self.assertEqual(accepted.status, "stored")
+                self.assertEqual(accepted.fact_id, premature.fact_id)
+                self.assertNotEqual(accepted.outcome_id, premature.outcome_id)
+                with self.connect() as conn:
+                    self.assertEqual(conn.execute("SELECT fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s", (pk,)).fetchone()[0], accepted.fact_id)
+                    self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.chunks WHERE capture_pk=%s", (pk,)).fetchone()[0], 2)
+                    self.assertEqual(conn.execute("SELECT orphan_bytes,used_raw_bytes+reserved_raw_bytes FROM waveforms.captures WHERE capture_pk=%s", (pk,)).fetchone(), (1024, 33554432))
+                    after = conn.execute("SELECT used_orphan_bytes,used_quarantine_bytes,used_facts,used_raw_bytes+reserved_raw_bytes FROM waveforms.capacity WHERE bucket='GW'").fetchone()
+                    self.assertEqual(tuple(new-old for new, old in zip(after, before)), (0, 0, 0, -1024))
+                    self.assertEqual(conn.execute("SELECT requested_generation,finished_generation FROM waveforms.assembly_jobs WHERE capture_pk=%s", (pk,)).fetchone(), (1, 0))
+                    original_receipt = bytes(conn.execute("SELECT payload FROM waveforms.receipts WHERE receipt_id=%s", (orphan.receipt_id,)).fetchone()[0])
+                    self.assertEqual(WaveReceipt.from_bytes(original_receipt).status, "stored")
+                self.assertEqual(repo.ingest(bad_observation).reason_code, "layout_invalid")
+                self.assertTrue(repo.ingest(good_observation).duplicate)
+                with self.connect() as conn:
+                    self.assertEqual(conn.execute("SELECT used_orphan_bytes,used_quarantine_bytes,used_facts,used_raw_bytes+reserved_raw_bytes FROM waveforms.capacity WHERE bucket='GW'").fetchone(), after)
+                    self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.capture_conflicts WHERE capture_pk=%s AND fact_id=%s", (pk, orphan.fact_id)).fetchone()[0], 1)
+                reordered = json.dumps(valid, separators=(", ", ":")).encode()
+                self.assertEqual(repo.ingest(observation(reordered)).reason_code, "idempotency_conflict")
+                with self.connect() as conn:
+                    self.assertEqual(conn.execute("SELECT fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s", (pk,)).fetchone()[0], accepted.fact_id)
 
     def test_rollback_no_receipt(self):
         from backend.waveforms.repository import PendingStoredMessage, StoredMessage

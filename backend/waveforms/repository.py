@@ -33,8 +33,10 @@ class PendingStoredMessage:
     """Transaction-local provenance, never a durable acknowledgment.
 
     commit_pending owns the outer commit after callers append import lines.
-    A rollback, a different transaction, or a failed/uncertain commit cannot
-    convert this object to StoredMessage.
+    A whole-transaction rollback, a different transaction, or a failed/uncertain
+    commit prevents conversion. Callers must discard pending results from any
+    rolled-back savepoint: existing duplicate provenance can survive that
+    rollback, so its presence does not prove this particular store survived.
     """
     fact_id: UUID
     outcome_id: UUID
@@ -120,6 +122,8 @@ class WaveformRepository:
 
         Task9 may append import_lines and pass all pending lines together.
         Never call inside a psycopg transaction() context that owns commit.
+        Discard results from rolled-back savepoint scopes. The provenance check
+        detects missing rows, not rollback of updates to pre-existing duplicates.
         """
         many = isinstance(pending, (list, tuple))
         items = tuple(pending) if many else (pending,)
@@ -184,12 +188,24 @@ class WaveformRepository:
                 elif manifest:
                     reason = _validate_chunk(frame, manifest)
                 if capture and reason is None:
-                    existing = _one(cursor, "SELECT fact_id FROM waveforms.chunks WHERE capture_pk=%s AND manifest_sha256=%s AND stream_id=%s AND chunk_index=%s ORDER BY fact_id LIMIT 1",
-                                    (capture["capture_pk"], frame.manifest_sha256, frame.stream_id, frame.chunk_index))
+                    if manifest:
+                        # Only validated content can establish the immutable
+                        # first accepted slot; invalid orphan evidence cannot.
+                        existing = _one(cursor, "SELECT fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s AND stream_id=%s AND chunk_index=%s",
+                                        (capture["capture_pk"], frame.stream_id, frame.chunk_index))
+                    else:
+                        existing = _one(cursor, "SELECT fact_id FROM waveforms.chunks WHERE capture_pk=%s AND manifest_sha256=%s AND stream_id=%s AND chunk_index=%s ORDER BY fact_id LIMIT 1",
+                                        (capture["capture_pk"], frame.manifest_sha256, frame.stream_id, frame.chunk_index))
                     if existing and existing["fact_id"] != fact_id:
                         reason, first_fact = "idempotency_conflict", existing["fact_id"]
                     elif not existing:
-                        count = _one(cursor, "SELECT count(*) AS n FROM waveforms.chunks WHERE capture_pk=%s", (capture["capture_pk"],))["n"]
+                        # Retained orphans never spend the accepted manifest's
+                        # slot allowance. Before a manifest, bound candidates
+                        # separately; their raw/orphan quotas still apply later.
+                        if manifest:
+                            count = _one(cursor, "SELECT count(*) AS n FROM waveforms.chunk_slots WHERE capture_pk=%s", (capture["capture_pk"],))["n"]
+                        else:
+                            count = _one(cursor, "SELECT count(*) AS n FROM waveforms.chunks WHERE capture_pk=%s", (capture["capture_pk"],))["n"]
                         if count >= 512:
                             reason = "layout_invalid"
         status, reason = ("quarantined", reason) if reason else ("stored", "accepted")
