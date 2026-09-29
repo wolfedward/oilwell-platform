@@ -1,14 +1,90 @@
 """Small checks for the owned ingest browser fixture's local resources."""
 
+import json
 import os
 from pathlib import Path
+import shutil
 import socket
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from tests import ingest_stack
+
+
+class BrowserFailureDiagnosticsTests(unittest.TestCase):
+    fixture = Path(__file__).resolve().parent / 'fixtures/ingest_live_check.cjs'
+    canary = 'R30-NONSECRET-INPUT-CANARY'
+
+    def run_node(self, *arguments, timeout=30):
+        node_root = Path(os.environ.get('USERPROFILE', '')) / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
+        node = shutil.which('node') or str(node_root / 'bin/node.exe')
+        return subprocess.run([node, *arguments], cwd=self.fixture.parents[2],
+                              env=dict(os.environ, NODE_PATH=str(node_root / 'node_modules')),
+                              capture_output=True, text=True, encoding='utf-8', errors='replace',
+                              timeout=timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+    def test_failed_fixture_logs_only_allowlisted_diagnostics_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as evidence:
+            supplied = f'<input value="{self.canary}">'
+            result = self.run_node(str(self.fixture), supplied, evidence)
+        self.assertEqual(result.returncode, 1, 'fixture failure must retain a failing exit code')
+        self.assertFalse(self.canary in result.stdout + result.stderr,
+                         'fixture failure log exposed supplied input')
+        self.assertEqual(json.loads(result.stderr.strip()),
+                         {'ok': False, 'phase': 'input_validation',
+                          'error_kind': 'assertion', 'network': 'none'})
+
+    def test_summary_drops_unknown_error_names_messages_and_stacks(self):
+        script = f'''
+const {{summarizeFailure}} = require({json.dumps(str(self.fixture))});
+const canary = {json.dumps(self.canary)};
+const hostile = {{name: 'Name-' + canary, message: 'net::ERR_UNSAFE_PORT ' + canary,
+                 stack: '<input value="' + canary + '">', selector: canary}};
+const unknown = {{name: 'Name-' + canary, message: canary, stack: canary}};
+console.log(JSON.stringify(summarizeFailure('navigation', hostile)));
+console.log(JSON.stringify(summarizeFailure('phase-' + canary, unknown)));
+'''
+        result = self.run_node('-e', script)
+        self.assertEqual(result.returncode, 0, 'safe summary probe failed')
+        self.assertFalse(self.canary in result.stdout + result.stderr,
+                         'summary serialized supplied input')
+        self.assertEqual([json.loads(line) for line in result.stdout.splitlines()], [
+            {'ok': False, 'phase': 'navigation', 'error_kind': 'network', 'network': 'unsafe_port'},
+            {'ok': False, 'phase': 'unknown', 'error_kind': 'unexpected', 'network': 'none'},
+        ])
+
+    def test_real_playwright_fill_timeout_drops_call_argument_and_html(self):
+        script = f'''
+const {{chromium}} = require('playwright');
+const {{summarizeFailure}} = require({json.dumps(str(self.fixture))});
+const canary = {json.dumps(self.canary)};
+(async () => {{
+  const browser = await chromium.launch({{
+    executablePath: process.env.OILWELL_TEST_BROWSER ||
+      'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true}});
+  try {{
+    const page = await browser.newPage();
+    await page.setContent('<input id="password" type="password" disabled value="' + canary + '">');
+    let failure;
+    try {{ await page.locator('#password').fill(canary, {{timeout: 300}}); }}
+    catch (error) {{ failure = error; }}
+    if (!failure || !String(failure.stack).includes(canary)) process.exitCode = 2;
+    else console.log(JSON.stringify({{
+      raw_contains_canary: true, safe: summarizeFailure('login', failure)}}));
+  }} finally {{ await browser.close(); }}
+}})().catch(() => {{ process.exitCode = 2; }});
+'''
+        result = self.run_node('-e', script, timeout=45)
+        self.assertEqual(result.returncode, 0, 'real browser diagnostic probe failed')
+        self.assertFalse(self.canary in result.stdout + result.stderr,
+                         'real browser diagnostic serialized input or page HTML')
+        self.assertEqual(json.loads(result.stdout.strip()), {
+            'raw_contains_canary': True,
+            'safe': {'ok': False, 'phase': 'login', 'error_kind': 'timeout', 'network': 'none'},
+        })
 
 
 class BrowserHttpPortTests(unittest.TestCase):
