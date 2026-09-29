@@ -1,0 +1,129 @@
+# Illustrative allocation only. Provision schema/roles/ACLs separately, replace
+# endpoints, credentials and intake UUID, then explicitly enable the component.
+# --check is read-only and never repairs schema or privileges.
+[waveforms]
+enabled = false
+topic_prefix = "oil"
+assembly_workers = 2
+# DB sessions per component process (receiver >= gateway count, assembler >= 2*workers).
+# Assembly keeps a read connection while renewing on a second connection.
+# Hard prerelease bounds: 64 gateways, 64 DB sessions, effectively 32 assembly workers.
+max_db_connections = 4
+
+[capacity.global]
+raw_bytes = 1073741824
+facts = 100000
+attachment_bytes = 134217728
+incomplete_captures = 64
+orphan_bytes = 33554432
+quarantine_bytes = 16777216
+metadata_rows = 1000000
+orphan_bytes_per_capture = 524288
+
+[gateways.GW-EXAMPLE]
+# Stable across reconnects/restarts. Change only for a deliberate new intake
+# provenance version; this is NOT authenticated device/physical-source identity.
+source_ref = "126a2c57-2dca-4902-89ed-90c53a2a1355"
+
+[gateways.GW-EXAMPLE.quota]
+raw_bytes = 268435456
+facts = 25000
+attachment_bytes = 33554432
+incomplete_captures = 4
+orphan_bytes = 2097152
+quarantine_bytes = 4194304
+metadata_rows = 250000
+orphan_bytes_per_capture = 524288
+
+# Independent MQTT5 sessions, clean_start=false, ReceiveMaximum=4. The receiver
+# processes ONE message at a time per gateway, with ZERO queued application work.
+# Deploy least-topic ACLs for each account and device scope. Gateway subscription
+# is oil/v2/GW-EXAMPLE/+/waveform; it does not prove registration or field origin.
+# Broker max_packet_size 270336 includes headers/properties; message_size_limit
+# 262144 bounds payload. Excessive properties may make an otherwise legal payload
+# exceed the packet limit. QoS0 bypasses ReceiveMaximum; Paho buffers full packets.
+# These controls do not establish a whole-process RSS or power-cut guarantee.
+[gateways.GW-EXAMPLE.mqtt_receive]
+host = "mqtt.example.invalid"
+port = 8883
+client_id = "waveform-GW-EXAMPLE-receiver"
+username = "waveform-GW-EXAMPLE-receiver"
+password_env = "WAVEFORM_GW_EXAMPLE_RECEIVER_PASSWORD"
+ca_cert = "certs/ca.pem"
+keepalive_seconds = 30
+connect_timeout_seconds = 3
+session_expiry_seconds = 604800
+
+[gateways.GW-EXAMPLE.mqtt_publish]
+host = "mqtt.example.invalid"
+port = 8883
+client_id = "waveform-GW-EXAMPLE-receipt-publisher"
+username = "waveform-GW-EXAMPLE-receipt-publisher"
+password_env = "WAVEFORM_GW_EXAMPLE_PUBLISHER_PASSWORD"
+ca_cert = "certs/ca.pem"
+keepalive_seconds = 30
+connect_timeout_seconds = 3
+session_expiry_seconds = 604800
+
+[gateways.GW-EXAMPLE.mqtt_sender]
+host = "mqtt.example.invalid"
+port = 8883
+client_id = "waveform-GW-EXAMPLE-sender"
+username = "waveform-GW-EXAMPLE-sender"
+password_env = "WAVEFORM_GW_EXAMPLE_SENDER_PASSWORD"
+ca_cert = "certs/ca.pem"
+keepalive_seconds = 30
+connect_timeout_seconds = 3
+session_expiry_seconds = 604800
+
+# Only selected component credentials resolve. Declared database identities must
+# be distinct on the same intended endpoint. Runtime never loads owner secrets.
+[postgres_receiver]
+host = "postgres.example.invalid"
+port = 5432
+database = "oilwell_waveforms"
+user = "waveform_receiver"
+password_env = "WAVEFORM_RECEIVER_DB_PASSWORD"
+sslmode = "verify-full"
+sslrootcert = "config/certs/ca.pem"
+
+[postgres_assembler]
+host = "postgres.example.invalid"
+port = 5432
+database = "oilwell_waveforms"
+user = "waveform_assembler"
+password_env = "WAVEFORM_ASSEMBLER_DB_PASSWORD"
+sslmode = "verify-full"
+sslrootcert = "config/certs/ca.pem"
+
+[postgres_receipt_publisher]
+host = "postgres.example.invalid"
+port = 5432
+database = "oilwell_waveforms"
+user = "waveform_receipt_publisher"
+password_env = "WAVEFORM_PUBLISHER_DB_PASSWORD"
+sslmode = "verify-full"
+sslrootcert = "config/certs/ca.pem"
+
+[postgres_reader]
+host = "postgres.example.invalid"
+port = 5432
+database = "oilwell_waveforms"
+user = "waveform_reader"
+password_env = "WAVEFORM_READER_DB_PASSWORD"
+sslmode = "verify-full"
+sslrootcert = "config/certs/ca.pem"
+
+[postgres_operator]
+host = "postgres.example.invalid"
+port = 5432
+database = "oilwell_waveforms"
+user = "waveform_operator"
+password_env = "WAVEFORM_OPERATOR_DB_PASSWORD"
+sslmode = "verify-full"
+sslrootcert = "config/certs/ca.pem"
+
+# Future management requires an explicit allocation. Business schema readiness
+# remains unavailable until its implementation; this bucket is accounting only.
+[management]
+shared_accounting_bucket = "GW-EXAMPLE"
