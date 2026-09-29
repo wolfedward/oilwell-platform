@@ -18,7 +18,7 @@ class WaveformContractTests(unittest.TestCase):
         raw, chunks = golden_capture()
         self.assertEqual(parse_frame(raw).raw_sha256, sha256(raw).hexdigest())
         self.assertEqual(parse_frame(chunks[0]).sample_start, 0)
-        self.assertNotEqual(parse_frame(raw).raw_sha256, parse_frame(json.dumps(json.loads(raw), indent=2).encode()).raw_sha256)
+        self.assertNotEqual(parse_frame(raw).raw_sha256, parse_frame(raw + b" ").raw_sha256)
         with self.assertRaises(ContractError) as caught:
             parse_frame(b'{"schema":true,"schema":false}')
         self.assertEqual(caught.exception.code, "json_duplicate_key")
@@ -183,6 +183,24 @@ class WaveformContractTests(unittest.TestCase):
         with self.assertRaises(ContractError) as caught:
             parse_frame(exact_chunk + b" ")
         self.assertEqual(caught.exception.code, "payload_too_large")
+
+    def test_literal_line_separators_are_not_wire_json(self):
+        raw, _ = golden_capture()
+        for changed in (json.dumps(json.loads(raw), indent=2).encode("utf-8"),
+                        raw.replace(b',"kind"', b',\r"kind"', 1)):
+            with self.subTest(separator=b"\r" if b"\r" in changed else b"\n"):
+                with self.assertRaises(ContractError) as caught:
+                    parse_frame(changed)
+                self.assertEqual(caught.exception.code, "json_invalid")
+        escaped = raw.replace(b'"manufacturer":"Synthetic Test"',
+                              b'"manufacturer":"Synthetic\\nTest"', 1)
+        with self.assertRaises(ContractError) as caught:
+            parse_frame(escaped)
+        self.assertEqual(caught.exception.code, "contract_invalid")
+        with self.assertRaises(ContractError) as caught:
+            parse_frame(raw + b"\n" + b" " * (262_145 - len(raw) - 1))
+        self.assertEqual(caught.exception.code, "payload_too_large")
+        self.assertEqual(parse_frame(raw).raw_sha256, sha256(raw).hexdigest())
 
     def test_manifest_capacity_boundaries(self):
         body = json.loads(golden_capture()[0])

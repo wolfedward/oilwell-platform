@@ -54,6 +54,8 @@ def strict_json(payload: bytes):
         text = payload.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ContractError("utf8_invalid") from error
+    if "\r" in text or "\n" in text:
+        raise ContractError("json_invalid")
     try:
         body = json.loads(text, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     except _DuplicateKey as error:
