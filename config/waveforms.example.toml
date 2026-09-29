@@ -77,6 +77,20 @@ keepalive_seconds = 30
 connect_timeout_seconds = 3
 session_expiry_seconds = 604800
 
+# Local sender CLI: python -m backend.waveforms.sender init|enqueue|run|status --config PATH
+# enqueue also requires --input FILE. One gateway per sender config, mqtt_sender
+# credentials only; PostgreSQL sections and DB connection counts may be omitted.
+# Shared capacity/source_ref metadata above is still required by this config format.
+# Explicit init binds gateway/prefix/budget; runtime never creates or adopts a DB.
+# run owns the spool exclusively: stop it before init/enqueue/status (busy exit 3).
+# Verified storage: fixed local NTFS on Windows, no network shares or hard links.
+# Logical budget = max(file bytes,1024) + 1024*(1+message count); not a disk-size cap.
+# Archives and failures retain both original bytes and their capacity charge.
+# No automatic deletion, resize, copied-file adoption, or interrupted-init repair.
+[sender_spool]
+path = "waveform-sender.db"
+max_bytes = 268435456
+
 # Only selected component credentials resolve. Declared database identities must
 # be distinct on the same intended endpoint. Runtime never loads owner secrets.
 [postgres_receiver]

@@ -19,6 +19,7 @@ def config_sections():
         "capacity.global": asdict(LIMITS.global_quota),
         "gateways.GW.quota": asdict(LIMITS.gateways["GW"]),
         "gateways.GW": {"source_ref": "ed1d031a-608e-437a-835d-88228f5955d4"},
+        "sender_spool": {"path": "waveform-sender.db", "max_bytes": 16777216},
     }
     for role in ("migration_owner", "receiver", "assembler", "receipt_publisher", "reader", "operator"):
         sections["postgres_" + role] = {"host": "127.0.0.1", "port": 3822,
@@ -131,6 +132,24 @@ class WaveformConfigTests(unittest.TestCase):
         del self.sections["waveforms"]["max_db_connections"]
         config = self.load("sender", {"TEST_MQTT_SENDER": "sender-only"})
         self.assertEqual(dict(config.postgres), {})
+        self.assertEqual(config.sender_spool.path, self.path.parent / 'waveform-sender.db')
+        self.assertEqual(config.sender_spool.max_bytes, 16777216)
+
+    def test_sender_requires_explicit_single_gateway_spool_budget(self):
+        for section in ({}, {'path': 'local.db', 'max_bytes': True},
+                        {'path': '', 'max_bytes': 1000}, {'path': 'local.db', 'max_bytes': 0},
+                        {'path': 'local.db', 'max_bytes': 1000, 'auto_resize': True}):
+            self.sections['sender_spool'] = section
+            with self.assertRaises(WaveformError): self.load('sender', {'TEST_MQTT_SENDER': 'x'})
+        self.sections = config_sections()
+        for key, values in list(self.sections.items()):
+            if key.startswith('gateways.GW'):
+                cloned = dict(values)
+                for field in ('client_id', 'username'):
+                    if field in cloned: cloned[field] += '-other'
+                self.sections[key.replace('gateways.GW', 'gateways.OTHER')] = cloned
+        self.sections['gateways.OTHER']['source_ref'] = '88c5da01-fdc7-4327-b59e-a068c327fa9d'
+        with self.assertRaises(WaveformError): self.load('sender', {'TEST_MQTT_SENDER': 'x'})
 
     def test_connection_bound_and_source_identity_are_explicit(self):
         self.sections["waveforms"]["max_db_connections"] = 1

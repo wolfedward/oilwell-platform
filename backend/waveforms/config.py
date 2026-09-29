@@ -71,6 +71,12 @@ class GatewayConfig:
 
 
 @dataclass(frozen=True)
+class SenderSpoolConfig:
+    path: Path
+    max_bytes: int
+
+
+@dataclass(frozen=True)
 class WaveformConfig:
     component: str
     topic_prefix: str
@@ -80,6 +86,7 @@ class WaveformConfig:
     assembly_workers: int
     max_db_connections: int
     shared_accounting_bucket: str | None = None
+    sender_spool: SenderSpoolConfig | None = None
 
 
 def _integer(value, low, high):
@@ -136,6 +143,14 @@ def load_waveform_config(path, *, component: str) -> WaveformConfig | None:
         gateways = raw["gateways"]
         if not 1 <= len(gateways) <= 64:
             raise ValueError("invalid gateway count")
+        sender_spool = None
+        if component == 'sender':
+            spool = raw['sender_spool']
+            if len(gateways) != 1 or set(spool) != {'path', 'max_bytes'} or not isinstance(spool['path'], str) or not spool['path']:
+                raise ValueError('single gateway and explicit local spool required')
+            spool_path = Path(spool['path'])
+            sender_spool = SenderSpoolConfig(spool_path if spool_path.is_absolute() else config_path.parent / spool_path,
+                _integer(spool['max_bytes'], 1, MAX_I64))
         limits = CapacityLimits(Quota(**raw["capacity"]["global"]),
                                 {key: Quota(**value["quota"]) for key, value in gateways.items()})
         workers = _integer(general["assembly_workers"], 1, 64) if component == "assemble" else 0
@@ -183,7 +198,7 @@ def load_waveform_config(path, *, component: str) -> WaveformConfig | None:
         postgres = {role: MappingProxyType(_postgres_settings(raw["postgres_" + role], config_path,
                     os.environ, read_windows_credential) | {"connect_timeout": 3}) for role in COMPONENT_ROLES[component]}
         return WaveformConfig(component, general["topic_prefix"], limits, tuple(configured),
-                              MappingProxyType(postgres), workers, connections, bucket)
+                              MappingProxyType(postgres), workers, connections, bucket, sender_spool)
     except Exception:
         # Upstream secret-store errors may include references or OS error text.
         raise WaveformError("waveform.configuration_invalid", "Invalid or unavailable waveform component configuration") from None
