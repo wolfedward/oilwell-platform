@@ -11,6 +11,24 @@ ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "
 
 
 class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_assembler_observation_read_is_narrow(self):
+        with self.connect("assembler") as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.observations").fetchone()[0], 0)
+        for statement in ("UPDATE waveforms.observations SET duplicate_count=0", "DELETE FROM waveforms.observations",
+                          "INSERT INTO waveforms.observations(observation_id) VALUES(gen_random_uuid())"):
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                with self.connect("assembler") as conn:
+                    conn.execute(statement)
+        assembler = sql.Identifier(self.settings["assembler"]["user"])
+        with self.admin() as conn:
+            conn.execute(sql.SQL("GRANT UPDATE(duplicate_count) ON waveforms.observations TO {}").format(assembler))
+        try:
+            with self.assertRaises(WaveformError):
+                probe_role(lambda: self.connect("assembler"), "assembler")
+        finally:
+            with self.admin() as conn:
+                conn.execute(sql.SQL("REVOKE UPDATE(duplicate_count) ON waveforms.observations FROM {}").format(assembler))
+
     def test_actual_runtime_roles_pass_readonly_probe(self):
         for role in RUNTIME_ROLES:
             with self.subTest(role=role): probe_role(lambda: self.connect(role), role)

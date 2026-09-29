@@ -21,7 +21,7 @@ GRANT UPDATE(version) ON waveforms.state_head TO {receiver},{assembler},{operato
 GRANT UPDATE(requested_generation,requested_at,next_attempt_at,version) ON waveforms.deliveries TO {receiver},{assembler};
 
 GRANT SELECT ON waveforms.facts,waveforms.message_outcomes,waveforms.captures,waveforms.streams,waveforms.chunks,waveforms.chunk_slots,
-    waveforms.capture_conflicts TO {assembler};
+    waveforms.capture_conflicts,waveforms.observations TO {assembler};
 GRANT SELECT,INSERT ON waveforms.completion,waveforms.receipts,waveforms.deliveries TO {assembler};
 GRANT SELECT ON waveforms.assembly_jobs TO {assembler};
 GRANT UPDATE(finished_generation,lease_token,lease_generation,lease_until,next_attempt_at,attempts,last_error_code,version)

@@ -7,7 +7,7 @@ TABLES = set("schema_migrations capacity facts message_outcomes observations cap
 VIEWS = set("fact_metadata outcome_metadata capture_metadata receipt_metadata audit_metadata capacity_metadata worker_metadata".split())
 SELECT = {
     "receiver": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts assembly_jobs receipts deliveries imports import_lines capacity state_head worker_health".split()),
-    "assembler": set("schema_migrations facts message_outcomes captures streams chunks chunk_slots capture_conflicts completion receipts deliveries assembly_jobs capacity state_head worker_health".split()),
+    "assembler": set("schema_migrations facts message_outcomes observations captures streams chunks chunk_slots capture_conflicts completion receipts deliveries assembly_jobs capacity state_head worker_health".split()),
     "receipt_publisher": set("schema_migrations receipts deliveries capacity worker_health".split()),
     "reader": {"schema_migrations"} | VIEWS,
     "operator": {"schema_migrations", "state_head", "operation_receipts"} | VIEWS,
