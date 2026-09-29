@@ -56,7 +56,7 @@ def _reachable(conn):
 
 def _permissions(conn, role):
     reachable = _reachable(conn)
-    tables = conn.execute("SELECT c.oid,n.nspname,c.relname,c.relowner,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f','S')").fetchall()
+    tables = conn.execute("SELECT c.oid,n.nspname,c.relname,c.relowner,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f','S')").fetchall()
     actual = {(schema,name):kind for _,schema,name,_,kind in tables}
     required = {("waveforms",name):"r" for name in TABLES} | {("waveforms",name):"v" for name in VIEWS}
     if any(actual.get(key)!=kind for key,kind in required.items()): _fail()
@@ -78,7 +78,7 @@ def _permissions(conn, role):
             if needed and not conn.execute("SELECT has_table_privilege(current_user,%s,%s)", (oid,privilege)).fetchone()[0]: _fail()
         for column in may_update:
             if not conn.execute("SELECT has_column_privilege(current_user,%s,%s,'UPDATE')", (oid,column)).fetchone()[0]: _fail()
-    functions = conn.execute("SELECT p.oid,n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),p.proowner,p.prosecdef,p.provolatile,p.proparallel,p.proconfig,EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'").fetchall()
+    functions = conn.execute("SELECT p.oid,n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),p.proowner,p.prosecdef,p.provolatile,p.proparallel,p.proconfig,EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'").fetchall()
     for oid,schema,name,args,owner,definer,volatility,parallel,config,unsafe_acl in functions:
         permitted = schema=="waveforms" and (
             role=="reader" and name=="audited_raw" and args=="p_fact uuid, p_actor jsonb"

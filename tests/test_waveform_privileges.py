@@ -117,6 +117,53 @@ class WaveformPrivilegeTests(WaveformDatabaseCase):
         finally:
             with self.admin() as conn: conn.execute("REVOKE SELECT(raw_payload) ON waveforms.facts FROM PUBLIC")
 
+    def test_probe_rejects_extra_relations_in_ordinary_pg_prefixed_schema(self):
+        self.insert_fact(payload=b"synthetic extra-schema raw")
+        reader=sql.Identifier(self.settings["reader"]["user"])
+        for kind in ("TABLE","VIEW"):
+            with self.subTest(kind=kind):
+                schema=sql.Identifier("pgwaveformtest"+uuid4().hex)
+                relation=sql.SQL("{}.raw_leak").format(schema)
+                with self.connect("migration_owner") as conn:
+                    conn.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+                try:
+                    with self.connect("migration_owner") as conn:
+                        conn.execute(sql.SQL("CREATE {} {} AS SELECT raw_payload FROM waveforms.facts").format(sql.SQL(kind),relation))
+                        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema,reader))
+                        conn.execute(sql.SQL("GRANT SELECT ON {} TO {}").format(relation,reader))
+                    with self.connect("reader") as conn:
+                        self.assertEqual(conn.execute(sql.SQL("SELECT raw_payload FROM {}").format(relation)).fetchone()[0],b"synthetic extra-schema raw")
+                    with self.assertRaises(WaveformError) as caught:
+                        probe_role(lambda:self.connect("reader"),"reader")
+                    self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+                finally:
+                    with self.connect("migration_owner") as conn:
+                        conn.execute(sql.SQL("DROP {} IF EXISTS {}").format(sql.SQL(kind),relation))
+                        conn.execute(sql.SQL("DROP SCHEMA {}").format(schema))
+
+    def test_probe_rejects_extra_function_in_ordinary_pg_prefixed_schema(self):
+        self.insert_fact(payload=b"synthetic extra-function raw")
+        reader=sql.Identifier(self.settings["reader"]["user"])
+        schema=sql.Identifier("pgwaveformtest"+uuid4().hex)
+        function=sql.SQL("{}.raw_leak()").format(schema)
+        with self.connect("migration_owner") as conn:
+            conn.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        try:
+            with self.connect("migration_owner") as conn:
+                conn.execute(sql.SQL("CREATE FUNCTION {} RETURNS bytea LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS {}").format(function,sql.Literal("SELECT raw_payload FROM waveforms.facts LIMIT 1")))
+                conn.execute(sql.SQL("REVOKE ALL ON FUNCTION {} FROM PUBLIC").format(function))
+                conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema,reader))
+                conn.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(function,reader))
+            with self.connect("reader") as conn:
+                self.assertEqual(conn.execute(sql.SQL("SELECT {}").format(function)).fetchone()[0],b"synthetic extra-function raw")
+            with self.assertRaises(WaveformError) as caught:
+                probe_role(lambda:self.connect("reader"),"reader")
+            self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+        finally:
+            with self.connect("migration_owner") as conn:
+                conn.execute(sql.SQL("DROP FUNCTION IF EXISTS {}").format(function))
+                conn.execute(sql.SQL("DROP SCHEMA {}").format(schema))
+
     def test_probe_rejects_owner_membership(self):
         owner, reader = (self.settings[r]["user"] for r in ("migration_owner", "reader"))
         with self.admin() as conn: conn.execute(sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE").format(sql.Identifier(owner), sql.Identifier(reader)))
