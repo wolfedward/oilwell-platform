@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 Python 3.13、PostgreSQL 18、psycopg[binary]==3.3.5、paho-mqtt==2.1.0、pymodbus==3.15.0（本包不新增 Modbus 读取/写入）、SQLite、标准库 HTTP、原生 JavaScript/CSS、unittest、Node/Playwright 与本机 Edge。无新服务端框架、CDN、对象存储或科学计算依赖。
 
-**Spec:** [已确认书面设计](../specs/2026-09-29-synchronized-waveform-paired-dataset-design.md)。用户于 2026-09-29 确认设计。**本实施计划及执行方式待用户审阅选择，复选框不是已完成记录。** 实施者完整阅读设计及本计划；两者冲突先报告，不通过降低设计验收标准解决。
+**Spec:** [已确认书面设计](../specs/2026-09-29-synchronized-waveform-paired-dataset-design.md)。用户于 2026-09-29 确认设计，并选择第 1 种执行方式：**逐任务开发并独立审查；本计划已批准开始实施，未勾选项尚未完成。** 两者冲突以设计为准并记录裁决，不通过降低设计验收标准解决。
 
 ## Global Constraints
 
@@ -458,7 +458,7 @@ self.assertEqual(qualify(complete_software_report), ())
 - [x] 检查跨任务类型、文件和函数名一致；修正事务返回值、文件末行字节、迁移归属与公开工具同源发布；新增/现有文件明确区分。
 - [x] 五项 Review Focus 均有具体测试归属；尤其原文字节、ns边界、独立回压、摘要缺口与不确定写入。
 - [x] 检查容量/编码/数据用途/现场未验证边界不弱于设计；没有引入控制/训练或生产部署。静态计划检查不等于这些测试已经通过。
-- [ ] 仅在计划及执行方式获得确认后开始 Task 1。计划阶段不运行带迁移/TRUNCATE 的旧测试fixture或重建公开ZIP。
+- [x] 用户选择第 1 种执行方式，计划及执行方式获得确认，开始 Task 1。计划阶段未运行带迁移/TRUNCATE 的旧测试fixture或重建公开ZIP。
 
 ### 用户审阅与执行方式
 
