@@ -248,7 +248,7 @@ def _chunk(body, key):
         raise ContractError("contract_invalid")
     if len(data) > MAX_CHUNK_DATA_BYTES:
         raise ContractError("payload_too_large")
-    if not data or len(data) % 5 or start + count > 2_147_483_647:
+    if not data or len(data) % (count * 5) or start + count > 2_147_483_647:
         raise ContractError("layout_invalid")
     validate_quality_bytes(data)
     if sha256(data).hexdigest() != body["data_sha256"]:

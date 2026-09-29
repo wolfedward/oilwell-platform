@@ -235,6 +235,27 @@ class WaveformContractTests(unittest.TestCase):
             parse_frame(encoded(body))
         self.assertEqual(caught.exception.code, "contract_invalid")
 
+    def test_zero_reference_rejects_c1_controls_but_keeps_multilingual_text(self):
+        body = json.loads(golden_capture()[0])
+        body["cycle"]["zero_reference"] = "起始参考"
+        self.assertEqual(parse_frame(encoded(body)).body["cycle"]["zero_reference"], "起始参考")
+        for control in ("\u0080", "\u0085", "\u009f"):
+            with self.subTest(control=ord(control)):
+                body["cycle"]["zero_reference"] = "start" + control + "turn"
+                with self.assertRaises(ContractError) as caught:
+                    parse_frame(encoded(body))
+                self.assertEqual(caught.exception.code, "contract_invalid")
+
+    def test_chunk_sample_count_requires_possible_whole_frame_shape(self):
+        _, chunks = golden_capture()
+        body = json.loads(chunks[-1])  # one 10-byte sensor frame, two channels
+        body["sample_count"] = 2  # two 5-byte one-channel frames remain possible alone
+        self.assertEqual(parse_frame(encoded(body)).sample_count, 2)
+        body["sample_count"] = 3  # no positive channel count can divide ten bytes this way
+        with self.assertRaises(ContractError) as caught:
+            parse_frame(encoded(body))
+        self.assertEqual(caught.exception.code, "layout_invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

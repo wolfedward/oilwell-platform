@@ -5,6 +5,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
+from unicodedata import category
 from uuid import UUID
 
 from .errors import ContractError
@@ -96,7 +97,7 @@ def require_utc(value):
 def require_text(value, *, maximum=128):
     if not isinstance(value, str) or not 1 <= len(value) <= maximum:
         raise ContractError("contract_invalid")
-    if any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value):
+    if any(category(c) == "Cc" or 0xD800 <= ord(c) <= 0xDFFF for c in value):
         raise ContractError("contract_invalid")
     return value
 
