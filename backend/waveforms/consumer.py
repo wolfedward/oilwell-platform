@@ -206,6 +206,30 @@ class _DeliverySession:
         return self.client.ack(mid, qos)
 
 
+def _dispose_client(client):
+    """Owner-only disposal: a queued DISCONNECT is not socket closure.
+
+    Paho 2.1 has no public close API. Its private reset closes both the network
+    socket and loop()'s wakeup pair. Keep the original objects to verify closure,
+    even when Paho detaches them. A blocked owner remains under _shutdown's one
+    total deadline; failed disposal must never allow a replacement client.
+    """
+    sockets = (client.socket(), client._sockpairR, client._sockpairW)
+    try:
+        try:
+            client.disconnect()
+        finally:
+            client._reset_sockets()
+        if (any(sock is not None and sock.fileno() != -1 for sock in sockets)
+                or client.socket() is not None or client._sockpairR is not None
+                or client._sockpairW is not None):
+            raise RuntimeError("MQTT socket disposal incomplete")
+    except Exception:
+        raise WaveformError("waveform.shutdown_incomplete", "MQTT client disposal incomplete; supervisor intervention is required") from None
+    finally:
+        client.on_connect = client.on_subscribe = client.on_message = None
+
+
 def _receiver_health(connect, config, gateway, *, success=False, error=None):
     # Never touches the assembler row or its clock high-water / rollback alert.
     try:
@@ -286,7 +310,7 @@ def _receive_gateway(config, gateway, connect, stop, emit):
             # A failed old socket may still look live during DB work. Even then its
             # ACK targets only this object/socket, never a replacement lifecycle.
             session.active = False
-            client.disconnect()
+            _dispose_client(client)
         if stop.is_set():
             break
         if time.monotonic() - connected_at >= 60:
@@ -339,6 +363,10 @@ def run_assemble(config, stop, *, on_event=None):
             emit("completed" if result is not None else "lease_lost", gateway=gateway.gateway_id)
             return result is not None
         except WaveformError as error:
+            if error.code == "waveform.stopping" and stop.is_set():
+                return False
+            if error.code != "waveform.unavailable":
+                raise
             emit("retry", gateway=gateway.gateway_id, code=error.code)
             return False
     pool = _OwnedPool(config.assembly_workers, "waveform-assemble")
@@ -362,3 +390,6 @@ def run_assemble(config, stop, *, on_event=None):
                 stop.wait(1)
     finally:
         _shutdown(pool, futures, connections, stop)
+    for future in futures:
+        if not future.cancelled():
+            future.result()

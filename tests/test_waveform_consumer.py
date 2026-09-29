@@ -456,5 +456,189 @@ class WaveformConsumerTests(WaveformDatabaseCase):
         self.assertIsNotNone(broker_process.poll())
         self.assertFalse(directory.exists())
 
+    def test_would_block_disconnect_closes_network_and_wakeup_sockets(self):
+        from unittest.mock import patch
+        from backend.waveforms import consumer
+        from backend.waveforms.config import load_waveform_config
+        from tests.waveform_stack import Stack
+        import os
+        stop, records = threading.Event(), []
+        create = consumer.create_client
+        def traced(gateway):
+            client = create(gateway)
+            disconnect, send = client.disconnect, client._sock_send
+            def blocked(data):
+                if data[0] == 0xe0:
+                    raise BlockingIOError()
+                return send(data)
+            def disconnect_traced():
+                sockets = (client.socket(), client._sockpairR, client._sockpairW)
+                result = disconnect()
+                records.append((client, sockets, result, client.want_write(), threading.current_thread()))
+                return result
+            client._sock_send, client.disconnect = blocked, disconnect_traced
+            return client
+        with Stack(self) as stack, patch.dict(os.environ, {"TEST_WAVEFORM_MQTT": stack.broker.password}):
+            config = load_waveform_config(stack.config, component="receive")
+            try:
+                with patch.object(consumer, "create_client", side_effect=traced):
+                    consumer.run_receive(config, stop, on_event=lambda event, **_: stop.set() if event == "subscribed" else None)
+                self.assertEqual(len(records), 1)
+                client, sockets, result, queued, owner = records[0]
+                self.assertEqual(result, 0)
+                self.assertTrue(queued, "DISCONNECT must really remain queued")
+                self.assertTrue(all(sock is not None for sock in sockets))
+                self.assertEqual([sock.fileno() for sock in sockets], [-1, -1, -1])
+                self.assertIsNone(client.socket())
+                self.assertFalse(owner.is_alive())
+            finally:
+                for client, *_ in records: client._reset_sockets()
+
+    def test_failed_socket_disposal_reports_incomplete_without_replacement(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+        from backend.waveforms import consumer, __main__ as cli
+        from backend.waveforms.config import load_waveform_config
+        from tests.waveform_stack import Stack
+        import os
+        records = []
+        create, run = consumer.create_client, consumer.run_receive
+        def traced(gateway):
+            client = create(gateway)
+            reset, disconnect, send = client._reset_sockets, client.disconnect, client._sock_send
+            def blocked(data):
+                if data[0] == 0xe0: raise BlockingIOError()
+                return send(data)
+            def disconnect_traced():
+                records.append((client, client.socket(), reset))
+                client._reset_sockets = lambda: None  # A disposal that fails to close.
+                return disconnect()
+            client._sock_send, client.disconnect = blocked, disconnect_traced
+            return client
+        def bounded(config, stop):
+            return run(config, stop, on_event=lambda event, **_: stop.set() if event == "subscribed" else None)
+        with Stack(self) as stack, patch.dict(os.environ, {"TEST_WAVEFORM_MQTT": stack.broker.password}):
+            config = load_waveform_config(stack.config, component="receive")
+            try:
+                with patch.object(consumer, "create_client", side_effect=traced), patch.object(cli, "load_waveform_config", return_value=config), patch.object(cli, "run_receive", side_effect=bounded), redirect_stdout(StringIO()) as output:
+                    result = cli.main(["--config", str(stack.config), "receive"])
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(output.getvalue())["code"], "waveform.shutdown_incomplete")
+                self.assertEqual(len(records), 1)
+                self.assertNotEqual(records[0][1].fileno(), -1)
+            finally:
+                for _, _, reset in records: reset()
+
+    def test_assembly_nonretryable_errors_reach_cli_from_claim_and_run(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+        from backend.waveforms import consumer, __main__ as cli
+        from backend.waveforms.assembly import Assembler
+        from tests.waveform_stack import runtime_config
+        from tests.test_waveform_repository import observation
+        repo = WaveformRepository(self.connect, limits=LIMITS, prefix="oil", ingress_gateway_id="GW")
+        for payload in capture(): repo.ingest(observation(payload))
+        config = runtime_config(self, "assemble")
+        run = consumer.run_assemble
+        def bounded(config, stop):
+            timer = threading.Timer(2, stop.set)  # Bounds the known pre-fix endless retry.
+            timer.start()
+            try: return run(config, stop)
+            finally:
+                timer.cancel()
+                timer.join()
+        for method in ("claim", "run"):
+            for code in ("waveform.invariant", "waveform.capacity_configuration"):
+                with self.subTest(method=method, code=code):
+                    # Run injection needs a real committed claim each time.
+                    with self.connect("migration_owner") as connection:
+                        connection.execute("UPDATE waveforms.assembly_jobs SET lease_token=NULL,lease_until=NULL,lease_generation=NULL")
+                    with patch.object(Assembler, method, side_effect=WaveformError(code, "private detail")), patch.object(cli, "load_waveform_config", return_value=config), patch.object(cli, "run_assemble", side_effect=bounded), redirect_stdout(StringIO()) as output:
+                        result = cli.main(["--config", "injected-config", "assemble"])
+                    self.assertEqual(result, 2)
+                    self.assertEqual(json.loads(output.getvalue()), {"status": "unavailable", "code": code})
+
+    def test_assembly_unavailable_retries_then_completes(self):
+        from unittest.mock import patch
+        from backend.waveforms.consumer import run_assemble
+        from backend.waveforms.assembly import Assembler
+        from tests.waveform_stack import runtime_config
+        from tests.test_waveform_repository import observation
+        repo = WaveformRepository(self.connect, limits=LIMITS, prefix="oil", ingress_gateway_id="GW")
+        for payload in capture(): repo.ingest(observation(payload))
+        stop, events = threading.Event(), []
+        claim, attempts = Assembler.claim, []
+        def transient(assembler, *args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1: raise WaveformError("waveform.unavailable", "transient")
+            return claim(assembler, *args, **kwargs)
+        def event(name, **fields):
+            events.append((name, fields))
+            if name == "completed": stop.set()
+        timer = threading.Timer(8, stop.set)
+        timer.start()
+        try:
+            with patch.object(Assembler, "claim", transient):
+                run_assemble(runtime_config(self, "assemble"), stop, on_event=event)
+        finally:
+            timer.cancel()
+            timer.join()
+        self.assertEqual([name for name, _ in events], ["retry", "completed"])
+        self.assertEqual(events[0][1]["code"], "waveform.unavailable")
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.completion", role="assembler"), 1)
+
+    def test_blocked_socket_disposal_obeys_shared_shutdown_deadline(self):
+        from unittest.mock import patch
+        from backend.waveforms import consumer
+        from backend.waveforms.config import load_waveform_config
+        from tests.waveform_stack import Stack
+        import os
+        stop, ready, closing, release = (threading.Event() for _ in range(4))
+        records, clients = [], []
+        create = consumer.create_client
+        def traced(gateway):
+            client = create(gateway)
+            clients.append(client)
+            reset, disconnect, send = client._reset_sockets, client.disconnect, client._sock_send
+            def blocked(data):
+                if data[0] == 0xe0: raise BlockingIOError()
+                return send(data)
+            def blocked_reset():
+                closing.set()
+                release.wait(5)
+                reset()
+            def disconnect_traced():
+                records.append((client.socket(), client._sockpairR, client._sockpairW))
+                client._reset_sockets = blocked_reset
+                return disconnect()
+            client._sock_send, client.disconnect = blocked, disconnect_traced
+            return client
+        with Stack(self) as stack, patch.dict(os.environ, {"TEST_WAVEFORM_MQTT": stack.broker.password}):
+            config = load_waveform_config(stack.config, component="receive")
+            connections = consumer.DatabaseConnections(config, stop)
+            pool = consumer._OwnedPool(1, "waveform-socket-test")
+            with patch.object(consumer, "create_client", side_effect=traced):
+                future = pool.submit(consumer._receive_gateway, config, config.gateways[0],
+                    connections.factory("receiver"), stop,
+                    lambda event, **_: ready.set() if event == "subscribed" else None)
+                try:
+                    self.assertTrue(ready.wait(5))
+                    started = time.monotonic()
+                    with self.assertRaises(WaveformError) as caught:
+                        consumer._shutdown(pool, [future], connections, stop, timeout=.3)
+                    self.assertEqual(caught.exception.code, "waveform.shutdown_incomplete")
+                    self.assertLess(time.monotonic() - started, 1)
+                    self.assertTrue(closing.is_set())
+                    self.assertTrue(any(owner.is_alive() for owner in pool.owned_threads()))
+                    self.assertEqual(len(clients), 1, "replacement must not start during disposal")
+                finally:
+                    release.set()
+                    consumer._shutdown(pool, [future], connections, stop, timeout=5)
+                    for client in clients: client._reset_sockets()
+                future.result()
+                self.assertEqual([[sock.fileno() for sock in sockets] for sockets in records], [[-1, -1, -1]])
+
 
 if __name__ == "__main__": unittest.main()
