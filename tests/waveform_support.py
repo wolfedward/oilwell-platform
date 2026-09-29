@@ -1,5 +1,7 @@
 """Pinned live WP-04 fixture; never resets legacy, demo, or registry tables."""
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from dataclasses import fields
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -118,3 +120,27 @@ class WaveformDatabaseCase(unittest.TestCase):
         # Both digest and exact bytes are checked; no reconstruction of wire JSON.
         return self.scalar("SELECT count(*) FROM waveforms.facts WHERE payload_sha256=%s AND raw_payload=%s",
                            (sha256(observation.payload).hexdigest(),observation.payload),role="receiver")
+
+    @contextmanager
+    def capacity_fixture(self, limits):
+        """Scoped fixture-only budgets under the already-held reset lock.
+
+        Always restore persisted baseline before the next migration check.
+        Never relax runtime grants or migration configuration verification.
+        """
+        def install(configuration):
+            with self.connect("migration_owner") as conn:
+                self._check_endpoint(conn)
+                conn.execute(sql.SQL("TRUNCATE {}").format(sql.SQL(",").join(sql.Identifier("waveforms", name) for name in RESET_TABLES)))
+                conn.execute("DELETE FROM waveforms.capacity")
+                names = [field.name for field in fields(Quota)]
+                for bucket, quota in {"*": configuration.global_quota, **configuration.gateways}.items():
+                    conn.execute(sql.SQL("INSERT INTO waveforms.capacity(bucket,{}) VALUES({})").format(
+                        sql.SQL(",").join(map(sql.Identifier, names)), sql.SQL(",").join(sql.Placeholder() for _ in range(9))),
+                        (bucket, *(getattr(quota, name) for name in names)))
+                conn.execute("UPDATE waveforms.state_head SET version=1 WHERE singleton=1")
+        try:
+            install(limits)
+            yield limits
+        finally:
+            install(LIMITS)
