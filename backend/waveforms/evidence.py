@@ -73,7 +73,8 @@ class EvidenceService:
         # A persisted replay needs no new raw read and therefore no duplicate
         # read-audit charge. The write transaction repeats this race check.
         with self._connect() as replay:
-            cur=replay.cursor(); business.lock_dependencies(cur); business.check_payer(cur,self._bucket)
+            cur=replay.cursor(); prepare_transaction(cur)
+            business.lock_dependencies(cur); business.check_payer(cur,self._bucket)
             saved=business.receipt(cur,command,digest)
             if saved is not None:
                 result=self._decode(cur,saved); replay.rollback(); return result
@@ -169,18 +170,21 @@ class EvidenceService:
         caps=[body['capture']] if kind=='origin' else [x['endpoint']['capture'] for x in body['endpoints']]
         keys=tuple(dict.fromkeys(CaptureKey(c['gateway_id'],c['device_id'],UUID(c['capture_id'])) for c in caps))
         manifests={}; references=[]
-        with self._reader() as conn:
-            cur=conn.cursor(); prepare_transaction(cur)
-            for key in keys:
+        # Each raw audit locks its actual intake quota. Commit separately so
+        # reversed caller endpoint orders never accumulate cross-gateway locks.
+        for key in keys:
+            with self._reader() as conn:
+                cur=conn.cursor(); prepare_transaction(cur)
                 cur.execute('SELECT capture_pk,manifest_fact_id,manifest_sha256 FROM waveforms.capture_metadata WHERE gateway_id=%s AND device_id=%s AND capture_id=%s',
                             (key.gateway_id,key.device_id,key.capture_id))
                 capture=cur.fetchone()
                 if capture is None or capture[1] is None: continue
                 cur.execute('SELECT waveforms.audited_raw(%s,%s)',(capture[1],Jsonb(asdict(actor))))
-                raw=bytes(cur.fetchone()[0]); frame=parse_frame(raw)
-                if frame.key!=key or frame.raw_sha256!=capture[2]: _fail('source_changed','Immutable manifest identity differs')
-                manifests[key]=frame; references.append(capture)
-            prepare_transaction(cur); conn.commit()
+                raw=bytes(cur.fetchone()[0])
+                prepare_transaction(cur); conn.commit()
+            frame=parse_frame(raw)
+            if frame.key!=key or frame.raw_sha256!=capture[2]: _fail('source_changed','Immutable manifest identity differs')
+            manifests[key]=frame; references.append(capture)
         if kind=='sync': sync_proof(body,manifests,approved=False)
         return manifests,tuple(references)
 

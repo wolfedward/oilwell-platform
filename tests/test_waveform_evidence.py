@@ -159,6 +159,98 @@ class EvidenceDatabaseTests(WaveformDatabaseCase):
         with self.assertRaises(WaveformError) as caught: self.service().review(item.id,decision='approve',command=cmd)
         self.assertEqual(caught.exception.code,'waveform.evidence_self_review')
 
+    def test_preliminary_guard_bounds_fresh_and_persisted_replay(self):
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+        import time
+        import psycopg
+        from backend.waveforms import business
+        from backend.waveforms.evidence import EvidenceService
+        body=sampling_body(); replay=self.command('create',kind='sampling_config',body=body)
+        self.service().create('sampling_config',body,replay)
+        before=self.scalar("SELECT used_metadata_rows FROM waveforms.capacity WHERE bucket='GW'",role='migration_owner')
+        for persisted in (False,True):
+            for lock_ms,statement_ms in ((0,0),(150,500),(1500,100)):
+                with self.subTest(persisted=persisted,lock_ms=lock_ms,statement_ms=statement_ms):
+                    opened=[]
+                    def connect():
+                        conn=self.connect('operator'); opened.append(conn)
+                        conn.execute("SELECT set_config('lock_timeout',%s,false),set_config('statement_timeout',%s,false)",(str(lock_ms),str(statement_ms)))
+                        conn.commit(); return conn
+                    service=EvidenceService(connect,limits=LIMITS,shared_accounting_bucket='GW')
+                    command=replay if persisted else self.command('create',kind='sampling_config',body=body)
+                    def blocked():
+                        started=time.monotonic()
+                        try: return service.create('sampling_config',body,command),time.monotonic()-started
+                        except psycopg.Error as error: return error,time.monotonic()-started
+                    with self.connect('operator') as guard:
+                        business.lock_dependencies(guard.cursor())
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            future=pool.submit(blocked)
+                            try:
+                                result,elapsed=future.result(timeout=4.5)
+                            except TimeoutError:
+                                for connection in opened: connection.cancel()
+                                result,elapsed=future.result(timeout=3)
+                            finally:
+                                guard.rollback()
+                    expected=psycopg.errors.QueryCanceled if statement_ms==100 else psycopg.errors.LockNotAvailable
+                    self.assertIsInstance(result,expected)
+                    self.assertLess(elapsed,4 if lock_ms==0 else .9)
+                    self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.evidence_versions'),1)
+                    self.assertEqual(self.scalar("SELECT used_metadata_rows FROM waveforms.capacity WHERE bucket='GW'",role='migration_owner'),before)
+
+    def test_reversed_source_audits_do_not_hold_cross_gateway_quota_locks(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from dataclasses import replace
+        import threading
+        from backend.waveforms.evidence import EvidenceService
+        from backend.waveforms.repository import WaveformRepository
+        from backend.waveforms.wire import parse_frame
+        from tests.test_waveform_repository import capture,observation
+        limits=replace(LIMITS,gateways={'GW':LIMITS.gateways['GW'],'B':LIMITS.gateways['GW']})
+        with self.capacity_fixture(limits):
+            rows=[]
+            for gateway in ('GW','B'):
+                raw,_=capture(gateway); frame=parse_frame(raw); stream=frame.streams[0]
+                WaveformRepository(self.connect,limits=limits,prefix='oil',ingress_gateway_id=gateway).ingest(observation(raw,gateway=gateway))
+                endpoint=dict(capture=dict(gateway_id=gateway,device_id=frame.key.device_id,capture_id=str(frame.key.capture_id)),
+                    source=dict(stream.source),stream_id=stream.stream_id,clock_domain_id=stream.clock_domain_id)
+                rows.append(dict(endpoint=endpoint,reference_sample_index=str(stream.first_sample_index),reference_event='synthetic same edge',
+                    nominal_reference_ns=str(stream.offset_ns),rate=dict(num=stream.rate_num,den=stream.rate_den),
+                    valid_start_ns=str(stream.offset_ns),valid_end_ns=str(stream.offset_ns+1000000000),
+                    offset_error_ns='0',frequency_error_ppm='0',residual_ns='0',clock_divisor=None))
+            barrier=threading.Barrier(2); local=threading.local(); case=self
+            class Cursor:
+                def __init__(self,inner): self.inner=inner
+                def __getattr__(self,key): return getattr(self.inner,key)
+                def execute(self,statement,params=None):
+                    result=self.inner.execute(statement,params)
+                    if statement.startswith('SELECT waveforms.audited_raw'):
+                        local.audits=getattr(local,'audits',0)+1
+                        if local.audits==1: barrier.wait(timeout=5)
+                    return result
+            class Connection:
+                def __init__(self,inner): self.inner=inner
+                def __getattr__(self,key): return getattr(self.inner,key)
+                def __enter__(self): self.inner.__enter__(); return self
+                def __exit__(self,*args): return self.inner.__exit__(*args)
+                def cursor(self): return Cursor(self.inner.cursor())
+            def create(order):
+                body=dict(source_kind='synthetic',valid_from=None,valid_to=None,attachment_ids=[],notes='Synthetic overlap test',
+                    method='verified_linear_mapping',reference=rows[0]['endpoint'],endpoints=[rows[index] for index in order])
+                service=EvidenceService(lambda:case.connect('operator'),limits=limits,shared_accounting_bucket='GW',
+                    read_connect=lambda:Connection(case.connect('reader')))
+                try:
+                    return service.create('sync',body,self.command('create',kind='sync',body=body))
+                except Exception as error: return error
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures=[pool.submit(create,order) for order in ((0,1),(1,0))]
+                results=[future.result(timeout=12) for future in futures]
+            self.assertFalse([type(value).__name__+': '+str(value) for value in results if isinstance(value,Exception)])
+            self.assertEqual([[row['endpoint']['capture']['gateway_id'] for row in value.body['endpoints']] for value in results],[['GW','B'],['B','GW']])
+            self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata'),4)
+            self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.evidence_versions'),2)
+
     def test_revoke_appends_not_rewrites(self):
         item=self.create()
         before=self.scalar('SELECT canonical_content FROM waveforms.evidence_versions WHERE evidence_id=%s',(item.id,),role='migration_owner')
