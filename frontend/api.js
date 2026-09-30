@@ -99,8 +99,42 @@ export const api = {
     return this.request(path, { ...options, method: "PATCH", body });
   },
 
-  async download(path, filename) {
+  // Exact-octet uploads deliberately bypass the legacy JSON request contract.
+  async raw(path, body, options = {}) {
+    if (!(body instanceof ArrayBuffer) && !ArrayBuffer.isView(body) && !(body instanceof Blob)) {
+      throw new ApiError("原文上传必须使用字节", {code: "invalid_bytes"});
+    }
     const controller = new AbortController();
+    let timedOut = false;
+    const cancel = () => controller.abort();
+    const timer = window.setTimeout(() => {timedOut = true; controller.abort();}, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (options.signal?.aborted) controller.abort();
+    else options.signal?.addEventListener("abort", cancel, {once: true});
+    const headers = new Headers(options.headers || {});
+    headers.set("Accept", "application/json");
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/octet-stream");
+    try {
+      const response = await fetch(path, {...options, method: "POST", body, headers, credentials: "same-origin", signal: controller.signal});
+      const payload = await parseResponse(response);
+      if (!response.ok) {
+        if (response.status === 401) window.dispatchEvent(new CustomEvent("platform:unauthenticated"));
+        throw errorFrom(response, payload);
+      }
+      return payload?.data ?? payload;
+    } catch (error) {
+      if (error?.name === "AbortError") throw new ApiError(timedOut ? "上传超时，可使用原文件恢复" : "上传已暂停", {code: timedOut ? "timeout" : "cancelled"});
+      if (error instanceof ApiError) throw error;
+      throw new ApiError("无法连接本机服务", {code: "network_error"});
+    } finally {
+      window.clearTimeout(timer); options.signal?.removeEventListener("abort", cancel);
+    }
+  },
+
+  async download(path, filename, options = {}) {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    if (options.signal?.aborted) controller.abort();
+    else options.signal?.addEventListener("abort", cancel, {once: true});
     let timedOut = false;
     const timer = window.setTimeout(() => {
       timedOut = true;
@@ -119,6 +153,7 @@ export const api = {
         throw error;
       }
       const blob = await response.blob();
+      if (controller.signal.aborted) throw new DOMException("Download cancelled", "AbortError");
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = filename;
@@ -140,6 +175,7 @@ export const api = {
       });
     } finally {
       window.clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
     }
   },
 };

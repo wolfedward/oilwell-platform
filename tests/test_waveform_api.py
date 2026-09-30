@@ -38,6 +38,47 @@ class WaveformHTTPTests(DatasetCase):
     def close_server(self):
         self.server.shutdown(); self.thread.join(5); self.server.server_close()
 
+    def test_evaluation_list_projects_saved_historical_registry_and_null(self):
+        from copy import deepcopy
+        from tests.waveform_pairing_support import seed_pair
+        vector=seed_pair(self)
+        id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        selection=vector['selection']
+        status,value=self.post(f'/captures/{id}/evaluations',selection)
+        self.assertEqual(status,200,value)
+        run_id=value['data']['runs'][0]['id']
+        with self.connect('reader') as conn:
+            stored=conn.execute('SELECT source_key,registry_snapshot,parameters FROM waveforms.quality_runs WHERE quality_run_id=%s',(run_id,)).fetchone()
+        self.assertIsNotNone(stored[1])
+        # This historical synthetic capture predates any fixture binding. The
+        # actual registry resolver preserves its unresolved state and no well.
+        self.assertEqual(stored[1]['status'],'ineligible')
+        self.assertIsNone(stored[1]['well'])
+        self.assertIn('sources',stored[1])
+        status,value=self.request('GET',f'/captures/{id}/evaluations',role='reviewer')
+        self.assertEqual(status,200,value)
+        item=next(r for r in value['data']['items'] if r['quality_run_id']==run_id)
+        self.assertIn('historical_registry',item,'Compact historical ownership projection required')
+        self.assertEqual(item['source_key'],stored[0])
+        allowed={'status','resolution_reasons','revision','time_basis','utc_start','lower_ns','upper_ns','well'}
+        self.assertEqual(set(item['historical_registry']),allowed)
+        expected={k:stored[1][k] for k in allowed}
+        if expected['revision'] is not None: expected['revision']=str(expected['revision'])
+        self.assertEqual(item['historical_registry'],expected)
+        self.assertNotIn('sources',json.dumps(item))
+        self.assertNotIn('parameters',item); self.assertNotIn('evidence',item); self.assertNotIn('raw',item)
+        self.assertLess(len(json.dumps(item)),4096)
+        # A real producer evaluation with no selected channels saves SQL NULL.
+        unselected=deepcopy(selection); unselected.update(purpose='raw_archive',channels=[],cycle=None,sync=None,profile=None)
+        status,value=self.post(f'/captures/{id}/evaluations',unselected)
+        self.assertEqual(status,200,value)
+        null_id=value['data']['runs'][0]['id']
+        self.assertIsNone(self.scalar('SELECT registry_snapshot FROM waveforms.quality_runs WHERE quality_run_id=%s',(null_id,)))
+        status,value=self.request('GET',f'/captures/{id}/evaluations',role='reviewer')
+        self.assertEqual(status,200,value)
+        null_item=next(r for r in value['data']['items'] if r['quality_run_id']==null_id)
+        self.assertIsNone(null_item['historical_registry']); self.assertEqual(null_item['status'],'pending')
+
     def test_window_discovery_read_only_permission_and_one_slot(self):
         from tests.waveform_pairing_support import seed_pair
         vector=seed_pair(self); rt=self.server.waveform_runtime

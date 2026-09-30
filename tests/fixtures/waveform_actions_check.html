@@ -1,0 +1,78 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const checks=[];const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
+try{
+ if('FIXTURE_MODE'==='management'){
+  const {renderWaveforms}=await import(PAGE_MODULE);const {createWaveformClient,createPager}=await import(CLIENT_MODULE);
+  const root=document.querySelector('#root'),P='11111111-1111-4111-8111-111111111111',D='22222222-2222-4222-8222-222222222222',V='33333333-3333-4333-8333-333333333333';
+  const permissions=new Set(['waveform.read','waveform.raw.read','waveform.import','waveform.evidence.manage','waveform.pair.manage','waveform.dataset.manage','waveform.review','waveform.export']);
+  const requests=[],posts=[];let frozen=false,deny=true;const tick=()=>new Promise(r=>setTimeout(r,5));
+  const api={get:async path=>{requests.push(path);const u=new URL(path,'http://fixture'),p=u.pathname;
+   if(p==='/api/waveforms/captures')return{items:[],page:1,has_more:false};
+   if(p==='/api/waveforms/pairs')return{items:[{pair_version_id:P,version:'9007199254740993',state:'proposed'}],page:1,has_more:false};
+   if(p.endsWith('/preview/window'))return{pair_id:P,pair_version:'9007199254740993',method_version:'linear_adjacent/1',reference:{time_basis:{coordinate:'corrected'}},mode:'summary',total_frames:3,budget:2000,status:'ok',restrictions:['pair_not_approved'],quantitative_use_allowed:false,closed:false,displacement_source:{source_kind:'synthetic',source:{device_id:'SENSOR-X'},key:{capture_id:P},unit:'m'},load_source:{source_kind:'synthetic',source:{device_id:'SENSOR-Y'},key:{capture_id:D},unit:'kN'},points:[{index:'9007199254740993',relative_ns:'0',displacement:2,load:10,displacement_indices:['9007199254740993'],load_indices:['7','8'],displacement_interpolated:false,load_interpolated:true,displacement_qualities:[0],load_qualities:[0,0]},{index:'9007199254740994',relative_ns:'1000000000/3',displacement:1,load:11,displacement_indices:['9007199254740994'],load_indices:['8'],displacement_interpolated:false,load_interpolated:false,displacement_qualities:[0],load_qualities:[0]}],gaps:[]};
+   if(p.endsWith('/preview'))return{pair_version_id:P,version:'9007199254740993',historical_status:'eligible',current_status:'eligible',current_reasons:[],current_restrictions:['synthetic'],dependencies_current:true};
+   if(p==='/api/waveforms/pairs/'+P)return{id:P,version:'9007199254740993',review_state:'proposed',creator:{user_id:'1'},body:{selection:{channels:[{role:'displacement',first_index:'9007199254740993',last_index:'9007199254740995'}]}}};
+   if(p==='/api/waveforms/datasets')return{items:[{dataset_id:D,title:'Synthetic dataset',state:frozen?'frozen':'draft',purpose:'software_pair_test',member_count:1}],page:1,has_more:false};
+   if(p==='/api/waveforms/datasets/'+D&&u.searchParams.has('view'))return{items:[],page:1,has_more:false};
+   if(p==='/api/waveforms/datasets/'+D)return{draft:{id:D,revision:'9007199254740993',title:'Synthetic dataset',state:frozen?'frozen':'draft',purpose:'software_pair_test',split_plan:{kind:'none'}},version:frozen?{id:V,draft_revision:'9007199254740993',purpose:'software_pair_test',content_sha256:'a'.repeat(64),restriction_reasons:['synthetic'],independent_split:false}:null};
+   throw Error('Unexpected GET '+path);
+  },post:async(path,body)=>{posts.push({path,body:structuredClone(body)});if(deny)throw Object.assign(Error('self review denied'),{status:403});return{export:{id:P},description:{allowed:true,dataset_purpose:'software_pair_test',intent:'evidence',restriction_reasons:['synthetic']}};},download:async()=>{}};
+  await renderWaveforms({workspace:root,api,permissions,actorId:'1',capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,page:{},pageHeader:()=>'<h1>配对与数据集管理</h1>'});
+  root.querySelector('[data-wave-tab="pairs"]').click();await tick();root.querySelector('[data-wave-pair]').click();await tick();
+  check(root.querySelectorAll('[data-wave-action$="/review"]').length===3,'administrator sees all review actions');
+  check(root.textContent.includes('待模型工作包接入'),'no production inverse fabricated');
+  root.querySelector('[data-wave-xy]').click();await tick();check(root.textContent.includes('SENSOR-X')&&root.textContent.includes('SENSOR-Y'),'XY uses two actual pinned source identities');
+  check(root.querySelectorAll('[data-wave-path]').length===1,'sensor XY is plotted in supplied temporal order');
+  check(root.querySelector('[data-wave-axis="x"]')?.textContent.includes('位移（m）')&&root.querySelector('[data-wave-axis="y"]')?.textContent.includes('载荷（kN）'),'XY axes use source displacement and load units');
+  await window.captureEvidence?.('xy','[data-wave-channel]');
+  check(requests.some(p=>p.includes('/preview/window?start=9007199254740993&count=3&mode=summary&budget=2000')),'XY request keeps exact index and correct route');
+  let form=root.querySelector('[data-wave-action$="/review"]');form.querySelector('[name=reason]').value='独立复核';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(form.textContent.includes('自审')&&form.querySelector('button').disabled,'backend self-review denial remains authoritative for admin');
+  check(posts[0].body.expected_version==='9007199254740993'&&posts[0].body.body.decision==='approve','real review envelope');
+  deny=false;root.querySelector('[data-wave-tab="datasets"]').click();await tick();root.querySelector('[data-wave-dataset]').click();await tick();
+  root.querySelector('[data-wave-members]').click();await tick();check(requests.some(p=>p.includes('view=members&revision=9007199254740993')),'draft member read pins revision');
+  root.querySelector('[name=changes]').value=JSON.stringify({remove_members:[{kind:'pair',reference_id:P}]});
+  form=root.querySelector('[data-wave-action$="/update"]');form.querySelector('[name=reason]').value='移除成员';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(Object.keys(posts.at(-1).body.body).join() === 'changes'&&!JSON.stringify(posts.at(-1).body.body).includes('target_id'),'update sends HTTP body without service-only target');
+  frozen=true;root.querySelector('[data-wave-dataset]').click();await tick();root.querySelector('[data-wave-files]').click();await tick();
+  check(requests.some(p=>p.includes('view=files&version_id='+V)),'frozen files pin actual version');
+  form=root.querySelector('[data-wave-action$="/exports"]');form.querySelector('[name=reason]').value='证据下载';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(posts.at(-1).body.expected_version==='0'&&JSON.stringify(posts.at(-1).body.body)==='{"purpose":"evidence"}','export uses independent intent and fresh version zero');
+  const pageCalls=[];let stale=false;const pager=createPager(createWaveformClient({get:async path=>{pageCalls.push(path);if(stale){stale=false;throw Object.assign(Error('refresh'),{status:409,code:'waveform.refresh_required'});}return{items:[],page:pageCalls.length===1?1:2,has_more:true,snapshot_revision:'opaque-whole-token',received_before:'2026-10-01T00:00:00.000000Z',received_after:'2026-09-30T00:00:00.000000Z'};}}),'/captures',{device_id:'A'},20);
+  await pager.load();await pager.load(2);const q=new URL(pageCalls[1],'http://fixture').searchParams;
+  check(q.get('snapshot_revision')==='opaque-whole-token'&&q.get('received_after')==='2026-09-30T00:00:00.000000Z','page preserves opaque token and effective time bounds');
+  stale=true;await pager.load(3);check(!new URL(pageCalls.at(-1),'http://fixture').searchParams.has('snapshot_revision'),'409 refresh restarts page1');
+  const {mountEvidence}=await import(new URL('evidence.js',CLIENT_MODULE));const evidenceRoot=document.createElement('section');root.append(evidenceRoot);let evidencePosts=0;
+  const evidenceClient=createWaveformClient({get:async()=>({id:P,kind:'origin',version:'1',review_state:'draft',body:{attachment_ids:[]},creator:{user_id:'1'}}),post:async()=>{evidencePosts++;return{id:P};}});
+  mountEvidence({root:evidenceRoot,client:evidenceClient,permissions,capture:{streams:[]},isCurrent:()=>true});
+  const create=evidenceRoot.querySelector('[data-wave-action="/evidence"]');evidenceRoot.querySelector('[name=body]').value='{}';create.querySelector('[name=reason]').value='新增来源资料';
+  create.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();create.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(evidencePosts===2,'selecting saved evidence does not dispose independent create form');
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else{
+ const {createWaveformClient}=await import(CLIENT_MODULE);let allowed=true,current=true,fail=true;const calls=[];
+ const api={post:async(path,body)=>{calls.push({path,body:structuredClone(body)});if(fail)throw Object.assign(Error('uncertain'),{code:'network_error'});return{version:'2'};},get:async()=>({items:[]})};
+ const client=createWaveformClient(api,{isCurrent:()=>current,can:()=>allowed});
+ const body={decision:'approve'};const command=client.prepare('/pairs/00000000-0000-0000-0000-000000000001/review','9007199254740993','复核理由',body,'waveform.review');body.decision='reject';
+ try{await client.send(command);}catch{}
+ fail=false;await client.send(command);check(JSON.stringify(calls[0])===JSON.stringify(calls[1]),'uncertain retry retains exact target/version/key/reason/body');
+ check(calls[0].body.body.decision==='approve'&&calls[0].body.expected_version==='9007199254740993','command is immutable exact version');
+ allowed=false;try{await client.send(command);}catch{}check(calls.length===2,'revoked permission stops retry before transport');
+ const {mountCommand}=await import(CLIENT_MODULE);const actionRoot=document.createElement('div');document.querySelector('#root').append(actionRoot);let stale=true;const versions=[];
+ const actionClient=createWaveformClient({post:async(p,b)=>{versions.push(b.expected_version);if(stale)throw Object.assign(Error('stale'),{status:409});return{version:'3'};}});
+ const args={root:actionRoot,client:actionClient,permissions:new Set(['waveform.review']),permission:'waveform.review',path:'/pairs/00000000-0000-0000-0000-000000000001/review',label:'复核',body:{decision:'approve'},isCurrent:()=>true};
+ let actionMount=mountCommand({...args,version:'1'});let f=actionRoot.querySelector('form');f.querySelector('input').value='确认';f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,0));actionMount.dispose();actionRoot.replaceChildren();
+ stale=false;mountCommand({...args,version:'2'});f=actionRoot.querySelector('form');f.querySelector('input').value='重新读取后确认';f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,0));check(versions.join(',')==='1,2','definite409 allows a new command only after rereading actual version');
+ allowed=true;let resolve;api.get=()=>new Promise(r=>{resolve=r;});const pending=client.read('/captures');client.dispose();resolve({secret:'late'});check(await pending===null,'late read cannot survive disposal');
+ const {renderWaveforms}=await import(PAGE_MODULE);const root=document.querySelector('#root');let held,mode='late',dispose;
+ const rows=[{capture_pk:'00000000-0000-0000-0000-000000000001',device_id:'A'},{capture_pk:'00000000-0000-0000-0000-000000000002',device_id:'B'}];
+ const fixtureApi={get:async path=>{if(path.split('?')[0]==='/api/waveforms/captures')return{items:rows,page:1,has_more:false};if(path.endsWith(rows[0].capture_pk))return new Promise((resolve,reject)=>{held={resolve,reject};});if(path.includes('?'))return path.includes('summary')?{...rows[1],streams:[],missing_chunks:{},completion:null}:{items:[],page:1,has_more:false};return{...rows[1],streams:[],missing_chunks:{},completion:null};}};
+ const ctx={workspace:root,api:fixtureApi,permissions:new Set(['waveform.read']),actorId:'1',capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,registerDispose:d=>{dispose=d;},pageHeader:()=>'<h1>同步波形</h1>',page:{}};
+ await renderWaveforms(ctx);root.querySelector('[data-wave-select="'+rows[0].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));root.querySelector('[data-wave-select="'+rows[1].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));
+ held.resolve({...rows[0],device_id:'LATE-A',streams:[]});await new Promise(r=>setTimeout(r,0));check(!root.textContent.includes('LATE-A'),'late success cannot repaint another capture');
+ root.querySelector('[data-wave-select="'+rows[0].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));root.querySelector('[data-wave-select="'+rows[1].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));held.reject(Error('LATE-ERROR'));await new Promise(r=>setTimeout(r,0));check(!root.textContent.includes('LATE-ERROR'),'late failure cannot repaint another capture');
+ dispose();check(root.scrollWidth<=innerWidth,'workspace fits viewport');document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:e.stack,checks});}
+</script>

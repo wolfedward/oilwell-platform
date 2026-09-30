@@ -254,7 +254,15 @@ class WaveformQueries:
             base='SELECT e.evidence_id,e.kind,e.content_sha256,e.creator,e.recorded_at,v.version,v.state FROM waveforms.evidence_versions e JOIN LATERAL(SELECT version,state FROM waveforms.evidence_events WHERE evidence_id=e.evidence_id ORDER BY version DESC LIMIT 1)v ON true'
             eq('kind',allowed=('sampling_config','calibration','sync','origin','profile')); eq('state',allowed=('draft','approved','rejected','revoked')); idcol='evidence_id'
         elif resource=='evaluations':
-            base='SELECT quality_run_id,capture_pk,manifest_sha256,validator_version,profile_id,profile_sha256,purpose,status,creator,recorded_at FROM waveforms.quality_runs'
+            # Only immutable evaluation-time association metadata. Never expose
+            # the large source/binding/evidence/parameter snapshots in a list.
+            historical="CASE WHEN registry_snapshot IS NULL OR registry_snapshot='null'::jsonb THEN NULL ELSE jsonb_build_object("
+            historical+=','.join("'"+key+"',registry_snapshot->'"+key+"'" for key in (
+                'status','resolution_reasons','revision','time_basis','utc_start','lower_ns','upper_ns'))
+            historical+=",'well',CASE WHEN registry_snapshot->'well' IS NULL OR registry_snapshot->'well'='null'::jsonb THEN NULL ELSE jsonb_build_object("
+            historical+=','.join("'"+key+"',registry_snapshot->'well'->'"+key+"'" for key in ('id','area_code','well_code'))
+            historical+=") END) END AS historical_registry"
+            base='SELECT quality_run_id,capture_pk,source_key,manifest_sha256,validator_version,profile_id,profile_sha256,purpose,status,creator,recorded_at,'+historical+' FROM waveforms.quality_runs'
             eq('id','capture_pk'); eq('status',allowed=('eligible','ineligible','pending')); eq('purpose',allowed=purposes); idcol='quality_run_id'
         elif resource=='pairs':
             base="SELECT p.pair_version_id,p.left_quality_run_id,p.right_quality_run_id,p.method_version,p.content_sha256,p.creator,p.recorded_at,coalesce(r.version,1) AS version,coalesce(r.decision,'proposed') AS state FROM waveforms.pair_versions p LEFT JOIN LATERAL(SELECT version,decision FROM waveforms.pair_reviews WHERE pair_version_id=p.pair_version_id ORDER BY version DESC LIMIT 1)r ON true"

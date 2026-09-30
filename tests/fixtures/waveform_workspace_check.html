@@ -1,0 +1,70 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><style>#result{display:none}</style><div id="app"></div><div id="toastRegion"></div><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const checks=[];const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
+try{
+ const mode='FIXTURE_MODE';
+ if(mode==='reception'){
+  const {renderWaveforms}=await import(PAGE_MODULE);const root=document.querySelector('#root'),id='11111111-1111-4111-8111-111111111111',calls=[];
+  const api={get:async path=>{calls.push(path);if(path.includes('view=summary'))return{capture_pk:id,gateway_id:'ROUTE-GW',device_id:'ROUTE-DEVICE',capture_id:id,state:'collecting',version:'2',source_kind:'synthetic',utc_start:'2026-09-29T00:00:00.000000Z',utc_uncertainty_ns:'123456789',missing_chunks:{sensor:[1,3]},completion:null,streams:[{stream_id:'sensor',source:{gateway_id:'ACTUAL-GW',device_id:'ACTUAL-SENSOR',boot_id:id},channels:[],rate:{num:3,den:1},first_sample_index:'9007199254740993',frame_count:100}]};
+   if(path.includes('view=provenance'))return{items:[{transport:'file',source_ref:id,received_at:'2026-09-30T00:00:00.000000Z'}],page:1,has_more:false};
+   if(path.includes('/evaluations'))return{items:[{quality_run_id:id,recorded_at:'2026-09-30T01:02:03.123456Z',source_key:{gateway_id:'ROUTE-GW',device_id:'ROUTE-DEVICE',capture_id:id},purpose:'software_pair_test',status:'eligible',historical_registry:{status:'resolved',resolution_reasons:[],revision:'9007199254740993',time_basis:{unit:'ns'},utc_start:'2026-09-29T00:00:00.000000Z',lower_ns:'1790640000000000000',upper_ns:'1790640001000000000',well:{id,area_code:'A',well_code:'HISTORICAL-WELL'}}},{quality_run_id:'22222222-2222-4222-8222-222222222222',recorded_at:'2026-09-30T02:00:00.000000Z',purpose:'field_pair_input',status:'pending',historical_registry:null}],page:1,has_more:false};
+   return{items:[{capture_pk:id,device_id:'ROUTE-DEVICE',gateway_id:'ROUTE-GW',state:'collecting',first_seen:'2026-09-30T00:00:00.000000Z',version:'1'}],page:1,has_more:false};}};
+  await renderWaveforms({workspace:root,api,actorId:'1',permissions:new Set(['waveform.read']),capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,page:{},pageHeader:()=>'<h1>同步波形接收清单</h1>'});
+  const until=Date.now()+3000;while(!root.textContent.includes('ACTUAL-SENSOR')){if(Date.now()>until)break;await new Promise(r=>setTimeout(r,10));}
+  const table=root.querySelector('table').textContent;
+  check(table.includes('ACTUAL-SENSOR')&&table.includes('synthetic'),'receiving rows render actual manifest source');
+  check(table.includes('file')&&table.includes('缺 2 片'),'receiving rows render actual path and missing count');
+  check(table.includes('software_pair_test')&&table.includes('pending'),'receipt state and purpose qualification remain separate');
+  check(table.includes('123456789')&&table.includes('2026-09-29'),'measurement anchor and exact uncertainty visible');
+  check(table.includes('评估时历史归属')&&table.includes('HISTORICAL-WELL')&&table.includes('9007199254740993'),'historical ownership preserves exact stored registry revision');
+  check(table.includes(id)&&table.includes('2026-09-30T01:02:03.123456Z'),'historical well is bound to actual run and recorded time');
+  check(table.includes('归属未确认')&&table.includes('field_pair_input'),'pending/null run stays unconfirmed separately');
+  check(!root.querySelector('[data-wave-registry]'),'registry jump requires own grant');
+  check(root.querySelector('table').getBoundingClientRect().width<=root.querySelector('.wave-table-wrap').clientWidth+1,'all receiving columns fit without hidden horizontal content');
+  check(root.scrollWidth<=innerWidth,'enriched list fits width');document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else if(mode.startsWith('shell-')){
+  let calls=0,held,aborted=false;window.location.hash='#/waveforms';
+  window.fetch=async(path,options={})=>{
+   if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'77',username:'shell-user',role_code:'reviewer',permissions:mode==='shell-denied'?[]:['waveform.read'],...(mode==='shell-missing'?{}:{capabilities:{waveforms:{enabled:mode!=='shell-disabled',status:mode==='shell-unavailable'?'unavailable':'ready'}}})}}),{headers:{'Content-Type':'application/json'}});
+   if(path==='/api/auth/logout')return new Response(JSON.stringify({data:{}}),{headers:{'Content-Type':'application/json'}});
+   calls++;
+   if(mode==='shell-logout'){options.signal.addEventListener('abort',()=>{aborted=true;});return new Promise(resolve=>{held=resolve;});}
+   throw Error('forbidden extra request');
+  };
+  await import(APP_MODULE);const until=Date.now()+5000;
+  while(mode==='shell-logout'?!held:document.querySelector('#workspace')?.getAttribute('aria-busy')!=='false'){if(Date.now()>until)throw Error('shell timeout');await new Promise(r=>setTimeout(r,10));}
+  if(mode==='shell-logout'){
+   document.querySelector('#logoutButton').click();await new Promise(r=>setTimeout(r,20));check(aborted,'logout aborts waveform network');
+   held(new Response(JSON.stringify({data:{items:[{device_id:'LATE-PRIVATE'}],page:1,has_more:false}}),{headers:{'Content-Type':'application/json'}}));await new Promise(r=>setTimeout(r,20));
+   check(!document.querySelector('#app').textContent.includes('LATE-PRIVATE')&&!document.querySelector('.waveforms'),'late response cannot repaint login');
+  }else{check(calls===0,'blocked direct route makes no waveform requests');const body=document.querySelector('#workspace').textContent;
+   check(body.includes(mode==='shell-denied'?'权限':mode==='shell-unavailable'?'不可用':'未配置'),'distinct direct route state');
+   check(Boolean(document.querySelector('#sidebar [data-page="waveforms"]'))===(mode==='shell-unavailable'),'navigation requires read and explicit capability');}
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else{
+ const {renderWaveforms}=await import(PAGE_MODULE);const root=document.querySelector('#root');let calls=0,state='empty';
+ const api={get:async()=>{calls++;if(state==='unavailable')throw Object.assign(Error('SECRET'),{status:503});return{items:[],page:1,has_more:false};}};
+ const ctx=(permissions=['waveform.read'],status='ready')=>({workspace:root,api,actorId:'1',permissions:new Set(permissions),capabilities:{waveforms:{enabled:status!=='disabled',status}},page:{},pageHeader:()=>'<h1>同步波形与数据集</h1>',isCurrent:()=>true});
+ await renderWaveforms(ctx([]));check(root.textContent.includes('权限')&&calls===0,'forbidden direct route has no request');
+ await renderWaveforms(ctx(['waveform.read'],'disabled'));check(root.textContent.includes('未配置')&&calls===0,'disabled differs from empty');
+ await renderWaveforms(ctx(['waveform.read'],'unavailable'));check(root.textContent.includes('不可用')&&!root.textContent.includes('暂无'),'unavailable differs from empty');
+ await renderWaveforms(ctx());check(root.textContent.includes('暂无'),'only valid empty response shows empty');
+ check(root.querySelectorAll('[data-wave-tab]').length===4,'four top level views');
+ const all=['waveform.read','waveform.raw.read','waveform.import','waveform.evidence.manage','waveform.pair.manage','waveform.dataset.manage','waveform.review','waveform.export'];
+ const roles={administrator:all,production_engineer:['waveform.read','waveform.pair.manage','waveform.review'],algorithm_engineer:all.filter(p=>p!=='waveform.review'),maintenance_engineer:['waveform.read','waveform.raw.read','waveform.import','waveform.evidence.manage'],reviewer:['waveform.read','waveform.review']};
+ for(const [role,permissions] of Object.entries(roles)){
+  await renderWaveforms(ctx(permissions));root.querySelector('[data-wave-tab="imports"]').click();await new Promise(r=>setTimeout(r,0));check(Boolean(root.querySelector('input[type=file]'))===permissions.includes('waveform.import'),role+' import controls gated');
+  root.querySelector('[data-wave-tab="pairs"]').click();await new Promise(r=>setTimeout(r,0));check(Boolean(root.querySelector('[data-wave-action="/pairs"]'))===permissions.includes('waveform.pair.manage'),role+' pair creation gated');
+  root.querySelector('[data-wave-tab="datasets"]').click();await new Promise(r=>setTimeout(r,0));check(Boolean(root.querySelector('[data-wave-action="/datasets"]'))===permissions.includes('waveform.dataset.manage'),role+' dataset creation gated');
+ }
+ root.replaceChildren();window.location.hash='#/waveforms';window.fetch=async path=>{
+  if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'1',username:'tester',display_name:'波形测试',role_code:'administrator',permissions:all,capabilities:{waveforms:{enabled:true,status:'ready'}}}}),{headers:{'Content-Type':'application/json'}});
+  return new Response(JSON.stringify({data:{items:[],page:1,has_more:false}}),{headers:{'Content-Type':'application/json'}});
+ };
+ await import(APP_MODULE);const deadline=Date.now()+5000;while(document.querySelector('#workspace')?.getAttribute('aria-busy')!=='false'){if(Date.now()>deadline)throw Error('shell timeout');await new Promise(r=>setTimeout(r,20));}
+ check(document.querySelector('#sidebar [data-page="waveforms"]'),'real shell navigation');check(document.querySelector('#workspace [data-wave-tab="captures"]'),'direct URL uses real renderer');
+ check(document.querySelector('.waveforms').getBoundingClientRect().right<=innerWidth,'real shell fits viewport');
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:e.stack,checks});}
+</script>

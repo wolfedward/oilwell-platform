@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><h1>原始字节导入与恢复</h1><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const checks=[];const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
+try{
+ const {scanWaveformFile,createImportSession}=await import(IMPORT_MODULE);const vectors=VECTOR_DATA;let original,descriptor;
+ for(const row of vectors){const bytes=Uint8Array.from(atob(row.base64),c=>c.charCodeAt(0)),file=new File([bytes],'capture.owpwave');let result;
+  try{result=await scanWaveformFile(file);}catch{}
+  check(Boolean(result)===row.accepted,row.name+' acceptance matches server');
+  if(result){check(result.file_sha256===row.hash&&result.line_count===row.lines&&result.final_lf===row.final_lf,row.name+' exact metadata');}
+  if(row.name==='golden'){original=file;descriptor=result;}
+ }
+ const {createWaveformClient}=await import(CLIENT_MODULE);let lost=true;const sent=[],raw=[],saved=new Map();
+ const storage={getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)};
+ const api={post:async(path,body)=>{sent.push({path,body:structuredClone(body)});if(path.endsWith('/imports')){if(lost){lost=false;throw Object.assign(Error('lost'),{code:'network_error'});}return{import_id:'00000000-0000-0000-0000-000000000099',version:'1',state:'open',missing_lines:Array.from({length:descriptor.line_count},(_,i)=>i)};}return{import_id:'00000000-0000-0000-0000-000000000099',version:'99',state:'sealed',missing_lines:[]};},
+ get:async()=>({import_id:'00000000-0000-0000-0000-000000000099',version:String(raw.length+1),state:'open',missing_lines:Array.from({length:descriptor.line_count-raw.length},(_,i)=>i+raw.length)}),
+ raw:async(path,bytes,options)=>{raw.push({path,bytes:new Uint8Array(bytes),headers:options.headers});return{import_id:'00000000-0000-0000-0000-000000000099',version:String(raw.length+1),state:'open',missing_lines:Array.from({length:descriptor.line_count-raw.length},(_,i)=>i+raw.length)};}};
+ const client=createWaveformClient(api);let session=createImportSession({client,actorId:'1',origin:'http://fixture',storage});
+ try{await session.start(original,descriptor,'导入验证');}catch{} session.dispose();
+ session=createImportSession({client,actorId:'2',origin:'http://fixture',storage});check(session.saved()===null,'different actor cannot recover session');session.dispose();
+ session=createImportSession({client,actorId:'1',origin:'http://fixture',storage});await session.resume(original,descriptor);
+ check(JSON.stringify(sent[0])===JSON.stringify(sent[1]),'lost create replays original command identity');
+ const bytes=new Uint8Array(await original.arrayBuffer());
+ for(let i=0;i<raw.length;i++){const line=descriptor.lines[i],expected=bytes.slice(line.offset,line.offset+line.length);check(expected.every((v,j)=>v===raw[i].bytes[j])&&expected.length===raw[i].bytes.length,'line '+i+' original bytes without LF');}
+ check(raw.length===descriptor.line_count,'all missing lines uploaded');
+ check(raw[0].headers['X-Waveform-Reason']===encodeURIComponent('导入验证'),'reason uses percent encoded UTF8');
+ check(![...saved.values()].some(v=>v.includes('data_base64')||v.includes('Bearer')),'recovery persists no payload or credentials');
+ if('FIXTURE_MODE'==='lifecycle'){
+  const {api:transport}=await import(API_MODULE);let posted,unauth=0;
+  const onUnauth=()=>unauth++;window.addEventListener('platform:unauthenticated',onUnauth);
+  window.fetch=async(path,options)=>{posted={path,options};return new Response(JSON.stringify({data:{version:'7'}}),{headers:{'Content-Type':'application/json'}});};
+  const exact=new Uint8Array([123,32,34,97,34,58,49,125,32]);await transport.raw('/api/waveforms/imports/id/lines/0',exact,{headers:{'X-Waveform-Reason':'%E5%8E%9F%E6%96%87'}});
+  check(posted.options.body===exact&&posted.options.credentials==='same-origin'&&posted.options.headers.get('Content-Type')==='application/octet-stream','real raw transport sends same octet buffer with same-origin credentials');
+  await transport.post('/api/old',{a:1});check(posted.options.body==='{"a":1}','legacy JSON request contract unchanged');
+  window.fetch=async()=>new Response(JSON.stringify({error:{code:'auth.expired',message:'expired'}}),{status:401,headers:{'Content-Type':'application/json'}});
+  try{await transport.raw('/api/waveforms/imports/id/lines/0',exact);}catch(e){check(e.status===401,'raw response preserves auth status');}
+  check(unauth===1,'raw expired session dispatches logout');window.removeEventListener('platform:unauthenticated',onUnauth);
+  let resolveDownload,aborted=false,clicks=0;const oldClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){clicks++;};
+  window.fetch=(path,options)=>{options.signal.addEventListener('abort',()=>aborted=true);return new Promise(resolve=>{resolveDownload=resolve;});};
+  const downloads=createWaveformClient(transport);const download=downloads.download('/facts/11111111-1111-4111-8111-111111111111/raw','raw.bin');downloads.dispose();
+  resolveDownload(new Response(exact));try{await download;}catch{}
+  HTMLAnchorElement.prototype.click=oldClick;check(aborted&&clicks===0,'dispose aborts raw download and suppresses late download UI');
+  const saved2=new Map(),storage2={getItem:k=>saved2.get(k)||null,setItem:(k,v)=>saved2.set(k,v),removeItem:k=>saved2.delete(k)};
+  let held,requestSignal,lateProgress=0,lineCalls=0;const pendingApi={post:async()=>({import_id:'00000000-0000-0000-0000-000000000099',version:'1',state:'pending',missing_lines:[0]}),get:async()=>({import_id:'00000000-0000-0000-0000-000000000099',version:'1',state:'pending',missing_lines:[0]}),raw:(p,b,o)=>{lineCalls++;requestSignal=o.signal;return new Promise(resolve=>{held=resolve;});}};
+  const importClient=createWaveformClient(pendingApi);const interrupted=createImportSession({client:importClient,actorId:'8',origin:'http://fixture',storage:storage2,onProgress:()=>lateProgress++});
+  const upload=interrupted.start(original,descriptor,'恢复检查');const deadline=Date.now()+3000;while(!held){if(Date.now()>deadline)throw Error('upload not started');await new Promise(r=>setTimeout(r,5));}
+  const before=lateProgress;interrupted.dispose();check(requestSignal.aborted,'leaving import aborts active network');held({import_id:'00000000-0000-0000-0000-000000000099',version:'2',state:'pending',missing_lines:[]});await upload;
+  check(lateProgress===before&&interrupted.saved().pending!==null,'late upload success does not delete uncertain recovery identity');
+  check(createImportSession({client:createWaveformClient(pendingApi),actorId:'8',origin:'http://other',storage:storage2}).saved()===null,'recovery is origin scoped');
+  const pendingEnvelope=structuredClone(interrupted.saved().pending);let replays=0;
+  pendingApi.raw=async(p,b,o)=>{replays++;check(o.headers['Idempotency-Key']===pendingEnvelope.envelope.idempotency_key&&o.headers['If-Match']===pendingEnvelope.envelope.expected_version,'raw replay preserves prior version and key');throw Object.assign(Error('revoked'),{status:403});};
+  const retryClient=createWaveformClient(pendingApi),retry=createImportSession({client:retryClient,actorId:'8',origin:'http://fixture',storage:storage2});
+  try{await retry.resume(original,descriptor);}catch{}try{await retry.resume(original,descriptor);}catch{}
+  check(replays===1,'403 permanently stops retry transport until new authenticated workspace');
+ }
+ document.querySelector('#root').textContent='同源、同账号恢复成功；所有片段与原文件逐字节一致。';
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:e.stack,checks});}
+</script>
