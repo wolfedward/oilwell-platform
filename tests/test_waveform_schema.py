@@ -93,7 +93,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                     outcomes = conn.execute("SELECT * FROM waveforms.message_outcomes").fetchall()
                     with self.assertRaises(WaveformError): migration.check_schema(conn, expected_database=TEST_DATABASE)
                 self.assertTrue(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
-                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "3")
+                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "4")
                 self.assertFalse(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
                 if v1:
                     self.assertEqual(conn.execute("SELECT * FROM waveforms.schema_migrations WHERE version=1").fetchall(), history)
@@ -128,7 +128,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
 
     def test_failed_pending_chain_rolls_back_real_production_transaction(self):
         # This uses the actual connect/commit/rollback implementation, unlike
-        # migration_sandbox. Inject a future pending stage after validated003.
+        # migration_sandbox. Inject a future pending stage after validated004.
         before = self.scalar("SELECT json_agg(t ORDER BY version) FROM waveforms.schema_migrations t", role="migration_owner")
         fact = self.insert_fact(payload=b"synthetic failure preservation")
         source = migration._source
@@ -137,7 +137,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                 text = "CREATE TABLE waveforms.task9_must_rollback(id int); SELECT task9_missing_function();"
                 return text, sha256(text.encode()).hexdigest()
             return source(filename)
-        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (4,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
+        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (5,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
             with self.assertRaises(WaveformError):
                 migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
         self.assertIsNone(self.scalar("SELECT to_regclass('waveforms.task9_must_rollback')", role="migration_owner"))

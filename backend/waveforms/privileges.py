@@ -44,7 +44,7 @@ UPDATE = {
     "reader": {}, "operator": {"state_head": {"version"}},
 }
 
-BUSINESS_TABLES = set('business_settings attachments evidence_versions evidence_events restrictions quality_runs pair_versions pair_reviews business_audit business_receipts'.split())
+BUSINESS_TABLES = set('business_settings attachments evidence_versions evidence_events restrictions quality_runs pair_versions pair_reviews business_audit business_receipts dataset_drafts dataset_revisions dataset_events dataset_versions dataset_members dataset_files dataset_manifest_chunks dataset_exports'.split())
 BUSINESS_READ = BUSINESS_TABLES-{'attachments','business_receipts'}
 BUSINESS_VIEWS = {'attachment_metadata','provenance_metadata','capture_restrictions'}
 TABLES |= BUSINESS_TABLES
@@ -55,7 +55,8 @@ SELECT['reader'] |= set(PROJECTIONS)
 SELECT['operator'].add('business_receipts')
 INSERT['operator'] |= BUSINESS_TABLES-{'business_settings'}
 METADATA_SELECT_COLUMNS = {
-    'reader': {'chunk_slots': {'capture_pk','stream_id','chunk_index','fact_id'},
+    'reader': {'imports': {'import_id','file_sha256','file_bytes','line_count','final_lf'},
+               'chunk_slots': {'capture_pk','stream_id','chunk_index','fact_id'},
                'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},
     'operator': {'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},
 }
@@ -112,7 +113,7 @@ def _permissions(conn, role):
         if owner in reachable: _fail()
         if schema=="waveforms":
             if owner!=schema_owner or unsafe_acl or config!=["search_path=pg_catalog, pg_temp"]: _fail()
-            if name in {"audited_raw","charge_metadata","charge_business","evidence_event_identity","evidence_identity","quality_identity","lock_business_capacity","lock_business_captures","audited_attachment"} and (not definer or volatility!='v' or parallel!='u'): _fail()
+            if name in {"audited_raw","charge_metadata","charge_business","evidence_event_identity","evidence_identity","quality_identity","lock_business_capacity","lock_business_captures","audited_attachment","dataset_identity","dataset_publication_complete"} and (not definer or volatility!='v' or parallel!='u'): _fail()
         for identity in reachable:
             if conn.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')", (identity,oid)).fetchone()[0] and not permitted: _fail()
         if permitted and not conn.execute("SELECT has_function_privilege(current_user,%s,'EXECUTE')", (oid,)).fetchone()[0]: _fail()

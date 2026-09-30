@@ -11,6 +11,29 @@ ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "
 
 
 class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_dataset_original_import_columns_are_exact(self):
+        with self.connect('reader') as conn:
+            try: conn.execute('SELECT import_id,file_sha256,file_bytes,line_count,final_lf FROM waveforms.imports LIMIT 1')
+            except psycopg.errors.InsufficientPrivilege: self.fail('R58 original import metadata unavailable')
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            with self.connect('operator') as conn: conn.execute('SELECT file_sha256 FROM waveforms.imports')
+        reader=sql.Identifier(self.settings['reader']['user'])
+        changes=(
+            ('REVOKE SELECT(final_lf) ON waveforms.imports FROM {}','GRANT SELECT(final_lf) ON waveforms.imports TO {}'),
+            ('GRANT SELECT(state) ON waveforms.imports TO {}','REVOKE SELECT(state) ON waveforms.imports FROM {}'),
+            ('GRANT SELECT ON waveforms.imports TO {}','REVOKE SELECT ON waveforms.imports FROM {}'),
+            ('GRANT SELECT(final_lf) ON waveforms.imports TO {} WITH GRANT OPTION','REVOKE GRANT OPTION FOR SELECT(final_lf) ON waveforms.imports FROM {}'))
+        for change,undo in changes:
+            with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+            try:
+                with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+            finally:
+                with self.connect('migration_owner') as conn:
+                    conn.execute(sql.SQL(undo).format(reader))
+                    # PostgreSQL table-level REVOKE also removes column SELECT.
+                    conn.execute(sql.SQL('GRANT SELECT(import_id,file_sha256,file_bytes,line_count,final_lf) ON waveforms.imports TO {}').format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
     def test_quality_metadata_columns_are_exact(self):
         for role in ('reader','operator'):
             with self.connect(role) as conn:

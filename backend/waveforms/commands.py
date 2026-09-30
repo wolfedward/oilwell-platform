@@ -165,3 +165,28 @@ def pair_request_hash(operation,target,command,*,body=None,decision=None):
         content=dict(decision=decision)
     else: raise ContractError('contract_invalid')
     return _quality_pair_hash('pairs.'+operation,str(target) if target is not None else None,command,content)
+
+
+def dataset_request_hash(operation,target,command,*,body):
+    from .dataset_contracts import validate_body
+    from .evidence_contracts import canonical_bytes
+    if type(command) is not Command: raise ContractError('contract_invalid')
+    content=validate_body(operation,body)
+    if operation=='create':
+        if target is not None or command.expected_version!=0: raise ContractError('contract_invalid')
+    elif type(target) is not UUID or command.expected_version<1 or content['target_id']!=str(target): raise ContractError('contract_invalid')
+    envelope=dict(protocol='waveform.business-command/1',operation='datasets.'+operation,target=str(target) if target else None,
+        actor=dict(domain=command.actor.domain,user_id=command.actor.user_id),expected_version=str(command.expected_version),reason=command.reason,body=content)
+    raw=canonical_bytes(envelope)
+    if len(raw)>65536: raise ContractError('contract_invalid')
+    return sha256(raw).hexdigest()
+
+
+def export_request_hash(target,command,*,body):
+    from .evidence_contracts import canonical_bytes
+    require_fields(body,('version_id','purpose'))
+    if (type(command) is not Command or command.expected_version!=0 or type(target) is not UUID
+        or body['version_id']!=str(target) or body['purpose'] not in ('research','training','evidence')): raise ContractError('contract_invalid')
+    envelope=dict(protocol='waveform.business-command/1',operation='exports.create',target=str(target),
+        actor=dict(domain=command.actor.domain,user_id=command.actor.user_id),expected_version='0',reason=command.reason,body=body)
+    return sha256(canonical_bytes(envelope)).hexdigest()

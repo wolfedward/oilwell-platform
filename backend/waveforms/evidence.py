@@ -96,6 +96,9 @@ class EvidenceService:
                 previous=business.receipt(cur,command,digest)
                 if previous is not None:
                     result=self._decode(cur,previous); conn.rollback(); return result
+                if operation=='revoke':
+                    from backend.registry.transactions import lock_history
+                    lock_history(cur,shared=True)
                 business.lock_payer(cur,self._bucket,self._limits)
                 self._recheck_sources(cur,sources[1])
                 if operation=='upload':
