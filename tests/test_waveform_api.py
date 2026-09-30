@@ -38,6 +38,164 @@ class WaveformHTTPTests(DatasetCase):
     def close_server(self):
         self.server.shutdown(); self.thread.join(5); self.server.server_close()
 
+    def test_window_discovery_read_only_permission_and_one_slot(self):
+        from tests.waveform_pairing_support import seed_pair
+        vector=seed_pair(self); rt=self.server.waveform_runtime
+        id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        rt.connections.budget=rt.connections.available=1
+        status,result=self.request('GET',f'/captures/{id}',role='reviewer')
+        self.assertEqual(status,200,result); self.assertIn('streams',result['data'])
+        self.assertEqual(result['data']['streams'][1]['channels'][0]['quantity'],'load')
+        status,result=self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw',role='reviewer')
+        self.assertEqual(status,200,result)
+        self.assertEqual([p['value'] for p in result['data']['channels'][0]['points']],[10.,10.,10.])
+        self.assertNotIn('raw_value',json.dumps(result)); self.assertNotIn('data_base64',json.dumps(result))
+        self.assertEqual(rt.connections.available,1); self.assertFalse(rt.streams)
+        self.assertEqual(self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=20001&mode=summary')[0],422)
+        from backend.waveforms.evidence_contracts import thaw
+        from uuid import UUID
+        cal=vector['selection']['channels'][0]['calibration']
+        body=thaw(vector['evidence_service'].get(UUID(cal['id'])).body)
+        for scale in ('1e999','1000000000000000000'):
+            status,value=self.post('/evidence',dict(kind='calibration',body=body|dict(scale=scale)))
+            self.assertEqual(status,422,value)
+
+    def test_capture_discovery_rejects_late_accepted_manifest_snapshot(self):
+        from tests.test_waveform_repository import capture,observation
+        from backend.waveforms.repository import WaveformRepository
+        from backend.waveforms.queries import WaveformQueries
+        manifest,chunk=capture(); repo=WaveformRepository(self.connect,limits=LIMITS,prefix='oil',ingress_gateway_id='GW')
+        repo.ingest(observation(chunk))
+        id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        original=WaveformQueries.window_snapshot if hasattr(WaveformQueries,'window_snapshot') else None
+        self.assertIsNotNone(original,'Coherent window snapshot required')
+        calls=0
+        def race(queries,*args,**kwargs):
+            nonlocal calls
+            result=original(queries,*args,**kwargs); calls+=1
+            if calls==1: repo.ingest(observation(manifest))
+            return result
+        with patch.object(WaveformQueries,'window_snapshot',race):
+            status,result=self.request('GET',f'/captures/{id}')
+        self.assertEqual(status,409,result); self.assertEqual(result['error']['code'],'waveform.stale_dependency')
+
+    def test_window_get_send_half_close_preserves_response(self):
+        import socket
+        from tests.waveform_pairing_support import seed_pair
+        seed_pair(self); id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        request=(f'GET /api/waveforms/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\nAuthorization: Bearer {self.tokens["reviewer"]}\r\nConnection: close\r\n\r\n').encode()
+        with socket.create_connection(('127.0.0.1',self.server.server_port),timeout=10) as sock:
+            sock.sendall(request); sock.shutdown(socket.SHUT_WR); received=b''
+            while True:
+                part=sock.recv(65536)
+                if not part: break
+                received+=part
+        self.assertIn(b'200 OK',received)
+        value=json.loads(received.split(b'\r\n\r\n',1)[1])
+        self.assertEqual(value['data']['channels'][0]['points'][0]['value'],10.)
+        self.assertFalse(self.server.waveform_runtime.streams)
+
+    def test_xy_route_one_slot_and_unchanged_full_inspection_two_slots(self):
+        pair,vector=self.pair(); rt=self.server.waveform_runtime
+        rt.connections.budget=rt.connections.available=1
+        path=f'/pairs/{pair.id}/preview/window?start=0&count=3&mode=summary&budget=3'
+        status,result=self.request('GET',path,role='reviewer')
+        self.assertEqual(status,200,result); self.assertEqual([p['displacement'] for p in result['data']['points']],[0.,4.,0.])
+        self.assertFalse(result['data']['quantitative_use_allowed'])
+        self.assertEqual(self.request('GET',f'/pairs/{pair.id}/preview',role='reviewer')[0],503)
+        self.assertEqual(self.request('POST',path.split('?')[0],{})[0],405)
+        self.assertEqual(self.request('GET',path+'&channel_ids=load')[0],422)
+        self.assertEqual(rt.connections.available,1); self.assertFalse(rt.streams)
+        rt.connections.budget=rt.connections.available=2
+        status,result=self.request('GET',f'/pairs/{pair.id}/preview',role='reviewer')
+        self.assertEqual(status,200,result); self.assertEqual(result['data']['current_status'],'eligible')
+
+    def test_window_lost_audit_commit_reply_never_decodes_or_succeeds(self):
+        import psycopg
+        from tests.waveform_pairing_support import seed_pair
+        seed_pair(self); id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata'); committed=[]
+        class LostReply(psycopg.Connection):
+            def commit(self):
+                super().commit()
+                if getattr(self,'audited_read',False):
+                    committed.append(True)
+                    raise psycopg.OperationalError('Synthetic lost committed audit reply')
+        def connect(**kw):
+            base=kw['cursor_factory']
+            class AuditedCursor(base):
+                def execute(self,query,*args,**kwargs):
+                    result=super().execute(query,*args,**kwargs)
+                    if isinstance(query,str) and 'waveforms.audited_raw(' in query: self.connection.audited_read=True
+                    return result
+            return LostReply.connect(**(kw|dict(cursor_factory=AuditedCursor)))
+        with patch('backend.waveforms.runtime.psycopg.connect',side_effect=connect),patch('backend.waveforms.windows.parse_frame',side_effect=AssertionError('Unaudited decode')) as parse:
+            status,result=self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw')
+        self.assertEqual(status,503,result); self.assertFalse(parse.called)
+        self.assertEqual(committed,[True]); self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata'),before+1)
+        self.assertEqual(self.server.waveform_runtime.connections.available,4); self.assertFalse(self.server.waveform_runtime.streams)
+
+    def test_window_reset_releases_operation_and_capacity(self):
+        import socket,struct,os
+        from backend.waveforms.windows import WaveformWindows
+        from backend.waveforms.runtime import WindowOperation
+        from tests.waveform_pairing_support import seed_pair
+        seed_pair(self); id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        entered=threading.Event(); resume=threading.Event(); ended=threading.Event()
+        original=WaveformWindows.samples; cleanup=WindowOperation.__exit__
+        def paused(owner,*args,**kwargs):
+            entered.set(); resume.wait(5); yield from original(owner,*args,**kwargs)
+        def done(owner,*args):
+            try: return cleanup(owner,*args)
+            finally: ended.set()
+        with patch.object(WaveformWindows,'samples',paused),patch.object(WindowOperation,'__exit__',done):
+            sock=socket.create_connection(('127.0.0.1',self.server.server_port),timeout=5)
+            try:
+                sock.sendall((f'GET /api/waveforms/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\nAuthorization: Bearer {self.tokens["reviewer"]}\r\n\r\n').encode())
+                self.assertTrue(entered.wait(5))
+                sock.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack('hh' if os.name=='nt' else 'ii',1,0)); sock.close(); resume.set()
+                self.assertTrue(ended.wait(5))
+            finally: resume.set(); sock.close()
+        self.assertFalse(self.server.waveform_runtime.streams); self.assertEqual(self.server.waveform_runtime.connections.available,4)
+
+    def test_window_shutdown_owns_response_until_cleanup_without_handler_escape(self):
+        from backend.waveforms.api import WaveformApi
+        from tests.waveform_pairing_support import seed_pair
+        seed_pair(self); id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1'); rt=self.server.waveform_runtime
+        entered=threading.Event(); resume=threading.Event(); stopped=threading.Event(); errors=[]
+        original=WaveformApi._json
+        def pause(api,status,body):
+            if status==200 and api.operation:
+                entered.set(); resume.wait(5)
+            return original(api,status,body)
+        def request():
+            try: self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw')
+            except (OSError,http.client.HTTPException): pass
+        def close():
+            try: rt.close()
+            finally: stopped.set()
+        with patch.object(WaveformApi,'_json',pause),patch.object(self.server,'handle_error',side_effect=lambda *a:errors.append('escaped')):
+            client=threading.Thread(target=request); client.start()
+            self.assertTrue(entered.wait(5)); self.assertEqual(rt.connections.available,4); self.assertEqual(len(rt.streams),1)
+            closer=threading.Thread(target=close); closer.start()
+            self.assertFalse(stopped.wait(.05)); resume.set(); client.join(5); closer.join(5)
+            self.assertFalse(client.is_alive()); self.assertFalse(closer.is_alive())
+        self.assertEqual(errors,[]); self.assertFalse(rt.streams)
+
+    def test_window_deadline_returns_complete_error_json(self):
+        from backend.waveforms.runtime import WindowOperation
+        from tests.waveform_pairing_support import seed_pair
+        seed_pair(self); id=self.scalar('SELECT capture_pk FROM waveforms.capture_metadata LIMIT 1')
+        original=WindowOperation.__enter__; escaped=[]
+        def expired(owner):
+            original(owner); owner.deadline=0; return owner
+        with patch.object(WindowOperation,'__enter__',expired),patch.object(self.server,'handle_error',side_effect=lambda *a:escaped.append(True)):
+            try: status,result=self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=3&mode=raw')
+            except http.client.IncompleteRead: self.fail('Deadline truncated the controlled error response')
+        self.assertEqual(status,503,result); self.assertEqual(result['error']['code'],'waveform.window_timeout')
+        self.assertFalse(escaped); self.assertFalse(self.server.waveform_runtime.streams)
+
+
     def request(self,method,path,body=None,role='administrator',headers=None,raw=False):
         h={'Authorization':'Bearer '+self.tokens[role]}; h.update(headers or {})
         if body is not None and not isinstance(body,bytes): body=json.dumps(body).encode(); h['Content-Type']='application/json'
@@ -393,7 +551,7 @@ class WaveformHTTPTests(DatasetCase):
             c.execute("INSERT INTO waveforms.audit(intake_gateway_id,fact_id,actor,action) VALUES('GW',%s,%s,'raw.read')",(fact,Jsonb(actor|dict(user_id='excluded'))))
         self.assertEqual(self.request('GET','/audit?'+urlencode(args))[0],200)
         self.assertEqual(self.request('GET',f'/audit?family=raw&actor_id=wanted&subject_id={fact}')[1]['data']['items'],[])
-        self.assertEqual(self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=20001&mode=summary&budget=2000')[0],503)
+        self.assertEqual(self.request('GET',f'/captures/{id}/streams/sensor/window?start=0&count=20001&mode=summary&budget=2000')[0],422)
 
     def test_incremental_1000_members_reachable_with_small_commands(self):
         from urllib.parse import urlencode

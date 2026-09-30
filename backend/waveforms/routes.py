@@ -15,6 +15,7 @@ FILTERS={
     'dataset':PAGE|{'view','revision','version_id'},
     'audit':PAGE|{'family','action','actor_domain','actor_id','subject_id'},
     'window':{'start','count','mode','budget'},
+    'pair.window':{'start','count','mode','budget'},
 }
 
 def invalid(message='Invalid waveform request'):
@@ -50,6 +51,7 @@ def route(method,path,*,_checking=False):
                     {('imports','seal'):'import.seal',('imports','cancel'):'import.cancel',('evidence','review'):'evidence.review',('evidence','revoke'):'evidence.revoke',('captures','evaluations'):'evaluation.create',('pairs','review'):'pair.review',('datasets','update'):'dataset.update',('datasets','submit'):'dataset.submit',('datasets','freeze'):'dataset.freeze',('dataset-versions','exports'):'export.create'} if method=='POST' else {}).get(key)
         if len(p)==4 and p[0]=='imports' and p[2]=='lines' and method=='POST':
             ids['line']=decimal(p[3],512); action='import.append'
+        if len(p)==4 and p[0]=='pairs' and p[2:]==['preview','window'] and method=='GET': action='pair.window'
         if len(p)==5 and method=='GET':
             if p[0]=='captures' and p[2]=='streams' and p[4]=='window':
                 try: require_name(p[3])
@@ -81,7 +83,7 @@ def query(source,action):
         if key in out:
             try: require_name(out[key])
             except ContractError: raise invalid() from None
-    if action=='window':
+    if action in ('window','pair.window'):
         if not {'start','count','mode'}<=out.keys() or out['mode'] not in ('raw','summary'): raise invalid()
         out['start']=decimal(out['start'],minimum=-9223372036854775808,signed=True)
         out['count']=decimal(out['count'],20000 if out['mode']=='raw' else 2147483647,1)

@@ -9,7 +9,7 @@ WAVEFORM_ROLE_PERMISSIONS={
     'maintenance_engineer':('waveform.read','waveform.raw.read','waveform.import','waveform.evidence.manage'),
     'reviewer':('waveform.read','waveform.review'),
 }
-READ={'health','captures','capture','window','evidence','evidence.get','evaluations','pairs','pair','pair.preview','datasets','dataset'}
+READ={'health','captures','capture','window','evidence','evidence.get','evaluations','pairs','pair','pair.preview','pair.window','datasets','dataset'}
 EXTRA={
     'fact.raw':('raw.read',),'attachment.raw':('raw.read',),
     'import.get':('import',),'import.create':('import',),'import.append':('import',),'import.seal':('import',),'import.cancel':('import',),

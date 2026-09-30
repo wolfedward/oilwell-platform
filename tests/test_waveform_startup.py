@@ -123,6 +123,25 @@ assert build_waveform_runtime(None).status=='disabled'
             self.assertEqual(server.parse_arguments().waveform_config,Path('explicit-wave.toml'))
 
 class LifecycleTests(unittest.TestCase):
+    def test_window_operation_deadline_stop_and_registration(self):
+        from backend.waveforms import runtime
+        self.assertTrue(hasattr(runtime,'WindowOperation'),'Window response ownership missing')
+        import socket
+        rt=runtime.WaveformRuntime('ready',connections=runtime.ManagementConnections({},1))
+        left,right=socket.socketpair()
+        try:
+            with runtime.WindowOperation(rt,left) as owner:
+                self.assertEqual(len(rt.streams),1)
+                right.shutdown(socket.SHUT_WR); owner.check()
+                owner.deadline=0
+                with self.assertRaises(WaveformError): owner.check()
+            self.assertFalse(rt.streams)
+            with runtime.WindowOperation(rt,left) as owner:
+                rt.connections.stop()
+                with self.assertRaises(WaveformError): owner.check()
+            self.assertFalse(rt.streams)
+        finally: left.close(); right.close()
+
     def test_runtime_shutdown_waits_for_stream_owner_finally(self):
         from backend.waveforms.runtime import WaveformRuntime,ManagementConnections
         rt=WaveformRuntime('ready',connections=ManagementConnections({},1)); closed=threading.Event(); finished=threading.Event()

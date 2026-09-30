@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import re
 from uuid import UUID
+from contextlib import contextmanager
 from .contracts import CaptureKey
 from .errors import WaveformError
 from .routes import invalid
@@ -41,8 +42,78 @@ def one(cur,query,params=()):
     return result
 
 
+@contextmanager
+def snapshot_connection(connect,existing=None):
+    """Internal reuse preserves one RR observation without nested admission."""
+    if existing is not None:
+        yield existing
+        return
+    with connect() as conn:
+        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        conn.execute("SET LOCAL statement_timeout='3s'"); conn.execute("SET LOCAL lock_timeout='1s'")
+        yield conn
+
+
 class WaveformQueries:
     def __init__(self,connect): self.connect=connect
+
+    def pair_window_snapshot(self,id,*,_connection=None):
+        from .pairing import PairService
+        with snapshot_connection(self.connect,_connection) as conn:
+            cur=conn.cursor(); pair=PairService._pair(None,cur,id)
+            cur.execute('SELECT quality_run_id,capture_pk,source_key,manifest_sha256,validator_version,profile_id,profile_sha256,purpose,status,parameters,evidence,registry_snapshot,result FROM waveforms.quality_runs WHERE quality_run_id=ANY(%s) ORDER BY quality_run_id',
+                        (list({pair.left_quality_run_id,pair.right_quality_run_id}),))
+            runs=rows(cur)
+            cur.execute('SELECT revision FROM waveforms.registry_head WHERE singleton=1'); revision=cur.fetchone()[0]
+            return dict(pair=pair,runs=runs,registry_revision=revision)
+
+    def recheck_pair(self,id,initial,sources):
+        from .windows import stale
+        with snapshot_connection(self.connect) as conn:
+            if self.pair_window_snapshot(id,_connection=conn)!=initial: stale()
+            for key,(pin,params) in sources.items():
+                fresh=self.window_snapshot(key,**params,_connection=conn)
+                if any(fresh[k]!=pin[k] for k in ('capture','completion','restrictions','slots','evidence')): stale()
+
+    def window_snapshot(self,key,*,ranges=(),evidence_ids=(),summary=False,_connection=None):
+        """Fixed reader projection; each call is one fresh bounded RR snapshot."""
+        from .evidence_contracts import EvidenceVersion,freeze
+        from .commands import Actor
+        from .capacity import row
+        with snapshot_connection(self.connect,_connection) as conn:
+            cur=conn.cursor()
+            capture=one(cur,'SELECT * FROM waveforms.capture_metadata WHERE gateway_id=%s AND device_id=%s AND capture_id=%s',
+                        (key.gateway_id,key.device_id,key.capture_id))
+            id=capture['capture_pk']
+            cur.execute('SELECT capture_pk,manifest_fact_id,status,reason_code,result,completed_at FROM waveforms.completion WHERE capture_pk=%s',(id,))
+            completion=row(cur)
+            cur.execute('SELECT restriction_id FROM waveforms.capture_restrictions WHERE subject_id=%s ORDER BY restriction_id LIMIT 1025',(id,))
+            restrictions=tuple(str(r[0]) for r in cur.fetchall())
+            if len(restrictions)>1024: raise WaveformError('waveform.metadata_limit','Restriction count exceeds bound')
+            slots=[]
+            for stream,lo,hi in ranges:
+                cur.execute('SELECT stream_id,chunk_index,fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s AND stream_id=%s AND chunk_index BETWEEN %s AND %s ORDER BY chunk_index LIMIT 513',(id,stream,lo,hi))
+                slots.extend(cur.fetchall())
+            if len(slots)>512: raise WaveformError('waveform.metadata_limit','Slot count exceeds bound')
+            evidence={}; pending=list(dict.fromkeys(evidence_ids))
+            while pending:
+                identity=UUID(str(pending.pop()))
+                if str(identity) in evidence: continue
+                if len(evidence)>=128: raise WaveformError('waveform.metadata_limit','Evidence count exceeds bound')
+                cur.execute('SELECT evidence_id,kind,content_sha256,body,creator,accounting_bucket FROM waveforms.evidence_versions WHERE evidence_id=%s',(identity,))
+                item=row(cur)
+                value=None
+                if item:
+                    cur.execute('SELECT version,state FROM waveforms.evidence_events WHERE evidence_id=%s ORDER BY version DESC LIMIT 1',(identity,))
+                    version,state=cur.fetchone()
+                    value=EvidenceVersion(identity,item['kind'],item['content_sha256'],freeze(item['body']),Actor(**item['creator']),version,state,item['accounting_bucket'])
+                    if value.kind=='calibration' and value.body['sampling_config_version_id']:
+                        pending.append(value.body['sampling_config_version_id'])
+                evidence[str(identity)]=value
+            detail=self._capture(cur,dict(id=id)) if summary else None
+            # stalled is time-derived, not a durable revision dependency.
+            capture.pop('stalled',None)
+            return dict(capture=capture,completion=completion,restrictions=restrictions,slots=tuple(slots),evidence=evidence,detail=detail)
 
     def capture_key(self,id):
         with self.connect() as conn:

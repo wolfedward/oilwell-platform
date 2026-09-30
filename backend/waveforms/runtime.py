@@ -10,6 +10,39 @@ except ImportError:
 from .errors import WaveformError
 
 
+class WindowOperation:
+    """Own computation and response cleanup; FIN is not receive abandonment."""
+    def __init__(self,runtime,sock):
+        self.runtime=runtime; self.sock=sock; self.deadline=time.monotonic()+120
+        self.cancelled=False; self.registration=(self,sock)
+
+    def __enter__(self):
+        with self.runtime.lock:
+            if self.runtime.connections.stopped: raise WaveformError('waveform.stopping','Waveform service is stopping')
+            self.runtime.streams.add(self.registration)
+        return self
+
+    def close(self): self.cancelled=True
+
+    def check(self):
+        import select
+        import socket
+        if self.cancelled or self.runtime.connections.stopped:
+            raise WaveformError('waveform.stopping','Waveform service is stopping')
+        if time.monotonic()>=self.deadline: raise WaveformError('waveform.window_timeout','Window operation deadline exceeded')
+        # Readiness + MSG_PEEK never consumes a subsequent request. An orderly
+        # EOF may be a valid SHUT_WR client still reading our response.
+        try:
+            readable,_,exceptional=select.select([self.sock],[],[self.sock],0)
+            if exceptional: raise ConnectionAbortedError()
+            if readable: self.sock.recv(1,socket.MSG_PEEK)
+        except (BlockingIOError,InterruptedError): pass
+
+    def __exit__(self,*args):
+        with self.runtime.lock:
+            self.runtime.streams.discard(self.registration); self.runtime.lock.notify_all()
+
+
 def _cursor_type(pool):
     class Cursor(psycopg.Cursor):
         def execute(self,*args,**kwargs):

@@ -48,13 +48,16 @@ def strict_json(data):
 
 
 class WaveformApi:
-    def __init__(self,handler): self.h=handler; self.started=False
+    def __init__(self,handler): self.h=handler; self.started=False; self.operation=None; self.error_response=False
     def get(self,path): return self._dispatch('GET',path)
     def post(self,path): return self._dispatch('POST',path)
     def unsupported(self,path): return self._dispatch('unsupported',path)
 
     def _json(self,status,body):
+        self.error_response=status>=400
+        if self.operation and status==200: self.operation.check()
         payload=json.dumps(public(body),ensure_ascii=False,allow_nan=False,separators=(',',':')).encode()
+        if self.operation and status==200: self.operation.check()
         self._headers(status,len(payload),'application/json; charset=utf-8')
         if self.h.command!='HEAD': self._write(payload)
 
@@ -73,6 +76,7 @@ class WaveformApi:
         previous=self.h.connection.gettimeout()
         try:
             for offset in range(0,len(data),65536):
+                if self.operation and not self.error_response: self.operation.check()
                 remaining=(deadline-time.monotonic()) if deadline else 5
                 if remaining<=0: raise TimeoutError()
                 self.h.connection.settimeout(min(5,remaining)); self.h.wfile.write(data[offset:offset+65536])
@@ -124,6 +128,9 @@ class WaveformApi:
             filters=routes.query(parsed.query,action) if method=='GET' else {}
             if runtime.status!='ready': raise WaveformError(runtime.code or 'waveform.unavailable','Waveform management disabled or unavailable')
             actor=Actor('platform-local',str(user.id),user.username,user.role_code)
+            if action in ('window','pair.window') or action=='capture' and filters.get('view','summary')=='summary':
+                from .runtime import WindowOperation
+                self.operation=WindowOperation(runtime,h.connection); self.operation.__enter__()
             if action.startswith('export.') and method=='GET': self._stream(runtime,action,ids,actor); return True
             compound=action in {'evaluation.create','pair.create','pair.review','pair.preview','dataset.freeze','export.create'}
             if action=='dataset' and filters.get('view','summary')=='summary' and 'revision' not in filters:
@@ -157,11 +164,21 @@ class WaveformApi:
             else: status,code,message=503,'waveform.unavailable','Waveform operation unavailable; no durable success confirmed'
             try: self._json(status,h._error(code,message))
             except (OSError,ValueError): pass
+        finally:
+            if self.operation: self.operation.__exit__(None,None,None)
         return True
 
     def _get(self,rt,action,ids,f,actor):
         id=ids.get('id'); s=rt.services
-        if action=='window': raise WaveformError('waveform.window_not_ready','Engineering windows are not implemented yet')
+        if action in ('window','pair.window') or action=='capture' and f.get('view','summary')=='summary':
+            from .windows import WaveformWindows
+            windows=WaveformWindows(rt.queries,actor=actor,check=self.operation.check)
+            if action=='window': return windows.read_http(id,ids['stream'],**f)
+            if action=='pair.window':
+                from .window_pair import read_pair
+                return read_pair(windows,id,**f)
+            if set(f)-{'view'}: raise routes.invalid()
+            return windows.describe(id)
         if action=='import.get': return s['imports'].get(id)
         if action=='evidence.get': return s['evidence'].get(id)
         if action=='pair': return s['pairs'].get(id)
