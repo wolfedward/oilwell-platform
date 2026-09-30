@@ -35,6 +35,73 @@ class PairContractTests(unittest.TestCase):
 
 
 class PairDatabaseTests(WaveformRegistryCase):
+    def test_complete_selection_rejects_extra_absent_stream_or_channel(self):
+        from copy import deepcopy
+        from backend.waveforms.errors import ContractError
+        from backend.waveforms.pair_contracts import capture_key
+        from tests.waveform_pairing_support import seed_pair,REVIEWER
+        vector=seed_pair(self); quality,pairs=self.services(); selection=vector['selection']
+        key=capture_key(selection['captures'][0]['key'])
+        self.assertEqual(quality.record(key,selection,self.command('record',key,body=selection)).runs[0].status,'eligible')
+        body=dict(selection=selection,method_version='linear_adjacent/1')
+        pair=pairs.propose(body,self.command('propose',body=body))
+        self.assertEqual(pairs.review(pair.id,decision='approve',command=self.command('review',pair.id,version=1,actor=REVIEWER,decision='approve')).decision,'approve')
+        for stream in ('absent_stream',selection['channels'][0]['stream_id']):
+            changed=deepcopy(selection)
+            changed['channels'].append(dict(changed['channels'][0],role='extra',stream_id=stream,channel_id='absent_channel',sampling_config=None,calibration=None))
+            for operation in ('record','propose'):
+                with self.subTest(stream=stream,operation=operation),self.assertRaises(ContractError):
+                    if operation=='record': quality.record(key,changed,self.command('record',key,body=changed))
+                    else:
+                        body=dict(selection=changed,method_version='linear_adjacent/1')
+                        pairs.propose(body,self.command('propose',body=body))
+        self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.quality_runs'),2)
+        self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.pair_versions'),1)
+
+    def test_missing_or_incomplete_manifest_blocks_and_known_endpoints_still_validate(self):
+        from copy import deepcopy
+        from hashlib import sha256
+        from uuid import uuid4
+        import json
+        from backend.waveforms.errors import ContractError,WaveformError
+        from backend.waveforms.pair_contracts import capture_key
+        from backend.waveforms.repository import WaveformRepository
+        from tests.test_waveform_repository import observation
+        from tests.waveform_vectors import encoded
+        from tests.waveform_pairing_support import seed_pair,REVIEWER
+        vector=seed_pair(self); quality,pairs=self.services(); selection=deepcopy(vector['selection'])
+        new_key=dict(selection['captures'][0]['key'],capture_id=str(uuid4()))
+        selection['captures']=[dict(key=new_key,manifest_sha256=None,origins=[])]
+        for channel in selection['channels']: channel['capture']=new_key
+        selection['cycle']=None; selection['sync']=None
+        key=capture_key(new_key)
+        manifest=json.loads(vector['raws'][0]); manifest.update(new_key); raw=encoded(manifest)
+        for stage in ('missing','incomplete'):
+            if stage=='incomplete':
+                repo=WaveformRepository(self.connect,limits=LIMITS,prefix='oil',ingress_gateway_id='GW')
+                self.assertEqual(repo.ingest(observation(raw,topic='oil/v2/GW/D0/waveform')).status,'stored')
+                selection['captures'][0]['manifest_sha256']=sha256(raw).hexdigest()
+            result=quality.record(key,selection,self.command('record',key,body=selection))
+            with self.subTest(stage=stage,operation='record'):
+                self.assertEqual(result.runs[0].status,'pending')
+                self.assertIn('selected_channel_unavailable',result.runs[0].reasons)
+            body=dict(selection=selection,method_version='linear_adjacent/1')
+            pair=pairs.propose(body,self.command('propose',body=body))
+            with self.subTest(stage=stage,operation='propose'):
+                self.assertEqual(pair.body['joint_result']['status'],'pending')
+                self.assertIn('selected_channel_unavailable',pair.body['joint_result']['reasons'])
+            with self.assertRaises(WaveformError):
+                pairs.review(pair.id,decision='approve',command=self.command('review',pair.id,version=1,actor=REVIEWER,decision='approve'))
+            self.assertEqual(pairs.get(pair.id).review_state,'proposed')
+        for field in ('stream_id','channel_id'):
+            changed=deepcopy(selection); changed['channels'][0][field]='absent_endpoint'
+            for operation in ('record','propose'):
+                with self.subTest(field=field,operation=operation),self.assertRaises(ContractError):
+                    if operation=='record': quality.record(key,changed,self.command('record',key,body=changed))
+                    else:
+                        body=dict(selection=changed,method_version='linear_adjacent/1')
+                        pairs.propose(body,self.command('propose',body=body))
+
     def test_sealed_offline_origin_qualifies_but_shared_complete_unsealed_sources_do_not(self):
         from copy import deepcopy
         from dataclasses import replace

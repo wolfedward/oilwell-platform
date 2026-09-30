@@ -150,28 +150,37 @@ class ContextBuilder(EvidenceService):
         profile=item(selection['profile'],'profile'); profile=ProfileVersion(profile) if profile else None
         reference_key=capture_key(selection['cycle']['capture']) if selection['cycle'] else capture_key(selection['captures'][0]['key'])
         reference=manifests.get(reference_key); reference_utc=utc_ns(reference) if reference else None
-        channels=[]; calibrations={}; configs={}; support={}
+        channels=[]; calibrations={}; configs={}; support={}; unresolved=[]
         for chosen in selection['channels']:
             key=capture_key(chosen['capture']); frame=manifests.get(key)
-            if frame is None or (key,chosen['stream_id']) not in prepared['buffers']: continue
+            identity=(key,chosen['stream_id'],chosen['channel_id'])
+            config=item(chosen['sampling_config'],'sampling_config'); calibration=item(chosen['calibration'],'calibration')
+            calibrations[identity]=calibration; configs[identity]=config
+            if frame is None:
+                unresolved.append(chosen['role']); continue
+            # Membership is an immutable-manifest fact, not a sample-availability fact.
             stream=next((s for s in frame.streams if s.stream_id==chosen['stream_id']),None)
             channel=next((c for c in stream.channels if c.channel_id==chosen['channel_id']),None) if stream else None
             if channel is None: raise ContractError('contract_invalid')
-            config=item(chosen['sampling_config'],'sampling_config'); calibration=item(chosen['calibration'],'calibration')
+            if not stream.first_sample_index<=int(chosen['first_index'])<=int(chosen['last_index'])<stream.first_sample_index+stream.frame_count:
+                raise ContractError('contract_invalid')
+            if (key,chosen['stream_id']) not in prepared['buffers']:
+                unresolved.append(chosen['role']); continue
             b=calibration.body if calibration else {}
             correction=int(b['time_correction_ns']) if b.get('time_correction_ns') is not None else None
             anchor=utc_ns(frame); shift=Fraction(0) if key==reference_key else None if anchor is None or reference_utc is None else Fraction(anchor-reference_utc)
             data=ChannelData(key,stream,channel,prepared['buffers'][(key,stream.stream_id)],int(chosen['first_index']),int(chosen['last_index']),
                 correction,shift,chosen['role'],decimal_value(b['scale']) if b.get('scale') is not None else None,
                 decimal_value(b['offset']) if b.get('offset') is not None else None)
-            channels.append(data); identity=channel_identity(data); calibrations[identity]=calibration; configs[identity]=config
+            channels.append(data)
             uncertainty=frame.body['utc_uncertainty_ns']
             if anchor is not None and uncertainty is not None and correction is not None:
                 support[identity]=(Fraction(anchor)+sample_time_ns(stream,data.first_index,correction_ns=correction)-int(uncertainty),
                                    Fraction(anchor)+sample_time_ns(stream,data.last_index,correction_ns=correction)+int(uncertainty))
         if support and len(support)==len(channels): support['joint']=(min(v[0] for v in support.values()),max(v[1] for v in support.values()))
         cycle=dict(purpose=selection['purpose'],status='pending',start_ns=None,turn_ns=None,end_ns=None,
-                   absolute_support=support,physical_cycles=(),selection_sha256=selection_hash(selection))
+                   absolute_support=support,physical_cycles=(),selection_sha256=selection_hash(selection),
+                   selected_roles=tuple(c['role'] for c in selection['channels']),unresolved_roles=tuple(unresolved))
         if reference and selection['cycle'] and reference.body['cycle'] and reference.body['cycle']['cycle_id']==selection['cycle']['cycle_id']:
             declaration=reference.body['cycle']; events=declaration['reference_events']; times=[]; identities=[]
             for event,name in zip(events,('start_ns','turn_ns','end_ns')):

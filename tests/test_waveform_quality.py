@@ -4,6 +4,43 @@ import unittest
 
 
 class QualityTests(unittest.TestCase):
+    def test_unavailable_channel_does_not_soften_known_hard_failures(self):
+        from dataclasses import replace
+        from tests.waveform_pairing_support import pure_case,evidence,profile_body
+        for kind,reason in (('rms','unsupported_quantity'),('quantity','unsupported_quantity'),
+                            ('role','reference_role_mismatch'),('clipped','bad_or_clipped_samples')):
+            context,_=pure_case(signal='rms' if kind=='rms' else 'instantaneous',
+                                bad_index=1 if kind=='clipped' else None,quality=2)
+            body=profile_body(); missing='power' if kind=='clipped' else 'load'
+            streams=tuple(d for d in context.streams if d.role!=missing)
+            roles=tuple(d.role for d in context.streams)
+            if kind=='rms': body['required_quantities'][0]['signal_kind']='rms'
+            if kind=='quantity': body['required_quantities'][0]['quantity']='current_a'
+            if kind=='role':
+                streams=tuple(replace(d,role='position') if d.role=='displacement' else d for d in streams)
+                roles=tuple('position' if r=='displacement' else r for r in roles)
+                for section in ('required_quantities','min_rates','ranges'):
+                    for entry in body[section]:
+                        if entry['role']=='displacement': entry['role']='position'
+            context=replace(context,streams=streams,completion={context.key:None},
+                cycle=context.cycle|{'selected_roles':roles,'unresolved_roles':(missing,)})
+            result=self.q.evaluate(context,profile=self.q.ProfileVersion(evidence('profile',body)))
+            with self.subTest(kind=kind):
+                self.assertEqual(result.status,'ineligible')
+                self.assertIn(reason,result.reasons)
+
+    def test_unavailable_selected_channels_remain_explicit_pending_dependencies(self):
+        from dataclasses import replace
+        from tests.waveform_pairing_support import pure_case
+        context,profile=pure_case()
+        roles=tuple(d.role for d in context.streams)
+        context=replace(context,streams=(),completion={context.key:None},sync_evidence=None,
+            cycle=context.cycle|{'status':'pending','selected_roles':roles,'unresolved_roles':roles})
+        result=self.q.evaluate(context,profile=profile)
+        self.assertEqual(result.status,'pending')
+        self.assertIn('selected_channel_unavailable',result.reasons)
+        self.assertIn('incomplete',result.reasons)
+
     def test_three_phase_instantaneous_fixed_gate_and_documented_wiring(self):
         from tests.waveform_pairing_support import three_phase_case
         context,profile=three_phase_case()

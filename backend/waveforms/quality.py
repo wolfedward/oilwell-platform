@@ -143,14 +143,19 @@ def evaluate(context: QualityContext, *, profile: ProfileVersion | None) -> Qual
     rates={q['role']:q['rate'] for q in profile.min_rates} if profile else {}
     ranges={q['role']:q['range'] for q in profile.ranges} if profile else {}
     selected={d.role:d for d in context.streams}
-    if required.keys()!=selected.keys(): add('unsupported_quantity',failure=True)
+    requested=set(context.cycle.get('selected_roles',selected))
+    unresolved=set(context.cycle.get('unresolved_roles',())) | (requested-selected.keys())
+    if unresolved: add('selected_channel_unavailable')
+    if required.keys()!=requested: add('unsupported_quantity',failure=True)
+    electrical=profile.body['electrical_input'] if profile else None
+    expected={base+'_'+phase for base in ('voltage','current') for phase in ('a','b','c')}
     if purpose!='raw_archive':
         reference=selected.get('displacement')
-        if reference is None or reference.channel.quantity!='displacement': add('reference_role_mismatch',failure=True)
+        if 'displacement' not in requested or reference is not None and reference.channel.quantity!='displacement':
+            add('reference_role_mismatch',failure=True)
+    if purpose!='raw_archive' and not unresolved:
         quantities={d.channel.quantity for d in context.streams}
         if not {'load','displacement'}<=quantities: add('unsupported_quantity',failure=True)
-        electrical=profile.body['electrical_input'] if profile else None
-        expected={base+'_'+phase for base in ('voltage','current') for phase in ('a','b','c')}
         if electrical=='three_phase_instantaneous':
             instantaneous={d.channel.quantity for d in context.streams if d.channel.signal_kind=='instantaneous'}
             if not expected<=instantaneous: add('unsupported_quantity',failure=True)
@@ -160,6 +165,10 @@ def evaluate(context: QualityContext, *, profile: ProfileVersion | None) -> Qual
         else: add('unsupported_quantity',failure=True)
     for data in context.streams:
         identity=channel_identity(data); channel=data.channel
+        if purpose!='raw_archive' and (
+                electrical=='three_phase_instantaneous' and channel.quantity in expected and channel.signal_kind!='instantaneous'
+                or channel.quantity=='total_active_power' and channel.signal_kind not in ('instantaneous','window_mean')):
+            add('unsupported_quantity',failure=True)
         config=context.sampling_configs.get(identity); calibration=context.calibrations.get(identity)
         requirement=required.get(data.role)
         if requirement:
