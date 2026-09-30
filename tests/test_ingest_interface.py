@@ -22,7 +22,10 @@ KIT = ROOT / 'assets/open-interface'
 PUBLIC_FILES = {'index.html', 'portal.css', 'INTERFACE.md', 'HARDWARE.md', 'ROADMAP.md',
                 'LICENSE.txt', 'telemetry.schema.json', 'telemetry-example.json',
                 'validate_telemetry.py', 'hardware-overview.svg', 'terminal-interfaces.svg',
-                'ingest-ack.schema.json', 'ingest-ack-example.json', 'validate_ingest_ack.py'}
+                'ingest-ack.schema.json', 'ingest-ack-example.json', 'validate_ingest_ack.py',
+                'WAVEFORM.md', 'waveform.schema.json', 'waveform-ack.schema.json',
+                'validate_waveform.py', 'waveform-example.owpwave', 'waveform_errors.py',
+                'waveform_contracts.py', 'waveform_wire.py', 'waveform_samples.py', 'waveform_files.py'}
 
 
 class IngestInterfaceTests(unittest.TestCase):
@@ -174,7 +177,7 @@ class IngestKitBuildTests(unittest.TestCase):
             self.assertEqual(report['sha256'], sha256(original).hexdigest())
             self.assertEqual(set(report['files']), PUBLIC_FILES)
             with ZipFile(destination) as archive:
-                self.assertEqual(len(archive.namelist()), 14)
+                self.assertEqual(len(archive.namelist()), 24)
                 self.assertEqual(set(archive.namelist()), PUBLIC_FILES)
                 for name in PUBLIC_FILES:
                     self.assertEqual(archive.read(name), (root / name).read_bytes())

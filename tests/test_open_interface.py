@@ -119,7 +119,10 @@ class OpenInterfaceTests(unittest.TestCase):
         expected = {"index.html", "portal.css", "INTERFACE.md", "HARDWARE.md", "ROADMAP.md",
                     "LICENSE.txt", "telemetry.schema.json", "telemetry-example.json",
                     "validate_telemetry.py", "hardware-overview.svg", "terminal-interfaces.svg",
-                    "ingest-ack.schema.json", "ingest-ack-example.json", "validate_ingest_ack.py"}
+                    "ingest-ack.schema.json", "ingest-ack-example.json", "validate_ingest_ack.py",
+                    "WAVEFORM.md", "waveform.schema.json", "waveform-ack.schema.json",
+                    "validate_waveform.py", "waveform-example.owpwave", "waveform_errors.py",
+                    "waveform_contracts.py", "waveform_wire.py", "waveform_samples.py", "waveform_files.py"}
         with ZipFile(KIT / "open-interface-r1.zip") as archive:
             self.assertEqual(set(archive.namelist()), expected)
             for path in expected:

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/owp-wave/1.0/waveform-ack.schema.json",
+  "title": "OWP-WAVE-ACK/1.0 structural receipt schema; exact bytes require validator",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "receipt_id", "gateway_id", "device_id", "capture_id", "scope", "manifest_sha256", "payload_sha256", "stream_id", "chunk_index", "status", "reason_code", "recorded_at"],
+  "properties": {
+    "schema": {"type": "string", "const": "OWP-WAVE-ACK/1.0"},
+    "receipt_id": {"$ref": "#/$defs/uuid"},
+    "gateway_id": {"$ref": "#/$defs/name"}, "device_id": {"$ref": "#/$defs/name"},
+    "capture_id": {"$ref": "#/$defs/uuid"},
+    "scope": {"type": "string", "enum": ["message", "capture"]},
+    "manifest_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "payload_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "stream_id": {"oneOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+    "chunk_index": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 2147483647}, {"type": "null"}]},
+    "status": {"type": "string", "enum": ["stored", "quarantined", "complete", "invalid"]},
+    "reason_code": {"type": "string", "enum": ["accepted", "payload_too_large", "topic_invalid", "qos_not_supported", "retained_publish", "utf8_invalid", "json_invalid", "json_duplicate_key", "contract_invalid", "layout_invalid", "digest_mismatch", "identity_mismatch", "reference_conflict", "idempotency_conflict"]},
+    "recorded_at": {"type": "string", "minLength": 27, "maxLength": 27, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"scope": {"const": "capture"}}}, "then": {"properties": {"manifest_sha256": {"$ref": "#/$defs/sha256"}, "payload_sha256": {"type": "null"}, "stream_id": {"type": "null"}, "chunk_index": {"type": "null"}, "status": {"enum": ["complete", "invalid"]}}}},
+    {"if": {"properties": {"scope": {"const": "message"}}}, "then": {"properties": {"payload_sha256": {"$ref": "#/$defs/sha256"}, "status": {"enum": ["stored", "quarantined"]}}}},
+    {"if": {"properties": {"status": {"enum": ["stored", "complete"]}}}, "then": {"properties": {"reason_code": {"const": "accepted"}}}},
+    {"if": {"properties": {"status": {"const": "quarantined"}}}, "then": {"properties": {"reason_code": {"enum": ["payload_too_large", "topic_invalid", "qos_not_supported", "retained_publish", "utf8_invalid", "json_invalid", "json_duplicate_key", "contract_invalid", "layout_invalid", "digest_mismatch", "identity_mismatch", "reference_conflict", "idempotency_conflict"]}}}},
+    {"if": {"properties": {"status": {"const": "invalid"}}}, "then": {"properties": {"reason_code": {"enum": ["reference_conflict", "idempotency_conflict", "layout_invalid", "digest_mismatch"]}}}}
+  ],
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+    "uuid": {"type": "string", "minLength": 36, "maxLength": 36, "pattern": "^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"},
+    "sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"}
+  }
+}
