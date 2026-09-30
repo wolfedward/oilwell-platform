@@ -54,6 +54,11 @@ for _role in ('reader','operator'):
 SELECT['reader'] |= set(PROJECTIONS)
 SELECT['operator'].add('business_receipts')
 INSERT['operator'] |= BUSINESS_TABLES-{'business_settings'}
+METADATA_SELECT_COLUMNS = {
+    'reader': {'chunk_slots': {'capture_pk','stream_id','chunk_index','fact_id'},
+               'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},
+    'operator': {'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},
+}
 
 
 def _fail(): raise WaveformError("waveform.privilege_unsafe", "Waveform database permissions are unsafe or incomplete")
@@ -82,16 +87,20 @@ def _permissions(conn, role):
             if any(conn.execute("SELECT has_sequence_privilege(%s,%s,'USAGE,SELECT,UPDATE')", (identity,oid)).fetchone()[0] for identity in reachable): _fail()
             continue
         may_select = internal and name in SELECT[role]
+        select_columns = METADATA_SELECT_COLUMNS.get(role,{}).get(name,set()) if internal else set()
         may_insert = internal and name in INSERT[role]
         may_update = UPDATE[role].get(name,set()) if internal else set()
         for identity in reachable:
             if conn.execute("SELECT has_table_privilege(%s,%s,'DELETE,TRUNCATE,TRIGGER,REFERENCES,MAINTAIN') OR has_any_column_privilege(%s,%s,'REFERENCES') OR EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE c.oid=%s AND a.grantee IN (0,%s) AND a.is_grantable)", (identity,oid,identity,oid,oid,identity)).fetchone()[0]: _fail()
             columns = conn.execute("SELECT attname,has_column_privilege(%s,%s,attnum,'SELECT'),has_column_privilege(%s,%s,attnum,'INSERT'),has_column_privilege(%s,%s,attnum,'UPDATE'),EXISTS(SELECT 1 FROM aclexplode(attacl) a WHERE a.grantee IN (0,%s) AND a.is_grantable) FROM pg_attribute WHERE attrelid=%s AND attnum>0 AND NOT attisdropped", (identity,oid,identity,oid,identity,oid,identity,oid)).fetchall()
-            if any((selected and not may_select) or (inserted and not may_insert) or (updated and column not in may_update) or grantable for column,selected,inserted,updated,grantable in columns): _fail()
+            if any((selected and not may_select and column not in select_columns) or (inserted and not may_insert) or (updated and column not in may_update) or grantable for column,selected,inserted,updated,grantable in columns): _fail()
+            if select_columns and conn.execute("SELECT has_table_privilege(%s,%s,'SELECT')",(identity,oid)).fetchone()[0]: _fail()
         for privilege,needed in (("SELECT",may_select),("INSERT",may_insert)):
             if needed and not conn.execute("SELECT has_table_privilege(current_user,%s,%s)", (oid,privilege)).fetchone()[0]: _fail()
         for column in may_update:
             if not conn.execute("SELECT has_column_privilege(current_user,%s,%s,'UPDATE')", (oid,column)).fetchone()[0]: _fail()
+        for column in select_columns:
+            if not conn.execute("SELECT has_column_privilege(current_user,%s,%s,'SELECT')",(oid,column)).fetchone()[0]: _fail()
     functions = conn.execute("SELECT p.oid,n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),p.proowner,p.prosecdef,p.provolatile,p.proparallel,p.proconfig,EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'").fetchall()
     for oid,schema,name,args,owner,definer,volatility,parallel,config,unsafe_acl in functions:
         permitted = oid in extension_functions or schema=="waveforms" and (

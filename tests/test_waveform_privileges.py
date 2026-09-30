@@ -11,6 +11,28 @@ ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "
 
 
 class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_quality_metadata_columns_are_exact(self):
+        for role in ('reader','operator'):
+            with self.connect(role) as conn:
+                try:
+                    conn.execute('SELECT capture_pk,manifest_fact_id,status,reason_code,result,completed_at FROM waveforms.completion LIMIT 1')
+                    if role=='reader': conn.execute('SELECT capture_pk,stream_id,chunk_index,fact_id FROM waveforms.chunk_slots LIMIT 1')
+                except psycopg.errors.InsufficientPrivilege: self.fail('Task11 fixed metadata columns unavailable')
+            for query in ('SELECT intake_gateway_id FROM waveforms.completion','SELECT raw_payload FROM waveforms.facts'):
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    with self.connect(role) as conn: conn.execute(query)
+            probe_role(lambda:self.connect(role),role)
+        reader=sql.Identifier(self.settings['reader']['user'])
+        for change,undo in (
+            ('GRANT SELECT(intake_gateway_id) ON waveforms.completion TO {}','REVOKE SELECT(intake_gateway_id) ON waveforms.completion FROM {}'),
+            ('REVOKE SELECT(status) ON waveforms.completion FROM {}','GRANT SELECT(status) ON waveforms.completion TO {}')):
+            with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+            try:
+                with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+            finally:
+                with self.connect('migration_owner') as conn: conn.execute(sql.SQL(undo).format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
     def test_import_receiver_rights_are_minimal(self):
         probe_role(lambda:self.connect("receiver"), "receiver")
         for role, statements in {

@@ -53,3 +53,5 @@ GRANT SELECT ON waveforms.registry_devices,waveforms.registry_device_states,wave
     waveforms.registry_wells,waveforms.registry_head TO {reader};
 GRANT EXECUTE ON FUNCTION waveforms.lock_business_capacity(TEXT),waveforms.lock_business_captures(UUID[]) TO {operator};
 GRANT EXECUTE ON FUNCTION waveforms.audited_attachment(UUID,JSONB,TEXT) TO {reader};
+GRANT SELECT(capture_pk,stream_id,chunk_index,fact_id) ON waveforms.chunk_slots TO {reader};
+GRANT SELECT(capture_pk,manifest_fact_id,status,reason_code,result,completed_at) ON waveforms.completion TO {reader},{operator};

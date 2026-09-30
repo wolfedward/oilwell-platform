@@ -133,3 +133,35 @@ def evidence_request_hash(operation, target, command, *, kind=None, body=None,
         'actor':{'domain':command.actor.domain,'user_id':command.actor.user_id},
         'expected_version':str(command.expected_version),'reason':command.reason,'body':content}
     return sha256(canonical_bytes(envelope)).hexdigest()
+
+
+def _quality_pair_hash(operation,target,command,content):
+    from .evidence_contracts import canonical_bytes
+    envelope=dict(protocol='waveform.business-command/1',operation=operation,target=target,
+        actor=dict(domain=command.actor.domain,user_id=command.actor.user_id),
+        expected_version=str(command.expected_version),reason=command.reason,body=content)
+    return sha256(canonical_bytes(envelope)).hexdigest()
+
+
+def quality_request_hash(key,command,*,body):
+    from .contracts import CaptureKey
+    from .pair_contracts import validate_selection,key_dict,capture_key
+    if type(command) is not Command or command.expected_version!=0 or type(key) is not CaptureKey:
+        raise ContractError('contract_invalid')
+    content=validate_selection(body)
+    if key not in [capture_key(c['key']) for c in content['captures']]: raise ContractError('contract_invalid')
+    return _quality_pair_hash('quality.record',key_dict(key),command,content)
+
+
+def pair_request_hash(operation,target,command,*,body=None,decision=None):
+    from .pair_contracts import validate_proposal
+    if type(command) is not Command: raise ContractError('contract_invalid')
+    if operation=='propose':
+        if target is not None or command.expected_version!=0 or decision is not None: raise ContractError('contract_invalid')
+        content=validate_proposal(body)
+    elif operation=='review':
+        if type(target) is not UUID or command.expected_version<1 or body is not None or decision not in ('approve','reject','revoke'):
+            raise ContractError('contract_invalid')
+        content=dict(decision=decision)
+    else: raise ContractError('contract_invalid')
+    return _quality_pair_hash('pairs.'+operation,str(target) if target is not None else None,command,content)
