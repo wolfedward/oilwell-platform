@@ -3,10 +3,11 @@
 const checks=[];const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
 try{
  const {scanWaveformFile,createImportSession}=await import(IMPORT_MODULE);const vectors=VECTOR_DATA;let original,descriptor;
- for(const row of vectors){const bytes=Uint8Array.from(atob(row.base64),c=>c.charCodeAt(0)),file=new File([bytes],'capture.owpwave');let result;
-  try{result=await scanWaveformFile(file);}catch{}
+ for(const row of vectors){const bytes=Uint8Array.from(atob(row.base64),c=>c.charCodeAt(0)),file=new File([bytes],'capture.owpwave');let result,rejection;
+  try{result=await scanWaveformFile(file);}catch(error){rejection=error;}
   check(Boolean(result)===row.accepted,row.name+' acceptance matches server');
   if(result){check(result.file_sha256===row.hash&&result.line_count===row.lines&&result.final_lf===row.final_lf,row.name+' exact metadata');}
+  else check(rejection?.message===row.reason_code,row.name+' rejection code '+String(rejection?.message)+' matches center '+row.reason_code);
   if(row.name==='golden'){original=file;descriptor=result;}
  }
  const {createWaveformClient}=await import(CLIENT_MODULE);let lost=true;const sent=[],raw=[],saved=new Map();

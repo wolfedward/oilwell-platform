@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from backend.waveforms.files import scan_file
+from backend.waveforms.errors import ContractError
 from tests.waveform_vectors import golden_capture, encoded
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,8 +63,8 @@ def vectors():
         try:
             desc = scan_file(BytesIO(raw))
             expected = {'accepted': True, 'hash': desc.sha256, 'lines': len(desc.lines), 'final_lf': desc.final_lf}
-        except ValueError:
-            expected = {'accepted': False}
+        except ContractError as error:
+            expected = {'accepted': False, 'reason_code': error.code}
         output.append(dict(name=label, base64=base64.b64encode(raw).decode(), **expected))
     return output
 

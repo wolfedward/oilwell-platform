@@ -39,6 +39,16 @@ python -I validate_waveform.py --input waveform-example.owpwave
 
 容量限制必须**同时**满足。例如 128,000 S/s、单组 32 通道时，16 MiB 只容 **104,857** 帧（16,777,120 字节），首末样本跨度 0.8191875 s；6 通道时为 **559,240** 帧（16,777,200 字节），跨度 4.3690546875 s。以上仅是分配算例，不是推荐现场采样率或抽油周期窗口；不得截短所需物理周期以通过校验。显示端每通道原始窗口最多 20,000 帧、摘要最多 2,000 点；悬停两位小数仅用于显示，原码、序号、时间不能截断。
 
+## 同步证据与精确时间坐标
+
+厂家应逐个标明采集流的实际 `gateway_id/device_id/boot_id`、`stream_id`、`clock_domain_id`、计数器来源、采样率以及同一物理参考事件如何对应到每个流的绝对 `reference_sample_index`。中心按原 manifest 核对这些身份、索引是否落在该流支持区间，以及参考样本的名义时间：`offset_ns + (reference_sample_index - first_sample_index) × 1,000,000,000 × rate_den / rate_num`。多通道若来自**同一个实际流/同一已核验端点**，可以共享一次映射，但不能充作多份独立时钟证明。不同 capture 的事件对应还要换算各自 UTC 起点并处理各自已知的 UTC 不确定度；缺少必要锚点或误差界时保持待证，不用中心收件时间补造。相同标签、采样率、UTC 字面值或非空事件名称，只表明声明一致，不证明硬件同步。
+
+定量使用还需要独立获批的同步证据：非空说明应解释实际计数器/触发事件的对应关系；至少一份受控附件应为接线与时序报告或经核验的映射报告。审核人需检查报告是否真正支持采样斜率、事件对应、适用窗口及误差界。程序只核对固定数学一致性，不能认证报告或传感器的物理真实性；synthetic 报告仍须标 synthetic。声明 `shared_sampling_clock` 或 `verified_linear_mapping` 时，参考坐标、原 manifest 采样率、有效时间半开区间和必要的误差项必须可核对；不能把映射偏移、增益或通道校正重复施加到原样本。已知零误差与未知 null 必须分开。
+
+同步误差中的端点 offset、residual、频率漂移是**相对于声明的参考时钟的差分项**，不把共同的绝对时钟偏差重复计入；参考端点已知的 offset/frequency 应为零，未知仍是 null，其触发/采集 residual 可以非零。两个不同端点的差分项及各通道校准 residual 按来源分别计入；同一已核验端点不重复计映射误差。频率漂移从证据参考样本的时间起累计，直到所选支持区间两端取最远年龄，不能在周期起点归零。跨 capture 的 UTC 不确定度只参与绝对事件锚点一致性判断，不能自动加到相对同步预算。超出证据适用窗口不能外推。上述审阅和误差归属与原文保存、质量状态及现场精度验收是不同门槛。
+
+入口 wire 上的绝对样本序号与 ns 字段仍必须是规范 **i64 十进制整数字符串**。中心派生窗口/API 的 `relative_ns` 是根据精确采样率及校正算出的**规范有理数字符串**；分母为 1 时写整数，否则可写约分后的 `分子/分母`，例如 3 S/s 下从零偏移走一个样本为 `1000000000/3` ns。它不是新的 wire 字段，也不得把分数坐标改写进原 manifest/chunk。客户端应保留原样本序号、原始字节和完整分数坐标，以精确分数运算进行比较、扣除和区间分组；图表悬停的两位小数只是显示，不得回写为时间或训练/配对依据。
+
 ## 四种确认与重试
 
 独立回执报文最多 4 KiB，字段准确为 `schema, receipt_id, gateway_id, device_id, capture_id, scope, manifest_sha256, payload_sha256, stream_id, chunk_index, status, reason_code, recorded_at`；null 字段也要出现。`receipt_id` 和 `capture_id` 为 UUID，`recorded_at` 为 UTC 微秒。`scope=message` 的 `stored` 表示该原报文被持久保存，`quarantined` 表示原文被持久隔离，二者均绑定 **payload_sha256**；`scope=capture` 的 `complete` 表示收齐并封存，`invalid` 表示该 capture 被不可变地判为无效，二者绑定 **manifest_sha256**。`complete` 不表示质量合格、来源可信、校准有效或两个来源同步。`stored/complete` 的 reason_code 为 `accepted`；`quarantined/invalid` 使用合同限定的永久原因码。不能把 MQTT PUBACK 当应用确认，也不能把旧 ingest ACK 用于波形。

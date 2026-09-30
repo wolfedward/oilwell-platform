@@ -1,7 +1,9 @@
 // Wire counts are integer JSON tokens; -0 is accepted just as Python json.loads.
 // Original octets are never reconstructed from this validation-only object.
 export function strictWaveformJSON(bytes) {
-  const text = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);
+  let text;
+  try {text = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);}
+  catch (error) {if (error instanceof TypeError) throw Error('utf8_invalid'); throw error;}
   if (/[\r\n]/.test(text)) throw Error('json_invalid');
   let position = 0;
   const invalid = () => {throw Error('json_invalid');};
