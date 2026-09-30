@@ -86,7 +86,10 @@ class WaveformApi:
             origin=h.headers.get('Origin')
             if origin is not None and _origin(origin) not in runtime.allowed_origins: raise ValueError()
         except Exception: raise WaveformError('waveform.origin_denied','Host or Origin is not allowed',403) from None
-        if method=='POST' and origin is None and not h.headers.get('Authorization','').startswith('Bearer '):
+        authorization=h.headers.get('Authorization','')
+        # Match the inherited extractor's Bearer branch, not its cookie fallback.
+        bearer=authorization.startswith('Bearer ') and bool(authorization[7:].strip())
+        if method=='POST' and origin is None and not bearer:
             raise WaveformError('waveform.origin_required','Origin or Bearer authentication required',403)
 
     def _body(self,limit,content_type):
@@ -125,9 +128,11 @@ class WaveformApi:
             compound=action in {'evaluation.create','pair.create','pair.review','pair.preview','dataset.freeze','export.create'}
             if action=='dataset' and filters.get('view','summary')=='summary' and 'revision' not in filters:
                 # Only current frozen metadata needs the guarded nested reader.
-                # Pin this lookup for dispatch so a concurrent freeze cannot grow
-                # a one-slot operation after admission.
-                filters['_version_id']=runtime.queries.dataset_version(ids['id'],filters.get('version_id'))
+                # Pin both parts from one snapshot: a concurrent freeze must not
+                # combine a new draft with an old version or grow admission.
+                selection=runtime.queries.dataset_selection(ids['id'],filters.get('version_id'))
+                filters['_draft_revision']=selection['revision']
+                filters['_version_id']=selection['version_id']
                 compound=filters['_version_id'] is not None
             with runtime.connections.reserve(2 if compound else 1):
                 if method=='POST': result=self._post(runtime,action,ids,actor)
@@ -162,8 +167,8 @@ class WaveformApi:
         if action=='pair': return s['pairs'].get(id)
         if action=='pair.preview': return s['pairs'].inspect(id,actor=actor)
         if action=='dataset' and f.get('view','summary')=='summary':
-            if set(f)-{'view','revision','version_id','_version_id'} or 'revision' in f and 'version_id' in f: raise routes.invalid()
-            draft=s['datasets'].get_draft(id,revision=f.get('revision'))
+            if set(f)-{'view','revision','version_id','_version_id','_draft_revision'} or 'revision' in f and 'version_id' in f: raise routes.invalid()
+            draft=s['datasets'].get_draft(id,revision=f.get('revision',f.get('_draft_revision')))
             version=f.get('_version_id')
             return dict(draft=draft,version=s['datasets'].get(version) if version else None)
         return rt.queries.fetch(action,f|ids)

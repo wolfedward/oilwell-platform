@@ -184,6 +184,26 @@ class WaveformHTTPTests(DatasetCase):
         with self.server.database.connection() as c: c.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00+08:00'")
         self.assertEqual(self.request('GET','/health')[0],401)
 
+    def test_empty_bearer_cookie_post_without_origin_never_invokes_write(self):
+        service=self.server.waveform_runtime.services['datasets']; before=self.scalar('SELECT count(*) FROM waveforms.dataset_drafts')
+        body=dict(idempotency_key=str(uuid4()),expected_version='0',reason='Synthetic auth boundary',
+                  body=dict(title='Must not be written',purpose='raw_archive',split_plan=dict(kind='none')))
+        cookie='platform_session='+self.tokens['administrator']
+        with patch.object(service,'create',wraps=service.create) as create:
+            for authorization in ('Bearer ','Bearer \t  '):
+                with self.subTest(authorization=repr(authorization)):
+                    status,result=self.request('POST','/datasets',body,headers={'Authorization':authorization,'Cookie':cookie})
+                    self.assertEqual(status,403,result)
+            self.assertEqual(create.call_count,0,'Cookie fallback must not reach the write service')
+        self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.dataset_drafts'),before)
+        # Preserve valid browser cookie GET/Origin POST and authenticated Bearer POST.
+        headers={'Authorization':'Bearer ','Cookie':cookie}
+        self.assertEqual(self.request('GET','/datasets',headers=headers)[0],200)
+        headers['Origin']=f'http://127.0.0.1:{self.server.server_port}'
+        self.assertEqual(self.request('POST','/datasets',body,headers=headers)[0],200)
+        body['idempotency_key']=str(uuid4())
+        self.assertEqual(self.request('POST','/datasets',body)[0],200)
+
     def test_budget_one_allows_draft_get_and_refuses_compound(self):
         status,result=self.post('/datasets',dict(title='budget test',purpose='raw_archive',split_plan=dict(kind='none')))
         self.assertEqual(status,200,result); id=result['data']['id']
@@ -191,6 +211,44 @@ class WaveformHTTPTests(DatasetCase):
         self.assertEqual(self.request('GET',f'/datasets/{id}')[0],200)
         self.assertEqual(self.post(f'/dataset-versions/{uuid4()}/exports',dict(purpose='evidence'))[0],503)
         self.assertEqual(pool.available,1)
+
+    def test_dataset_summary_pins_revision_when_freeze_commits_between_reads(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from backend.waveforms.commands import Actor
+        pair,_=self.pair(); writer,submitted=self.submitted(pair)
+        rt=self.server.waveform_runtime; pool=rt.connections; pool.budget=pool.available=1
+        service=rt.services['datasets']; original=service.get_draft
+        entered=threading.Event(); released=threading.Event()
+        def paused(id,revision=None):
+            entered.set()
+            if not released.wait(8): raise RuntimeError('freeze race gate was not released')
+            return original(id,revision=revision)
+        with patch.object(service,'get_draft',side_effect=paused),ThreadPoolExecutor(1) as executor:
+            request=executor.submit(self.request,'GET',f'/datasets/{submitted.id}')
+            try:
+                self.assertTrue(entered.wait(4),'HTTP summary never reached draft retrieval')
+                self.assertEqual(pool.available,0); self.assertFalse(pool.active)
+                # A separately connected reviewed producer commits the real freeze
+                # after HTTP selection but before HTTP draft retrieval proceeds.
+                body=dict(target_id=str(submitted.id)); reviewer=Actor('local','race-reviewer','Synthetic reviewer','reviewer')
+                version=writer.freeze(body,self.command('freeze',submitted.id,submitted.revision,reviewer,body=body))
+            finally: released.set()
+            status,result=request.result(10)
+        self.assertEqual(status,200,result)
+        self.assertEqual((result['data']['draft']['revision'],result['data']['draft']['state'],result['data']['version']),
+                         (str(submitted.revision),'submitted',None))
+        self.assertEqual(pool.available,1); self.assertFalse(pool.active)
+        self.assertEqual(self.request('GET',f'/datasets/{submitted.id}')[0],503)
+        status,result=self.request('GET',f'/datasets/{submitted.id}?revision={submitted.revision}')
+        self.assertEqual(status,200,result); self.assertEqual(result['data']['draft']['state'],'submitted'); self.assertIsNone(result['data']['version'])
+        pool.budget=pool.available=2
+        for suffix in ('',f'?version_id={version.id}'):
+            status,result=self.request('GET',f'/datasets/{submitted.id}'+suffix)
+            self.assertEqual(status,200,result)
+            self.assertEqual((result['data']['draft']['state'],result['data']['version']['id']),('frozen',str(version.id)))
+        self.assertEqual(self.request('GET',f'/datasets/{submitted.id}?version_id={uuid4()}')[0],404)
+        self.assertEqual(self.request('GET',f'/datasets/{submitted.id}?revision={submitted.revision}&version_id={version.id}')[0],422)
+        self.assertEqual(pool.available,2); self.assertFalse(pool.active)
 
     def test_lazy_stream_audits_errors_restrictions_and_head(self):
         import socket
@@ -506,7 +564,7 @@ class WaveformHTTPTests(DatasetCase):
                 finally:
                     actual=connection.execute("SELECT current_setting('statement_timeout'),current_setting('lock_timeout'),current_setting('transaction_read_only')").fetchone()
                     self.assertEqual(actual,('3s','1s','on'))
-        operations=(lambda:queries.capture_key(uuid4()),lambda:queries.dataset_version(uuid4()),
+        operations=(lambda:queries.capture_key(uuid4()),lambda:queries.dataset_selection(uuid4()),
                     lambda:queries.export_file(uuid4(),uuid4(),Actor('platform-local','1','test','reviewer')))
         with patch.object(queries,'connect',inspected):
             for operation in operations:

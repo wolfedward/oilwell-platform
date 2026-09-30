@@ -68,14 +68,14 @@ class WaveformQueries:
             value=one(conn.cursor(),"SELECT f.descriptor FROM waveforms.dataset_exports e JOIN waveforms.dataset_files f USING(version_id) WHERE e.export_id=%s AND f.capture_pk=%s AND e.actor->>'domain'=%s AND e.actor->>'user_id'=%s",(export_id,capture_id,actor.domain,actor.user_id))
             return value['descriptor']
 
-    def dataset_version(self,id,version_id=None):
+    def dataset_selection(self,id,version_id=None):
         with self.connect() as conn:
-            conn.execute('SET TRANSACTION READ ONLY')
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
             conn.execute("SET LOCAL statement_timeout='3s'"); conn.execute("SET LOCAL lock_timeout='1s'")
-            cur=conn.cursor(); cur.execute('SELECT version_id FROM waveforms.dataset_versions WHERE dataset_id=%s'+(' AND version_id=%s' if version_id else ''),(id,version_id) if version_id else (id,))
-            found=cur.fetchone()
-            if version_id and not found: raise WaveformError('waveform.not_found','Version does not belong to dataset',404)
-            return found[0] if found else None
+            return one(conn.cursor(),'SELECT r.revision,v.version_id FROM waveforms.dataset_revisions r '
+                       'LEFT JOIN waveforms.dataset_versions v USING(dataset_id) WHERE r.dataset_id=%s'+
+                       (' AND v.version_id=%s' if version_id else '')+' ORDER BY r.revision DESC LIMIT 1',
+                       (id,version_id) if version_id else (id,))
 
     def fetch(self,resource:str,filters:dict)->dict:
         import psycopg
