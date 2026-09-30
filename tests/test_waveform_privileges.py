@@ -11,6 +11,28 @@ ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "
 
 
 class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_http_snapshot_and_missing_chunk_columns_are_exact(self):
+        with self.connect('reader') as conn:
+            try:
+                conn.execute('SELECT singleton,version FROM waveforms.state_head')
+                conn.execute('SELECT capture_pk,stream_id,chunk_count FROM waveforms.streams')
+            except psycopg.errors.InsufficientPrivilege: self.fail('HTTP snapshot metadata privileges required')
+        reader=sql.Identifier(self.settings['reader']['user'])
+        for table,columns,extra in (('state_head','singleton,version',None),('streams','capture_pk,stream_id,chunk_count','specification')):
+            changes=[(f'REVOKE SELECT({columns.split(",")[0]}) ON waveforms.{table} FROM {{}}',None),
+                     (f'GRANT SELECT ON waveforms.{table} TO {{}}',f'REVOKE SELECT ON waveforms.{table} FROM {{}}'),
+                     (f'GRANT SELECT({columns}) ON waveforms.{table} TO {{}} WITH GRANT OPTION',f'REVOKE GRANT OPTION FOR SELECT({columns}) ON waveforms.{table} FROM {{}}')]
+            if extra: changes.append((f'GRANT SELECT({extra}) ON waveforms.{table} TO {{}}',f'REVOKE SELECT({extra}) ON waveforms.{table} FROM {{}}'))
+            for change,undo in changes:
+                with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+                try:
+                    with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+                finally:
+                    with self.connect('migration_owner') as conn:
+                        if undo: conn.execute(sql.SQL(undo).format(reader))
+                        conn.execute(sql.SQL(f'GRANT SELECT({columns}) ON waveforms.{table} TO {{}}').format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
     def test_dataset_original_import_columns_are_exact(self):
         with self.connect('reader') as conn:
             try: conn.execute('SELECT import_id,file_sha256,file_bytes,line_count,final_lf FROM waveforms.imports LIMIT 1')

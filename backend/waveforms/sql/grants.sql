@@ -56,6 +56,8 @@ GRANT EXECUTE ON FUNCTION waveforms.audited_attachment(UUID,JSONB,TEXT) TO {read
 GRANT SELECT(capture_pk,stream_id,chunk_index,fact_id) ON waveforms.chunk_slots TO {reader};
 GRANT SELECT(capture_pk,manifest_fact_id,status,reason_code,result,completed_at) ON waveforms.completion TO {reader},{operator};
 GRANT SELECT(import_id,file_sha256,file_bytes,line_count,final_lf) ON waveforms.imports TO {reader};
+GRANT SELECT(singleton,version) ON waveforms.state_head TO {reader};
+GRANT SELECT(capture_pk,stream_id,chunk_count) ON waveforms.streams TO {reader};
 GRANT SELECT ON waveforms.dataset_drafts,waveforms.dataset_revisions,waveforms.dataset_events,
     waveforms.dataset_versions,waveforms.dataset_members,waveforms.dataset_files,
     waveforms.dataset_manifest_chunks,waveforms.dataset_exports TO {reader},{operator};

@@ -172,7 +172,7 @@ class AuthenticationTests(unittest.TestCase):
                JOIN roles r ON r.id = rp.role_id
                JOIN permissions p ON p.id = rp.permission_id
               WHERE r.code <> 'administrator'"""
-        )) | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read"}
+        )) | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read", "waveform.audit.read"}
         actual = set(self.database.column(
             """SELECT p.code
                FROM role_permissions rp

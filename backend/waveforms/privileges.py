@@ -56,6 +56,8 @@ SELECT['operator'].add('business_receipts')
 INSERT['operator'] |= BUSINESS_TABLES-{'business_settings'}
 METADATA_SELECT_COLUMNS = {
     'reader': {'imports': {'import_id','file_sha256','file_bytes','line_count','final_lf'},
+               'state_head': {'singleton','version'},
+               'streams': {'capture_pk','stream_id','chunk_count'},
                'chunk_slots': {'capture_pk','stream_id','chunk_index','fact_id'},
                'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},
     'operator': {'completion': {'capture_pk','manifest_fact_id','status','reason_code','result','completed_at'}},

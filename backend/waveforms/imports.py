@@ -56,6 +56,21 @@ class ImportService:
         metadata = import_metadata(metadata)
         return self._execute("create", None, command, metadata=metadata)
 
+    def get(self, id: UUID) -> ImportSession:
+        """Recovery is a bounded metadata snapshot, never a new observation."""
+        if type(id) is not UUID: raise ContractError('contract_invalid')
+        try:
+            with self._connect() as conn:
+                conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+                conn.execute("SET LOCAL statement_timeout='3s'")
+                conn.execute("SET LOCAL lock_timeout='1s'")
+                cur=conn.cursor()
+                session=_one(cur,'SELECT * FROM waveforms.imports WHERE import_id=%s',(id,))
+                if session is None: _fail('not_found','Import does not exist')
+                return self._result(cur,session,ImportSession)
+        except psycopg.Error:
+            raise WaveformError('waveform.import_unavailable','Import recovery is unavailable') from None
+
     def append(self, id: UUID, line: int, payload: bytes, command) -> ImportProgress:
         return self._execute("append", id, command, line=line, payload=payload)
 

@@ -41,6 +41,9 @@ def parse_arguments():
     parser.add_argument("--launch", action="store_true", help="start a hidden child and wait until it is healthy")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--instance-id", help=argparse.SUPPRESS)
+    parser.add_argument("--waveform-config", type=Path,
+                        default=Path(os.environ['PLATFORM_WAVEFORM_CONFIG']) if os.environ.get('PLATFORM_WAVEFORM_CONFIG') else None,
+                        help="enable optional waveform management with this independent config")
     parser.add_argument(
         "--center-config",
         type=Path,
@@ -185,7 +188,7 @@ def _open_when_ready(runtime):
         webbrowser.open(f"http://{_local_host(runtime['host'])}:{runtime['port']}/")
 
 
-def _launch_command(host, port, instance_id, center_config_path=None):
+def _launch_command(host, port, instance_id, center_config_path=None, waveform_config_path=None):
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -198,16 +201,18 @@ def _launch_command(host, port, instance_id, center_config_path=None):
     ]
     if center_config_path is not None:
         command.append(f"--center-config={Path(center_config_path).resolve()}")
+    if waveform_config_path is not None:
+        command.append(f"--waveform-config={Path(waveform_config_path).resolve()}")
     return command
 
 
-def launch_server(host, port, open_browser, center_config_path=None):
+def launch_server(host, port, open_browser, center_config_path=None, waveform_config_path=None):
     """Start a detached child and return only after that child is healthy."""
     runtime_file, runtime_log = _runtime_paths()
     before = _read_runtime(runtime_file)
     Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
     expected_instance_id = secrets.token_urlsafe(32)
-    command = _launch_command(host, port, expected_instance_id, center_config_path)
+    command = _launch_command(host, port, expected_instance_id, center_config_path, waveform_config_path)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     with runtime_log.open("a", encoding="utf-8") as log_file:
         child = subprocess.Popen(command, cwd=Path(__file__).resolve().parent, stdout=log_file,
@@ -246,7 +251,7 @@ def launch_server(host, port, open_browser, center_config_path=None):
     return 1
 
 
-def run_server(host, port, open_browser=False, instance_id=None, center_config_path=None):
+def run_server(host, port, open_browser=False, instance_id=None, center_config_path=None, waveform_config_path=None):
     """Hold a platform-wide OS lock from migration through shutdown."""
     instance_id = instance_id or secrets.token_urlsafe(32)
     shutdown_token = secrets.token_urlsafe(32)
@@ -265,6 +270,7 @@ def run_server(host, port, open_browser=False, instance_id=None, center_config_p
             port,
             database_path=Config.DATABASE_PATH,
             center_config_path=center_config_path,
+            waveform_config_path=waveform_config_path,
         )
         server.shutdown_token = shutdown_token
         runtime = {"instance_id": instance_id, "pid": os.getpid(), "host": server.server_address[0],
@@ -304,6 +310,7 @@ def main():
             arguments.port,
             arguments.open_browser,
             arguments.center_config,
+            arguments.waveform_config,
         )
     return run_server(
         arguments.host,
@@ -311,6 +318,7 @@ def main():
         arguments.open_browser,
         instance_id=arguments.instance_id,
         center_config_path=arguments.center_config,
+        waveform_config_path=arguments.waveform_config,
     )
 
 
