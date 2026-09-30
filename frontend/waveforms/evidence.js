@@ -2,7 +2,8 @@ import {node, button, field, metadata, errorText, createPager, pages, mountComma
 import {digest} from './file-scan.js';
 
 export function mountEvidence({root, client, permissions, capture, isCurrent}) {
-  let disposed = false, selection = 0; const actions = [], persistentActions = []; const current = () => !disposed && isCurrent();
+  let disposed = false, selection = 0, selectedClient = null, listClient = null; const actions = [], persistentActions = []; const current = () => !disposed && isCurrent();
+  client = client.scope(current);
   root.append(node('h3', '校准与来源资料'));
   root.append(node('p', '资料是独立不可变版本。报告配置标签与中心配置 UUID / 摘要分开记录；历史展示不授予定量使用资格。', 'wave-muted'));
   const linked = new Set();
@@ -10,14 +11,15 @@ export function mountEvidence({root, client, permissions, capture, isCurrent}) {
   const resultRoot = node('div');
   async function select(id) {
     const n = ++selection; actions.splice(0).forEach(a => a.dispose()); resultRoot.textContent = '正在读取资料…';
+    selectedClient?.dispose(); const reading = selectedClient = client.scope(() => n === selection);
     try {
-      const result = await client.read(`/evidence/${id}`); if (!result || !current() || n !== selection) return;
+      const result = await reading.read(`/evidence/${id}`); if (!result || !current() || n !== selection) return;
       resultRoot.replaceChildren(); metadata(resultRoot, [['资料 ID', result.id], ['类型', result.kind], ['版本', result.version], ['审核状态', result.review_state], ['内容摘要', result.content_sha256], ['资料正文', result.body], ['创建者', result.creator]]);
       for (const attachment of result.body?.attachment_ids || []) if (permissions.has('waveform.raw.read')) button(resultRoot, '下载附件（不在线执行）', 'data-wave-attachment', attachment, () => {
-        client.download(`/attachments/${attachment}/raw`, `attachment-${attachment}`).catch(error => {if (current() && n === selection) resultRoot.append(node('p', errorText(error)));});
+        reading.download(`/attachments/${attachment}/raw`, `attachment-${attachment}`).catch(error => {if (current() && n === selection) resultRoot.append(node('p', errorText(error)));});
       });
-      for (const decision of ['approve', 'reject', 'revoke']) actions.push(mountCommand({root: resultRoot, client, permissions, permission: 'waveform.review',
-        path: `/evidence/${id}/${decision === 'revoke' ? 'revoke' : 'review'}`, version: result.version, label: {approve: '批准资料', reject: '拒绝资料', revoke: '撤销资料'}[decision],
+      for (const decision of ['approve', 'reject', 'revoke']) actions.push(mountCommand({root: resultRoot, client: reading, permissions, permission: 'waveform.review',
+        path: `/evidence/${id}/${decision === 'revoke' ? 'revoke' : 'review'}`, conflictGroup: `/evidence/${id}/review`, intent: decision, version: result.version, label: {approve: '批准资料', reject: '拒绝资料', revoke: '撤销资料'}[decision],
         body: decision === 'revoke' ? {} : {decision}, isCurrent: () => current() && n === selection, onChanged: () => select(id)}));
     } catch (error) {if (current() && n === selection) resultRoot.textContent = errorText(error);}
   }
@@ -25,8 +27,9 @@ export function mountEvidence({root, client, permissions, capture, isCurrent}) {
   const filter = field(root, '资料类型', 'kind', {choices: [['', '全部'], ['sampling_config', '采样配置'], ['calibration', '校准'], ['origin', '来源'], ['sync', '同步依据'], ['profile', '质量规则']]});
   const list = node('div'); root.append(list, resultRoot); let listGeneration = 0;
   async function listEvidence() {
-    const n = ++listGeneration, pager = createPager(client, '/evidence', filter.value ? {kind: filter.value} : {});
+    const n = ++listGeneration, pager = createPager({read: path => listClient.read(path)}, '/evidence', filter.value ? {kind: filter.value} : {});
     async function load(page = 1) {
+      listClient?.dispose(); listClient = client.scope(() => n === listGeneration);
       try {
         const result = await pager.load(page); if (!result || !current() || n !== listGeneration) return; list.replaceChildren();
         for (const row of result.items) button(list, `${row.kind} · ${row.state} · ${row.evidence_id}`, 'data-wave-evidence', row.evidence_id, () => select(row.evidence_id));
@@ -61,5 +64,5 @@ export function mountEvidence({root, client, permissions, capture, isCurrent}) {
       finally {busy = false;}
     }); upload.append(notice); root.append(upload); persistentActions.push(creation);
   }
-  return {dispose() {disposed = true; ++selection; ++listGeneration; [...actions, ...persistentActions].forEach(a => a.dispose());}};
+  return {dispose() {disposed = true; ++selection; ++listGeneration; client.dispose(); [...actions, ...persistentActions].forEach(a => a.dispose());}};
 }

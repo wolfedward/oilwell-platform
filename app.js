@@ -108,6 +108,7 @@ const PAGE_INDEX = new Map(
 const app = document.querySelector("#app");
 let shellReady = false;
 let loginGeneration = 0;
+let waveformAuthSession = {};
 let shellEventsBound = false;
 let renderGeneration = 0;
 let disposeWaveforms = null;
@@ -221,6 +222,7 @@ async function renderPage(pageId, params = {}) {
       api, components, format, escapeHtml, workspace, page, pageHeader, params,
       permissions: new Set(state.user?.permissions || []),
       actorId: state.user?.id,
+      authSession: waveformAuthSession,
       registerDispose: dispose => {if (generation === renderGeneration) disposeWaveforms = dispose; else dispose();},
       capabilities: state.user?.capabilities || {registry: {enabled: false, status: "disabled"}, ingest_reliability: {enabled: false, status: "disabled"}},
       navigate: openPage,
@@ -348,6 +350,7 @@ function bindShellEvents() {
 
 async function showShell(user) {
   loginGeneration += 1;
+  waveformAuthSession = {}; // Only reached after successful login/auth-me.
   store.setState({ user });
   app.innerHTML = shellMarkup(user);
   app.setAttribute("aria-busy", "false");

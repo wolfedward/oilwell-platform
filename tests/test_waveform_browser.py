@@ -129,6 +129,19 @@ class WaveformBrowserTests(unittest.TestCase):
         for width in (1440, 1024):
             self.run_fixture('waveform_workspace_check.html', width, 'reception')
 
+    def test_conflicting_decisions_preserve_original_recovery(self):
+        self.run_fixture('waveform_actions_check.html', 1024, 'decisions')
+
+    def test_denial_survives_view_and_workspace_until_reauthentication(self):
+        self.run_fixture('waveform_actions_check.html', 1024, 'denial')
+
+    def test_filter_and_detail_scopes_abort_replaced_reads(self):
+        self.run_fixture('waveform_actions_check.html', 1024, 'cancellation')
+
+    def test_pair_exact_history_measurement_and_cycle_display(self):
+        for width in (1440, 1024):
+            self.run_fixture('waveform_actions_check.html', width, 'history')
+
 
 if __name__ == '__main__':
     unittest.main()

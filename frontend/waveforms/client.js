@@ -29,19 +29,24 @@ export function errorText(error) {
   return '请求未能确认结果；可用同一操作重试。';
 }
 const deepFreeze = value => {if (value && typeof value === 'object') {Object.values(value).forEach(deepFreeze); Object.freeze(value);} return value;};
-export function createWaveformClient(api, {isCurrent = () => true, can = () => true, pending = new Map()} = {}) {
-  let disposed = false, denied = false; const controllers = new Set();
+export function createWaveformClient(api, {isCurrent = () => true, can = () => true, pending = new Map(), session = {denied: false}, commandListeners = new Set(), onDispose} = {}) {
+  let disposed = false; const controllers = new Set(), children = new Set();
   const current = () => !disposed && isCurrent();
   async function run(callback, permission) {
     if (!current()) return null;
-    if (denied || permission && !can(permission)) throw Object.assign(Error('forbidden'), {status: 403});
+    if (session.denied || permission && !can(permission)) throw Object.assign(Error('forbidden'), {status: 403});
     const controller = new AbortController(); controllers.add(controller);
     try {const value = await callback(controller.signal); return current() ? value : null;}
-    catch (error) {if (error.status === 401 || error.status === 403) denied = true; if (!current()) return null; throw error;}
+    catch (error) {if (error.status === 401 || error.status === 403) session.denied = true; if (!current()) return null; throw error;}
     finally {controllers.delete(controller);}
   }
   return {
-    current, pending,
+    current, pending, commandListeners,
+    scope(valid = () => true) {
+      const child = createWaveformClient(api, {isCurrent: () => current() && valid(), can, pending, session, commandListeners, onDispose: () => children.delete(child)});
+      children.add(child); return child;
+    },
+    commandsChanged() {commandListeners.forEach(update => update());},
     read(path) {return run(signal => api.get(path.startsWith(BASE) ? path : BASE + path, {signal}), 'waveform.read');},
     prepare(path, version, reason, body, permission, key = crypto.randomUUID()) {
       if (!/^(?:0|[1-9][0-9]*)$/.test(version) || !reason.trim()) throw Error('操作需要明确理由和版本');
@@ -55,11 +60,11 @@ export function createWaveformClient(api, {isCurrent = () => true, can = () => t
         'X-Waveform-Reason': encodeURIComponent(command.envelope.reason), ...extra}}), command.permission);
     },
     download(path, filename, permissions = ['waveform.raw.read']) {
-      if (!current() || denied || permissions.some(p => !can(p))) return Promise.reject(Object.assign(Error('forbidden'), {status: 403}));
+      if (!current() || session.denied || permissions.some(p => !can(p))) return Promise.reject(Object.assign(Error('forbidden'), {status: 403}));
       return run(signal => api.download(BASE + path, filename, {signal}), permissions[0]);
     },
-    cancelPending() {controllers.forEach(c => c.abort());},
-    dispose() {disposed = true; controllers.forEach(c => c.abort()); controllers.clear();},
+    cancelPending() {controllers.forEach(c => c.abort()); children.forEach(c => c.cancelPending());},
+    dispose() {disposed = true; controllers.forEach(c => c.abort()); controllers.clear(); children.forEach(c => c.dispose()); children.clear(); onDispose?.();},
   };
 }
 
@@ -86,31 +91,42 @@ export function pages(root, result, load) {
 }
 
 // Uncertain writes retain their real target and immutable envelope across remounts.
-export function mountCommand({root, client, permissions, permission, path, version, label, body, isCurrent, onChanged}) {
+export function mountCommand({root, client, permissions, permission, path, version, label, intent = label, conflictGroup = path, body, isCurrent, onChanged}) {
   if (!permissions.has(permission)) return {dispose() {}};
-  let disposed = false, busy = false; const current = () => !disposed && isCurrent();
+  let disposed = false, stopped = false; const current = () => !disposed && isCurrent();
   const form = node('form', undefined, 'wave-command'); form.dataset.waveAction = path;
   const reason = field(form, `${label}理由`, 'reason', {required: true, maxLength: 512});
   const submit = node('button', label, 'button primary'); submit.type = 'submit'; form.append(submit);
   const status = node('p', undefined, 'inline-error'); status.setAttribute('role', 'status'); form.append(status); root.append(form);
-  const pending = () => client.pending.get(path);
-  if (pending()) {reason.value = pending().envelope.reason; reason.disabled = true; submit.textContent = `重试${label}（原操作）`;}
+  const key = `command:${conflictGroup}`, pending = () => client.pending.get(key);
+  function update() {
+    if (!current()) return;
+    const saved = pending(), own = saved?.intent === intent;
+    submit.disabled = stopped || !!saved && (!own || saved.busy);
+    reason.disabled = !!saved;
+    if (own) {reason.value = saved.command.envelope.reason; submit.textContent = `重试${saved.label}（原操作）`;}
+    else if (saved) status.textContent = `待确认原操作：${saved.label}。请使用该原操作的恢复入口；不能提交冲突决定。`;
+    else {submit.textContent = label; if (status.textContent.startsWith('待确认原操作')) status.textContent = '';}
+  }
+  client.commandListeners.add(update); update();
   form.addEventListener('submit', async event => {
-    event.preventDefault(); if (!current() || busy) return; busy = true; submit.disabled = true;
+    event.preventDefault(); if (!current() || stopped || pending() && (pending().intent !== intent || pending().busy)) return;
+    let saved;
     try {
-      let command = pending();
-      if (!command) {command = client.prepare(path, String(version), reason.value, typeof body === 'function' ? body() : body, permission); client.pending.set(path, command);}
+      saved = pending();
+      if (!saved) {saved = {intent, label, command: client.prepare(path, String(version), reason.value, typeof body === 'function' ? body() : body, permission), busy: false}; client.pending.set(key, saved);}
+      saved.busy = true; client.commandsChanged(); const command = saved.command;
       reason.value = command.envelope.reason; reason.disabled = true;
       const result = await client.send(command);
-      if (result) client.pending.delete(path);
+      if (result) client.pending.delete(key);
       if (!result || !current()) return;
       status.textContent = '操作已保存。'; await onChanged?.(result);
     } catch (error) {
       if (!current()) return; status.textContent = errorText(error);
-      if ([409, 422].includes(error.status)) client.pending.delete(path);
-      if ([401, 403, 409, 422].includes(error.status)) {submit.disabled = true; return;}
+      if ([409, 422].includes(error.status)) client.pending.delete(key);
+      if ([401, 403, 409, 422].includes(error.status)) {stopped = true; return;}
       submit.textContent = `重试${label}（原操作）`;
-    } finally {busy = false; if (current() && !/权限|失效|重新读取|输入不符合/.test(status.textContent)) submit.disabled = false;}
+    } finally {if (saved) saved.busy = false; client.commandsChanged();}
   });
-  return {dispose() {disposed = true;}};
+  return {dispose() {disposed = true; client.commandListeners.delete(update);}};
 }

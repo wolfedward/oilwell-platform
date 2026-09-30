@@ -3,7 +3,8 @@ import {mountWaveformChart} from './charts.js';
 import {mountEvidence} from './evidence.js';
 
 export function mountDetail({root, client, capture, permissions, isCurrent, navigate}) {
-  let disposed = false, generation = 0, chart = null, evidence = null; const commands = [];
+  let disposed = false, generation = 0, chart = null, evidence = null, windowClient = null, historyClient = null; const commands = [];
+  client = client.scope(() => !disposed && isCurrent());
   const current = () => !disposed && isCurrent(); root.replaceChildren(node('h2', `录波详情 · ${capture.device_id}`));
   metadata(root, [['录波身份', capture.capture_id], ['中心记录', capture.capture_pk], ['收齐状态', capture.state], ['完整性', capture.completion],
     ['用途资格', '收齐不等于质量合格；以独立质量复核为准'], ['来源声明', capture.source_kind], ['缺片', capture.missing_chunks],
@@ -15,9 +16,10 @@ export function mountDetail({root, client, capture, permissions, isCurrent, navi
   if (!streams.length) chartRoot.append(node('p', '没有可用通道；尚无已接受清单或通道资料。不会补画参考曲线。'));
   async function windowRead(stream, request) {
     const n = ++generation; chart?.dispose(); chartRoot.textContent = '正在读取精确窗口…';
+    windowClient?.dispose(); const reading = windowClient = client.scope(() => n === generation);
     const query = new URLSearchParams(request);
     try {
-      const result = await client.read(`/captures/${capture.capture_pk}/streams/${stream.stream_id}/window?${query}`);
+      const result = await reading.read(`/captures/${capture.capture_pk}/streams/${stream.stream_id}/window?${query}`);
       if (!result || !current() || n !== generation) return;
       chart = mountWaveformChart(chartRoot, result, {onWindowRequest: next => windowRead(stream, next)});
     } catch (error) {if (current() && n === generation) {chartRoot.textContent = errorText(error); button(chartRoot, '重新读取窗口', null, '', () => windowRead(stream, request));}}
@@ -31,16 +33,18 @@ export function mountDetail({root, client, capture, permissions, isCurrent, navi
   const history = node('div'); observations.append(history); let historyGeneration = 0;
   async function showHistory(view) {
     const n = ++historyGeneration, path = view === 'evaluations' ? `/captures/${capture.capture_pk}/evaluations` : `/captures/${capture.capture_pk}`;
-    const pager = createPager(client, path, view === 'evaluations' ? {} : {view});
+    historyClient?.dispose(); const historyScope = historyClient = client.scope(() => n === historyGeneration); let pageClient;
+    const pager = createPager({read: path => pageClient.read(path)}, path, view === 'evaluations' ? {} : {view});
     async function load(page = 1) {
       history.textContent = '正在读取…';
+      pageClient?.dispose(); pageClient = historyScope.scope();
       try {
         const result = await pager.load(page); if (!result || !current() || n !== historyGeneration) return; history.replaceChildren();
         if (!result.items.length) history.append(node('p', '暂无此类记录。'));
         for (const row of result.items) {
           metadata(history, Object.entries(row));
           if (view === 'facts' && permissions.has('waveform.raw.read')) button(history, '下载原始报文', 'data-wave-raw', row.fact_id, () => {
-            client.download(`/facts/${row.fact_id}/raw`, `waveform-${row.fact_id}.bin`).catch(error => {if (current() && n === historyGeneration) history.append(node('p', errorText(error)));});
+            historyScope.download(`/facts/${row.fact_id}/raw`, `waveform-${row.fact_id}.bin`).catch(error => {if (current() && n === historyGeneration) history.append(node('p', errorText(error)));});
           });
         }
         pages(history, result, load);
@@ -59,5 +63,5 @@ export function mountDetail({root, client, capture, permissions, isCurrent, navi
   evidence = mountEvidence({root: evidenceRoot, client, permissions, capture, isCurrent: current});
   if (streams.length) windowRead(streams[0], {start: streams[0].first_sample_index, count: String(streams[0].frame_count), mode: 'summary', budget: '2000'});
   showHistory('provenance');
-  return {dispose() {disposed = true; ++generation; ++historyGeneration; chart?.dispose(); evidence?.dispose(); commands.forEach(c => c.dispose());}};
+  return {dispose() {disposed = true; ++generation; ++historyGeneration; client.dispose(); chart?.dispose(); evidence?.dispose(); commands.forEach(c => c.dispose());}};
 }

@@ -5,6 +5,7 @@ import {mountDatasets} from '../waveforms/datasets.js';
 import {mountImports} from '../waveforms/imports.js';
 
 const mounted = new WeakMap();
+const authenticatedSessions = new WeakMap();
 export async function renderWaveforms(context) {
   const {workspace, permissions, api, isCurrent} = context;
   mounted.get(workspace)?.dispose(); workspace.innerHTML = context.pageHeader(context.page);
@@ -14,7 +15,14 @@ export async function renderWaveforms(context) {
   if (capability?.enabled !== true) {root.textContent = '同步波形与数据集模块未配置；请联系管理员。'; root.dataset.waveState = 'disabled'; return false;}
   if (capability.status !== 'ready') {root.textContent = '同步波形与数据集模块暂时不可用，请检查独立配置与数据库。'; root.dataset.waveState = 'unavailable'; return false;}
   let disposed = false, generation = 0, activeMount = null, client = null;
-  const pendingCommands = new Map();
+  // The shell supplies a token replaced only after successful authentication.
+  // Component remounts and newly-created permission Sets cannot reset denial.
+  const authToken = context.authSession || permissions;
+  let actors = authenticatedSessions.get(authToken);
+  if (!actors) {actors = new Map(); authenticatedSessions.set(authToken, actors);}
+  const actor = String(context.actorId ?? '');
+  if (!actors.has(actor)) actors.set(actor, {denied: false, pending: new Map()});
+  const session = actors.get(actor), pendingCommands = session.pending;
   const current = () => !disposed && isCurrent() && workspace.contains(root);
   const controller = {dispose() {disposed = true; ++generation; activeMount?.dispose(); client?.dispose();}};
   mounted.set(workspace, controller); context.registerDispose?.(() => controller.dispose());
@@ -24,7 +32,7 @@ export async function renderWaveforms(context) {
   async function show(view) {
     const n = ++generation; activeMount?.dispose(); client?.dispose(); body.replaceChildren();
     const valid = () => current() && n === generation;
-    client = createWaveformClient(api, {isCurrent: valid, can: permission => permissions.has(permission), pending: pendingCommands});
+    client = createWaveformClient(api, {isCurrent: valid, can: permission => permissions.has(permission), pending: pendingCommands, session});
     for (const tab of tabs.children) {tab.classList.toggle('active', tab.dataset.waveTab === view); tab.setAttribute('aria-current', tab.dataset.waveTab === view ? 'page' : 'false');}
     const args = {root: body, client, permissions, actorId: context.actorId, isCurrent: valid};
     if (view === 'captures') activeMount = mountCaptures({...args, navigate: context.navigate});
@@ -38,7 +46,7 @@ export async function renderWaveforms(context) {
 }
 
 function mountCaptures({root, client, permissions, isCurrent, navigate}) {
-  let disposed = false, selection = 0, listGeneration = 0, detailMount = null;
+  let disposed = false, selection = 0, listGeneration = 0, detailMount = null, detailClient = null, listClient = null;
   const current = () => !disposed && isCurrent(); root.append(node('h2', '接收清单'));
   const filters = node('form', undefined, 'wave-filters');
   field(filters, '网关', 'gateway_id'); field(filters, '源设备', 'device_id'); field(filters, '井号目录 ID', 'well_id');
@@ -46,18 +54,20 @@ function mountCaptures({root, client, permissions, isCurrent, navigate}) {
   field(filters, '问题筛选', 'stalled', {choices: [['', '全部'], ['true', '超过 24 小时无新有效片'], ['false', '未停滞']]});
   const submit = node('button', '查询', 'button primary'); submit.type = 'submit'; filters.append(submit);
   const list = node('div'), detail = node('section', undefined, 'wave-subpanel'); detail.dataset.waveDetail = ''; root.append(filters, list, detail);
-  let pager = createPager(client, '/captures');
-  function clear() {++selection; detailMount?.dispose(); detailMount = null; detail.replaceChildren(node('p', '选择录波查看实际通道、接收通路、缺片、来源与资料。'));}
-  filters.addEventListener('submit', event => {event.preventDefault(); const values = Object.fromEntries([...new FormData(filters)].filter(([, v]) => v)); pager = createPager(client, '/captures', values); clear(); load();});
+  const listReader = {read: path => listClient.read(path)};
+  let pager = createPager(listReader, '/captures');
+  function clear() {++selection; detailClient?.dispose(); detailMount?.dispose(); detailMount = null; detail.replaceChildren(node('p', '选择录波查看实际通道、接收通路、缺片、来源与资料。'));}
+  filters.addEventListener('submit', event => {event.preventDefault(); const values = Object.fromEntries([...new FormData(filters)].filter(([, v]) => v)); pager = createPager(listReader, '/captures', values); clear(); load();});
   async function select(id) {
-    clear(); const n = selection; detail.textContent = '正在读取录波…';
+    clear(); const n = selection, selectedClient = detailClient = client.scope(() => current() && n === selection); detail.textContent = '正在读取录波…';
     try {
-      const result = await client.read(`/captures/${id}`); if (!result || !current() || n !== selection) return;
-      detailMount = mountDetail({root: detail, client, capture: result, permissions, navigate, isCurrent: () => current() && n === selection});
+      const result = await selectedClient.read(`/captures/${id}`); if (!result || !current() || n !== selection) return;
+      detailMount = mountDetail({root: detail, client: selectedClient, capture: result, permissions, navigate, isCurrent: () => current() && n === selection});
     } catch (error) {if (current() && n === selection) {detail.textContent = errorText(error); button(detail, '重新读取详情', 'data-wave-retry', '', () => select(id));}}
   }
   async function load(page = 1) {
     const n = ++listGeneration; list.textContent = '正在读取接收清单…';
+    listClient?.dispose(); const reading = listClient = client.scope(() => current() && n === listGeneration);
     try {
       const result = await pager.load(page); if (!result || !current() || n !== listGeneration) return; list.replaceChildren();
       if (result.refreshed) {clear(); list.append(node('p', '列表已变化，已从第一页重新读取。'));}
@@ -82,9 +92,9 @@ function mountCaptures({root, client, permissions, isCurrent, navigate}) {
           while (current() && n === listGeneration && index < enrichments.length) {
             const {row, stateCell, quality, time, provenance} = enrichments[index++];
             const responses = await Promise.allSettled([
-              client.read(`/captures/${row.capture_pk}?view=summary`),
-              client.read(`/captures/${row.capture_pk}?view=provenance&page=1&page_size=5`),
-              client.read(`/captures/${row.capture_pk}/evaluations?page=1&page_size=5`),
+              reading.read(`/captures/${row.capture_pk}?view=summary`),
+              reading.read(`/captures/${row.capture_pk}?view=provenance&page=1&page_size=5`),
+              reading.read(`/captures/${row.capture_pk}/evaluations?page=1&page_size=5`),
             ]);
             if (!current() || n !== listGeneration) return;
             const [summary, paths, evaluations] = responses.map(r => r.status === 'fulfilled' ? r.value : null);
@@ -118,5 +128,5 @@ function mountCaptures({root, client, permissions, isCurrent, navigate}) {
       pages(list, result, p => {clear(); load(p);});
     } catch (error) {if (current() && n === listGeneration) {root.dataset.waveState = error.status === 403 ? 'forbidden' : 'unavailable'; list.textContent = errorText(error);}}
   }
-  clear(); const ready = load(); return {ready, dispose() {disposed = true; ++selection; ++listGeneration; detailMount?.dispose();}};
+  clear(); const ready = load(); return {ready, dispose() {disposed = true; ++selection; ++listGeneration; listClient?.dispose(); detailClient?.dispose(); detailMount?.dispose();}};
 }

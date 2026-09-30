@@ -181,7 +181,7 @@ class WaveformApi:
             return windows.describe(id)
         if action=='import.get': return s['imports'].get(id)
         if action=='evidence.get': return s['evidence'].get(id)
-        if action=='pair': return s['pairs'].get(id)
+        if action=='pair': return rt.queries.pair_detail(id,s['pairs'])
         if action=='pair.preview': return s['pairs'].inspect(id,actor=actor)
         if action=='dataset' and f.get('view','summary')=='summary':
             if set(f)-{'view','revision','version_id','_version_id','_draft_revision'} or 'revision' in f and 'version_id' in f: raise routes.invalid()

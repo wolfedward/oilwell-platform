@@ -42,6 +42,16 @@ def one(cur,query,params=()):
     return result
 
 
+def historical_registry_projection():
+    """Fixed compact immutable history; never return full dependency snapshots."""
+    value="CASE WHEN registry_snapshot IS NULL OR registry_snapshot='null'::jsonb THEN NULL ELSE jsonb_build_object("
+    value+=','.join("'"+key+"',registry_snapshot->'"+key+"'" for key in (
+        'status','resolution_reasons','revision','time_basis','utc_start','lower_ns','upper_ns'))
+    value+=",'well',CASE WHEN registry_snapshot->'well' IS NULL OR registry_snapshot->'well'='null'::jsonb THEN NULL ELSE jsonb_build_object("
+    value+=','.join("'"+key+"',registry_snapshot->'well'->'"+key+"'" for key in ('id','area_code','well_code'))
+    return value+") END) END AS historical_registry"
+
+
 @contextmanager
 def snapshot_connection(connect,existing=None):
     """Internal reuse preserves one RR observation without nested admission."""
@@ -56,6 +66,21 @@ def snapshot_connection(connect,existing=None):
 
 class WaveformQueries:
     def __init__(self,connect): self.connect=connect
+
+    def pair_detail(self,id,service):
+        """Pair and exactly its two quality references in one admitted reader snapshot."""
+        from .business import check_payer
+        with snapshot_connection(self.connect) as conn:
+            cur=conn.cursor(); check_payer(cur,service._bucket)
+            pair=service._pair(cur,id)
+            ids=(pair.left_quality_run_id,pair.right_quality_run_id)
+            cur.execute('SELECT quality_run_id,capture_pk,source_key,manifest_sha256,purpose,status,recorded_at,'+
+                        historical_registry_projection()+' FROM waveforms.quality_runs WHERE quality_run_id=ANY(%s) LIMIT 2',
+                        (list(set(ids)),))
+            runs={r['quality_run_id']:r for r in rows(cur)}
+            if set(runs)!=set(ids): raise WaveformError('waveform.pair_history_unavailable','Referenced quality history is unavailable')
+            return public(pair)|dict(historical_evaluations=public([
+                dict(side=side,**runs[identity]) for side,identity in zip(('left','right'),ids)]))
 
     def pair_window_snapshot(self,id,*,_connection=None):
         from .pairing import PairService
@@ -256,12 +281,7 @@ class WaveformQueries:
         elif resource=='evaluations':
             # Only immutable evaluation-time association metadata. Never expose
             # the large source/binding/evidence/parameter snapshots in a list.
-            historical="CASE WHEN registry_snapshot IS NULL OR registry_snapshot='null'::jsonb THEN NULL ELSE jsonb_build_object("
-            historical+=','.join("'"+key+"',registry_snapshot->'"+key+"'" for key in (
-                'status','resolution_reasons','revision','time_basis','utc_start','lower_ns','upper_ns'))
-            historical+=",'well',CASE WHEN registry_snapshot->'well' IS NULL OR registry_snapshot->'well'='null'::jsonb THEN NULL ELSE jsonb_build_object("
-            historical+=','.join("'"+key+"',registry_snapshot->'well'->'"+key+"'" for key in ('id','area_code','well_code'))
-            historical+=") END) END AS historical_registry"
+            historical=historical_registry_projection()
             base='SELECT quality_run_id,capture_pk,source_key,manifest_sha256,validator_version,profile_id,profile_sha256,purpose,status,creator,recorded_at,'+historical+' FROM waveforms.quality_runs'
             eq('id','capture_pk'); eq('status',allowed=('eligible','ineligible','pending')); eq('purpose',allowed=purposes); idcol='quality_run_id'
         elif resource=='pairs':

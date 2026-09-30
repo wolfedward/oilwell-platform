@@ -16,6 +16,9 @@ from tests.waveform_dataset_support import DatasetCase
 class WaveformHTTPTests(DatasetCase):
     def setUp(self):
         super().setUp()
+        self.start_http_server()
+
+    def start_http_server(self):
         from backend.http_server import create_server
         from backend.seed import bootstrap_local_auth
         from backend.waveforms.runtime import build_waveform_runtime
@@ -776,6 +779,73 @@ class WaveformHTTPTests(DatasetCase):
 
 
 
+
+
+from tests.waveform_registry_support import WaveformRegistryCase
+
+
+class WaveformPairHistoryHTTPTests(WaveformRegistryCase):
+    start_http_server=WaveformHTTPTests.start_http_server
+    close_server=WaveformHTTPTests.close_server
+    request=WaveformHTTPTests.request
+    post=WaveformHTTPTests.post
+
+    def setUp(self):
+        super().setUp()
+        self.start_http_server()
+
+    def test_pair_exact_historical_sides_resolved_same_run_and_null(self):
+        from copy import deepcopy
+        from datetime import datetime, timedelta
+        from uuid import UUID
+        from backend.waveforms.queries import public
+        from tests.waveform_pairing_support import seed_pair
+        from tests.waveform_vectors import encoded
+        first=self.history_source(device='D0')
+        second=self.history_source(device='D1',well=first['well'])
+        anchor=(datetime.fromisoformat(second['active_at'])+timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        # Change the synthetic vector BEFORE real intake, not a saved row or a
+        # quality/registry resolver. Evidence hashes bind these actual bytes.
+        def current_vector(body):
+            return encoded(body|{'utc_start':anchor} if body.get('kind')=='manifest' else body)
+        for two in (True,False):
+            with patch('tests.waveform_vectors.encoded',side_effect=current_vector): vector=seed_pair(self,two=two)
+            status,value=self.post('/pairs',dict(selection=vector['selection'],method_version='linear_adjacent/1'))
+            self.assertEqual(status,200,value); id=value['data']['id']
+            old=public(self.server.waveform_runtime.services['pairs'].get(UUID(id)))
+            rt=self.server.waveform_runtime; rt.connections.budget=rt.connections.available=1
+            status,value=self.request('GET',f'/pairs/{id}',role='reviewer')
+            rt.connections.budget=rt.connections.available=4
+            self.assertEqual(status,200,value); detail=value['data']
+            self.assertEqual({k:detail[k] for k in old},old,'Existing pair fields unchanged')
+            self.assertIn('historical_evaluations',detail,'Exact pair-bound historical sides required')
+            sides=detail['historical_evaluations']; self.assertEqual([r['side'] for r in sides],['left','right'])
+            self.assertEqual([r['quality_run_id'] for r in sides],[old['left_quality_run_id'],old['right_quality_run_id']])
+            self.assertEqual(sides[0]['quality_run_id']==sides[1]['quality_run_id'],not two)
+            for side in sides:
+                self.assertEqual(set(side),{'side','quality_run_id','capture_pk','source_key','manifest_sha256','purpose','status','recorded_at','historical_registry'})
+                history=side['historical_registry']; self.assertEqual(history['status'],'resolved')
+                self.assertEqual(history['well'],{k:first['well'][k] for k in ('id','area_code','well_code')})
+                self.assertEqual(set(history),{'status','resolution_reasons','revision','time_basis','utc_start','lower_ns','upper_ns','well'})
+                self.assertEqual(history['utc_start'],anchor); self.assertEqual((history['lower_ns'],history['upper_ns']),('0','2000000000'))
+                self.assertEqual(history['time_basis']['support'],'inclusive_corrected_physical')
+                self.assertIsInstance(history['revision'],str)
+                with self.connect('reader') as conn:
+                    stored=conn.execute('SELECT capture_pk,source_key,manifest_sha256,registry_snapshot FROM waveforms.quality_runs WHERE quality_run_id=%s',(side['quality_run_id'],)).fetchone()
+                self.assertEqual((side['capture_pk'],side['source_key'],side['manifest_sha256']),(str(stored[0]),stored[1],stored[2]))
+                self.assertEqual(stored[3]['status'],'resolved'); self.assertNotIn('sources',json.dumps(side)); self.assertLess(len(json.dumps(side)),4096)
+            if not two:
+                selection=deepcopy(vector['selection']); selection.update(purpose='raw_archive',channels=[],cycle=None,sync=None,profile=None)
+                status,value=self.post('/pairs',dict(selection=selection,method_version='linear_adjacent/1')); self.assertEqual(status,200,value)
+                status,value=self.request('GET',f"/pairs/{value['data']['id']}",role='reviewer'); self.assertEqual(status,200,value)
+                for side in value['data']['historical_evaluations']:
+                    self.assertIsNone(side['historical_registry']); self.assertEqual(side['status'],'pending')
+        # The original old-UTC fixture yields real unresolved registry metadata.
+        vector=seed_pair(self)
+        status,value=self.post('/pairs',dict(selection=vector['selection'],method_version='linear_adjacent/1')); self.assertEqual(status,200,value)
+        status,value=self.request('GET',f"/pairs/{value['data']['id']}",role='reviewer'); self.assertEqual(status,200,value)
+        self.assertEqual(value['data']['historical_evaluations'][0]['historical_registry']['status'],'ineligible')
+        self.assertIsNone(value['data']['historical_evaluations'][0]['historical_registry']['well'])
 
 
 class RouteTests(unittest.TestCase):
