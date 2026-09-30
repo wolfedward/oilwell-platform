@@ -173,6 +173,55 @@ class XYDatabaseTests(DatasetCase):
             read_pair(service,pair.id,start=0,count=3,mode='raw')
         self.assertEqual(caught.exception.code,'waveform.window_integrity')
 
+    def test_corrected_target_interpolation_audits_neighbor_chunk_only(self):
+        from collections import Counter
+        from tests.waveform_pairing_support import seed_pair,calibration_body
+        from tests.waveform_vectors import encoded
+        from tests.waveform_support import LIMITS
+        from backend.waveforms.commands import Command,pair_request_hash
+        from backend.waveforms.pairing import PairService
+        from backend.waveforms.quality_context import ContextBuilder
+        from backend.waveforms.window_pair import read_pair
+        from uuid import uuid4
+        # Customize only new fixture input, before real evidence/intake/assembly.
+        # At8000Hz one period is125000ns; load is corrected half a period early.
+        def corrected(config):
+            body=calibration_body(config)
+            if config.body['quantity']=='load': body['time_correction_ns']='-62500'
+            return body
+        def declared(body):
+            if body['kind']=='manifest':
+                body['cycle']['end_ns']='1999875000'
+                body['cycle']['reference_events'][-1]['sample_index']='15999'
+            return encoded(body)
+        with patch('tests.waveform_pairing_support.calibration_body',side_effect=corrected),patch('tests.waveform_vectors.encoded',side_effect=declared):
+            vector=seed_pair(self,count=16001)
+        service=self.service(); frame=vector['frames'][0]
+        pairs=PairService(lambda:self.connect('operator'),limits=LIMITS,shared_accounting_bucket='GW',read_connect=lambda:self.connect('reader'))
+        body=dict(selection=vector['selection'],method_version='linear_adjacent/1'); command=Command(CREATOR,uuid4(),0,'Synthetic neighboring chunk','0'*64)
+        pair=pairs.propose(body,replace(command,request_hash=pair_request_hash('propose',None,command,body=body)))
+        self.assertEqual(pair.body['joint_result']['status'],'eligible',pair.body['joint_result'])
+        # Obtain identities independently from accepted-slot SQL, not window ranges.
+        with self.connect('reader') as conn:
+            capture=conn.execute('SELECT capture_pk,manifest_fact_id FROM waveforms.capture_metadata WHERE capture_id=%s',(frame.key.capture_id,)).fetchone()
+            slots={(s,i):fact for s,i,fact in conn.execute('SELECT stream_id,chunk_index,fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s',(capture[0],)).fetchall()}
+        self.assertEqual(set(slots),{(s,i) for s in ('electrical','sensor') for i in range(4)})
+        manifest,chunk0,neighbor=capture[1],slots[('sensor',0)],slots[('sensor',1)]
+        allowed={manifest,chunk0,neighbor}; seen=[]; raw=service.queries.raw
+        def audit(id,actor):
+            self.assertIn(id,allowed,'Unrelated accepted chunk must not be read')
+            seen.append(id); return raw(id,actor)
+        with patch.object(service.queries,'raw',side_effect=audit),patch.object(ContextBuilder,'prepare',side_effect=AssertionError('Bounded read must not reevaluate full quality')):
+            result=read_pair(service,pair.id,start=4095,count=1,mode='raw')
+        self.assertEqual(result.status,'ok',result.restrictions); self.assertEqual(result.gaps,())
+        self.assertEqual(Counter(seen),Counter({manifest:1,chunk0:2,neighbor:1}))
+        self.assertEqual(len(result.points),1); point=result.points[0]
+        # Literal oracle: t=4095*125000, target4095/4096 at t-/+62500.
+        self.assertEqual((point.index,point.relative_ns,point.displacement,point.load),('4095','511875000',2.,10.))
+        self.assertEqual(point.displacement_indices,('4095',)); self.assertEqual(point.load_indices,('4095','4096'))
+        self.assertFalse(point.displacement_interpolated); self.assertTrue(point.load_interpolated)
+        self.assertEqual(point.displacement_qualities,(0,)); self.assertEqual(point.load_qualities,(0,0))
+
     def test_pending_unconfigured_pair_has_explicit_restriction(self):
         from backend.waveforms.pairing import PairService
         from backend.waveforms.commands import Command,pair_request_hash
