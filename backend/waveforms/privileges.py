@@ -2,6 +2,7 @@
 import psycopg
 from .errors import WaveformError
 from .migrate import RUNTIME_ROLES, check_schema
+from .registry_dependency import PROJECTIONS, verified_extension_functions, check_history_views
 
 TABLES = set("schema_migrations capacity facts message_outcomes observations captures streams chunks chunk_slots completion capture_conflicts assembly_jobs receipts deliveries imports import_lines import_events worker_health audit operation_receipts state_head".split())
 VIEWS = set("fact_metadata outcome_metadata capture_metadata receipt_metadata audit_metadata capacity_metadata worker_metadata".split())
@@ -43,6 +44,17 @@ UPDATE = {
     "reader": {}, "operator": {"state_head": {"version"}},
 }
 
+BUSINESS_TABLES = set('business_settings attachments evidence_versions evidence_events restrictions quality_runs pair_versions pair_reviews business_audit business_receipts'.split())
+BUSINESS_READ = BUSINESS_TABLES-{'attachments','business_receipts'}
+BUSINESS_VIEWS = {'attachment_metadata','provenance_metadata','capture_restrictions'}
+TABLES |= BUSINESS_TABLES
+VIEWS |= BUSINESS_VIEWS | set(PROJECTIONS)
+for _role in ('reader','operator'):
+    SELECT[_role] |= BUSINESS_READ | BUSINESS_VIEWS
+SELECT['reader'] |= set(PROJECTIONS)
+SELECT['operator'].add('business_receipts')
+INSERT['operator'] |= BUSINESS_TABLES-{'business_settings'}
+
 
 def _fail(): raise WaveformError("waveform.privilege_unsafe", "Waveform database permissions are unsafe or incomplete")
 
@@ -57,6 +69,7 @@ def _reachable(conn):
 
 def _permissions(conn, role):
     reachable = _reachable(conn)
+    extension_functions = verified_extension_functions(conn, reachable)
     tables = conn.execute("SELECT c.oid,n.nspname,c.relname,c.relowner,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f','S')").fetchall()
     actual = {(schema,name):kind for _,schema,name,_,kind in tables}
     required = {("waveforms",name):"r" for name in TABLES} | {("waveforms",name):"v" for name in VIEWS}
@@ -81,18 +94,22 @@ def _permissions(conn, role):
             if not conn.execute("SELECT has_column_privilege(current_user,%s,%s,'UPDATE')", (oid,column)).fetchone()[0]: _fail()
     functions = conn.execute("SELECT p.oid,n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),p.proowner,p.prosecdef,p.provolatile,p.proparallel,p.proconfig,EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'").fetchall()
     for oid,schema,name,args,owner,definer,volatility,parallel,config,unsafe_acl in functions:
-        permitted = schema=="waveforms" and (
+        permitted = oid in extension_functions or schema=="waveforms" and (
             role=="reader" and name=="audited_raw" and args=="p_fact uuid, p_actor jsonb"
+            or role=="reader" and name=="audited_attachment" and args=="p_id uuid, p_actor jsonb, p_bucket text"
+            or role=="operator" and name=="lock_business_capacity" and args=="p_bucket text"
+            or role=="operator" and name=="lock_business_captures" and args=="p_ids uuid[]"
             or role in {"receiver","operator"} and name=="valid_actor" and args=="actor jsonb")
         if owner in reachable: _fail()
         if schema=="waveforms":
             if owner!=schema_owner or unsafe_acl or config!=["search_path=pg_catalog, pg_temp"]: _fail()
-            if name in {"audited_raw","charge_metadata"} and (not definer or volatility!='v' or parallel!='u'): _fail()
+            if name in {"audited_raw","charge_metadata","charge_business","evidence_event_identity","evidence_identity","quality_identity","lock_business_capacity","lock_business_captures","audited_attachment"} and (not definer or volatility!='v' or parallel!='u'): _fail()
         for identity in reachable:
             if conn.execute("SELECT has_function_privilege(%s,%s,'EXECUTE')", (identity,oid)).fetchone()[0] and not permitted: _fail()
         if permitted and not conn.execute("SELECT has_function_privilege(current_user,%s,'EXECUTE')", (oid,)).fetchone()[0]: _fail()
     if conn.execute("SELECT EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='waveforms' AND t.tgenabled NOT IN ('O','A'))").fetchone()[0]:
         raise WaveformError("waveform.schema_incomplete", "Waveform constraint triggers are disabled")
+    if role=='reader': check_history_views(conn)
 
 
 def probe_role(connect, role: str) -> None:

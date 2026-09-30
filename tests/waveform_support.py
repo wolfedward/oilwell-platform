@@ -28,7 +28,7 @@ LIMITS = CapacityLimits(
     gateways={"GW": Quota(raw_bytes=268435456,facts=25000,attachment_bytes=33554432,
         incomplete_captures=4,orphan_bytes=2097152,quarantine_bytes=4194304,
         metadata_rows=250000,orphan_bytes_per_capture=524288)})
-RESET_TABLES = "observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
+RESET_TABLES = "pair_reviews pair_versions quality_runs restrictions evidence_events evidence_versions attachments business_audit business_receipts observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
 
 
 class WaveformDatabaseCase(unittest.TestCase):
@@ -55,7 +55,7 @@ class WaveformDatabaseCase(unittest.TestCase):
         self.guard.autocommit=True
         self.guard.execute("SET statement_timeout='30s'")
         self.guard.execute("SELECT pg_advisory_lock(%s)",(TEST_LOCK,))
-        migrate(self.settings["migration_owner"],expected_database=TEST_DATABASE,limits=LIMITS)
+        migrate(self.settings["migration_owner"],expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
         with self.connect("migration_owner") as conn:
             grant_roles(conn,roles={role:self.settings[role]["user"] for role in ROLES})
         with self.connect("migration_owner") as conn:
@@ -132,11 +132,16 @@ class WaveformDatabaseCase(unittest.TestCase):
             with self.connect("migration_owner") as conn:
                 self._check_endpoint(conn)
                 conn.execute(sql.SQL("TRUNCATE {}").format(sql.SQL(",").join(sql.Identifier("waveforms", name) for name in RESET_TABLES)))
-                conn.execute("DELETE FROM waveforms.capacity")
+                # Keep immutable business payer binding while varying source quotas.
+                conn.execute("UPDATE waveforms.capacity SET used_raw_bytes=0,reserved_raw_bytes=0,used_facts=0,used_attachment_bytes=0,used_incomplete_captures=0,used_orphan_bytes=0,used_quarantine_bytes=0,used_metadata_rows=0,last_clock_seen=NULL")
+                buckets={'*':configuration.global_quota,**configuration.gateways}
+                buckets.setdefault('GW',LIMITS.gateways['GW'])
+                conn.execute('DELETE FROM waveforms.capacity WHERE NOT (bucket=ANY(%s))',(list(buckets),))
                 names = [field.name for field in fields(Quota)]
-                for bucket, quota in {"*": configuration.global_quota, **configuration.gateways}.items():
-                    conn.execute(sql.SQL("INSERT INTO waveforms.capacity(bucket,{}) VALUES({})").format(
-                        sql.SQL(",").join(map(sql.Identifier, names)), sql.SQL(",").join(sql.Placeholder() for _ in range(9))),
+                for bucket, quota in buckets.items():
+                    conn.execute(sql.SQL("INSERT INTO waveforms.capacity(bucket,{}) VALUES({}) ON CONFLICT(bucket) DO UPDATE SET {}").format(
+                        sql.SQL(",").join(map(sql.Identifier, names)), sql.SQL(",").join(sql.Placeholder() for _ in range(9)),
+                        sql.SQL(',').join(sql.SQL('{}=EXCLUDED.{}').format(sql.Identifier(n),sql.Identifier(n)) for n in names)),
                         (bucket, *(getattr(quota, name) for name in names)))
                 conn.execute("UPDATE waveforms.state_head SET version=1 WHERE singleton=1")
         try:

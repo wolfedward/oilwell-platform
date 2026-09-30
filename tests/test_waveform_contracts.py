@@ -14,6 +14,19 @@ from tests.waveform_vectors import encoded, golden_capture
 
 
 class WaveformContractTests(unittest.TestCase):
+    def test_nullable_config_preserves_unknown_and_opaque_label(self):
+        raw, _ = golden_capture()
+        body = json.loads(raw)
+        for value in (None, 'CFG1'):
+            body['streams'][0]['channels'][0]['config_id'] = value
+            parsed = parse_frame(encoded(body))
+            self.assertEqual(parsed.streams[0].channels[0].config_id, value)
+            self.assertEqual(parsed.body['streams'][0]['channels'][0]['config_id'], value)
+        for value in (0, False, '', 'unknown label'):
+            body['streams'][0]['channels'][0]['config_id'] = value
+            with self.assertRaises(ContractError):
+                parse_frame(encoded(body))
+
     def test_exact_manifest_digest(self):
         raw, chunks = golden_capture()
         self.assertEqual(parse_frame(raw).raw_sha256, sha256(raw).hexdigest())

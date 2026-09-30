@@ -103,7 +103,8 @@ def _channel(body):
     _enum(body["encoding"], {"i32le", "f32le"})
     _enum(body["measurement_source"], {"sensor", "derived", "synthetic", "unknown"})
     _enum(body["signal_kind"], {"instantaneous", "rms", "window_mean", "derived"})
-    require_name(body["config_id"])
+    if body["config_id"] is not None:
+        require_name(body["config_id"])
     return ChannelSpec(body["channel_id"], body["quantity"], body["unit"], body["encoding"],
                        body["measurement_source"], body["signal_kind"], body["config_id"],
                        _optional_uuid(body["calibration_id"]))

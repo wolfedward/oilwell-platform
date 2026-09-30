@@ -146,7 +146,7 @@ class ChannelSpec:
     encoding: str
     measurement_source: str
     signal_kind: str
-    config_id: str
+    config_id: str | None
     calibration_id: UUID | None
 
 

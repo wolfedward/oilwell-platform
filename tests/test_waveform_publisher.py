@@ -115,7 +115,7 @@ class WaveformPublisherTests(OutboxFixture):
         from backend.waveforms.publisher import run_publish
         from tests.waveform_support import LIMITS
         from tests.waveform_stack import Stack
-        limits=CapacityLimits(LIMITS.global_quota,{'A':LIMITS.gateways['GW'],'B':LIMITS.gateways['GW']})
+        limits=CapacityLimits(LIMITS.global_quota,{'A':LIMITS.gateways['GW'],'GW':LIMITS.gateways['GW']})
         stop=threading.Event(); observed=[]; seen=set()
         original=DatabaseConnections.factory
         def factory(manager,role):
@@ -130,14 +130,14 @@ class WaveformPublisherTests(OutboxFixture):
         def event(name,**details):
             if name=='idle':
                 seen.add(details['gateway'])
-                if seen=={'A','B'}: stop.set()
+                if seen=={'A','GW'}: stop.set()
         with self.capacity_fixture(limits), Stack(self,limits=limits) as stack, patch.dict(os.environ,{'TEST_WAVEFORM_MQTT':stack.broker.password}):
             config=replace(load_waveform_config(stack.config,component='publish'),max_db_connections=1)
             timer=threading.Timer(10,stop.set); timer.start()
             try:
                 with patch.object(DatabaseConnections,'factory',factory): run_publish(config,stop,on_event=event)
             finally: timer.cancel(); timer.join()
-        self.assertEqual(seen,{'A','B'})
+        self.assertEqual(seen,{'A','GW'})
         self.assertEqual(max(observed),1)
 
     def test_close_during_connect_prevents_claim_and_uses_owner_cleanup(self):

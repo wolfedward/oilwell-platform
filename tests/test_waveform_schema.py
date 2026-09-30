@@ -32,7 +32,7 @@ class MigrationTargetTests(unittest.TestCase):
             def fetchone(self): return ("not_the_requested_database",)
         with patch("backend.waveforms.migrate.psycopg.connect", return_value=Connection()):
             with self.assertRaises(WaveformError) as caught:
-                migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)
+                migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
         self.assertEqual(caught.exception.code, "waveform.migration_target")
 
     def test_capacity_requires_explicit_consistent_buckets(self):
@@ -69,7 +69,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
             with patch.object(migration.psycopg, "connect", return_value=BorrowedConnection()):
                 if v1:
                     with patch.object(migration, "MIGRATIONS", migration.MIGRATIONS[:1]):
-                        migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)
+                        migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
                 yield conn
         finally:
             conn.rollback()
@@ -92,9 +92,9 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                     before = conn.execute("SELECT * FROM waveforms.facts").fetchall()
                     outcomes = conn.execute("SELECT * FROM waveforms.message_outcomes").fetchall()
                     with self.assertRaises(WaveformError): migration.check_schema(conn, expected_database=TEST_DATABASE)
-                self.assertTrue(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)["applied"])
-                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "2")
-                self.assertFalse(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)["applied"])
+                self.assertTrue(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
+                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "3")
+                self.assertFalse(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
                 if v1:
                     self.assertEqual(conn.execute("SELECT * FROM waveforms.schema_migrations WHERE version=1").fetchall(), history)
                     self.assertEqual(conn.execute("SELECT * FROM waveforms.facts").fetchall(), before)
@@ -107,7 +107,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
             history = conn.execute("SELECT * FROM waveforms.schema_migrations").fetchall()
             structure = migration.structure_digest(conn)
             with self.assertRaises(WaveformError) as caught:
-                migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)
+                migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
             self.assertEqual(caught.exception.code, "waveform.legacy_imports")
             self.assertEqual(conn.execute("SELECT * FROM waveforms.imports").fetchall(), before)
             self.assertEqual(conn.execute("SELECT * FROM waveforms.schema_migrations").fetchall(), history)
@@ -123,12 +123,12 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                 conn.execute(mutation)
                 if mutation.startswith("UPDATE waveforms.schema_migrations"):
                     conn.execute("ALTER TABLE waveforms.schema_migrations ENABLE TRIGGER immutable_content")
-                with self.assertRaises(WaveformError): migrate({}, expected_database=TEST_DATABASE, limits=LIMITS)
+                with self.assertRaises(WaveformError): migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
                 self.assertIsNone(conn.execute("SELECT to_regclass('waveforms.import_events')").fetchone()[0])
 
     def test_failed_pending_chain_rolls_back_real_production_transaction(self):
         # This uses the actual connect/commit/rollback implementation, unlike
-        # migration_sandbox. Inject a future pending stage after validated002.
+        # migration_sandbox. Inject a future pending stage after validated003.
         before = self.scalar("SELECT json_agg(t ORDER BY version) FROM waveforms.schema_migrations t", role="migration_owner")
         fact = self.insert_fact(payload=b"synthetic failure preservation")
         source = migration._source
@@ -137,9 +137,9 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                 text = "CREATE TABLE waveforms.task9_must_rollback(id int); SELECT task9_missing_function();"
                 return text, sha256(text.encode()).hexdigest()
             return source(filename)
-        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (3,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
+        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (4,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
             with self.assertRaises(WaveformError):
-                migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS)
+                migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
         self.assertIsNone(self.scalar("SELECT to_regclass('waveforms.task9_must_rollback')", role="migration_owner"))
         self.assertEqual(self.scalar("SELECT json_agg(t ORDER BY version) FROM waveforms.schema_migrations t", role="migration_owner"), before)
         self.assertEqual(self.scalar("SELECT raw_payload FROM waveforms.facts WHERE fact_id=%s", (fact,), role="receiver"), b"synthetic failure preservation")
@@ -147,7 +147,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
     def test_migration_idempotent(self):
         fact = self.insert_fact(payload=b" exact bytes \n")
         for _ in range(2):
-            result = migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS)
+            result = migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
             self.assertFalse(result["applied"])
         self.assertEqual(self.scalar("SELECT raw_payload FROM waveforms.facts WHERE fact_id=%s", (fact,), role="receiver"),
                          b" exact bytes \n")
@@ -218,7 +218,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
     def test_configuration_change_not_silently_overwritten(self):
         with self.assertRaises(WaveformError):
             migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE,
-                    limits=CapacityLimits(global_quota=replace(LIMITS.global_quota, facts=100001), gateways=dict(LIMITS.gateways)))
+                    limits=CapacityLimits(global_quota=replace(LIMITS.global_quota, facts=100001), gateways=dict(LIMITS.gateways)), shared_accounting_bucket='GW')
 
     def test_orphan_candidates_cannot_take_wrong_manifest_slot(self):
         capture=self.insert_capture()

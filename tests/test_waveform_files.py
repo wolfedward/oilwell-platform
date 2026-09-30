@@ -15,6 +15,21 @@ from tests.waveform_vectors import golden_capture
 
 
 class WaveformFileTests(unittest.TestCase):
+    def test_nullable_config_file_preserves_exact_bytes(self):
+        manifest = json.loads(self.manifest)
+        manifest['streams'][0]['channels'][0]['config_id'] = None
+        raw = json.dumps(manifest, separators=(',', ':')).encode()
+        digest = sha256(raw).hexdigest()
+        chunks = []
+        for chunk in self.chunks:
+            body = json.loads(chunk)
+            body['manifest_sha256'] = digest
+            chunks.append(json.dumps(body, separators=(',', ':')).encode())
+        contents = b'\n'.join((raw, *chunks))
+        result = scan_file(BytesIO(contents))
+        self.assertEqual(result.manifest_sha256, digest)
+        self.assertEqual(tuple(iter_file_frames(BytesIO(contents)))[0], raw)
+
     @classmethod
     def setUpClass(cls):
         cls.manifest, cls.chunks = golden_capture()

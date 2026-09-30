@@ -83,24 +83,24 @@ class WaveformConsumerTests(WaveformDatabaseCase):
         limits = replace(LIMITS, gateways={"GW": replace(LIMITS.gateways["GW"], facts=1)})
         with self.assertRaises(WaveformError): consumer.check_component(replace(config, limits=limits))
 
-    def test_gateway_a_backpressure_does_not_disconnect_b(self):
+    def test_gateway_a_backpressure_does_not_disconnect_business_gateway(self):
         from dataclasses import replace
         from backend.waveforms import consumer
         self.assertTrue(hasattr(consumer, "run_receive"), "gateway owner loops are required")
         from tests.waveform_stack import Stack
         limits = replace(LIMITS, gateways={"A": replace(LIMITS.gateways["GW"], incomplete_captures=1),
-                                          "B": LIMITS.gateways["GW"]})
+                                          "GW": LIMITS.gateways["GW"]})
         with self.capacity_fixture(limits), Stack(self, limits=limits) as stack:
             stack.launch("receive")
             stack.await_event("receive", "subscribed", gateway="A")
-            stack.await_event("receive", "subscribed", gateway="B")
+            stack.await_event("receive", "subscribed", gateway="GW")
             stack.publish("A", capture("A")[0])
             stack.await_count("facts", 1)
             stack.publish("A", capture("A")[0])
             stack.await_event("receive", "retry", gateway="A")
-            for _ in range(3): stack.publish("B", capture("B")[0])
+            for _ in range(3): stack.publish("GW", capture("GW")[0])
             stack.await_count("facts", 4)
-            self.assertEqual(len(stack.events("receive", "subscribed", gateway="B")), 1)
+            self.assertEqual(len(stack.events("receive", "subscribed", gateway="GW")), 1)
             stack.stop("receive")
             self.assertEqual(stack.processes["receive"].returncode, 0)
 
@@ -155,16 +155,16 @@ class WaveformConsumerTests(WaveformDatabaseCase):
         from dataclasses import replace
         from tests.waveform_stack import Stack
         from tests.test_waveform_repository import observation
-        limits = replace(LIMITS, gateways={"A": LIMITS.gateways["GW"], "B": LIMITS.gateways["GW"]})
+        limits = replace(LIMITS, gateways={"A": LIMITS.gateways["GW"], "GW": LIMITS.gateways["GW"]})
         with self.capacity_fixture(limits), Stack(self, limits=limits) as stack:
-            for gateway in ("A", "A", "A", "B"):
+            for gateway in ("A", "A", "A", "GW"):
                 repo = WaveformRepository(self.connect, limits=limits, prefix="oil", ingress_gateway_id=gateway)
                 for payload in capture(gateway): repo.ingest(observation(payload, gateway=gateway))
             stack.sections["waveforms"]["assembly_workers"] = 1
             stack.save_config()
             stack.launch("assemble")
             stack.await_count("completion", 4, role="assembler")
-            self.assertEqual([item["gateway"] for item in stack.events("assemble", "completed")][:2], ["A", "B"])
+            self.assertEqual([item["gateway"] for item in stack.events("assemble", "completed")][:2], ["A", "GW"])
 
     def test_stopped_connection_factory_never_opens_another_connection(self):
         from backend.waveforms.consumer import DatabaseConnections
@@ -387,9 +387,9 @@ class WaveformConsumerTests(WaveformDatabaseCase):
         from dataclasses import replace
         from tests.waveform_stack import Stack
         from tests.test_waveform_repository import observation
-        limits = replace(LIMITS, gateways={"A": LIMITS.gateways["GW"], "B": LIMITS.gateways["GW"]})
+        limits = replace(LIMITS, gateways={"A": LIMITS.gateways["GW"], "GW": LIMITS.gateways["GW"]})
         with self.capacity_fixture(limits), Stack(self, limits=limits) as stack:
-            for gateway in ("A", "B"):
+            for gateway in ("A", "GW"):
                 repo = WaveformRepository(self.connect, limits=limits, prefix="oil", ingress_gateway_id=gateway)
                 for payload in capture(gateway): repo.ingest(observation(payload, gateway=gateway))
             stack.launch("assemble", fault="concurrent_renewals")

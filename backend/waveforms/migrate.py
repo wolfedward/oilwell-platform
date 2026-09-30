@@ -6,13 +6,14 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 from .config import CapacityLimits, Quota
+from .contracts import valid_name
 from .errors import WaveformError
 
 SQL_DIR = Path(__file__).with_name("sql")
 MIGRATION_LOCK = 499001212
 ROLES = {"migration_owner", "receiver", "assembler", "receipt_publisher", "reader", "operator"}
 RUNTIME_ROLES = ROLES - {"migration_owner"}
-MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"))
+MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"), (3, "003_evidence.sql"))
 
 
 def _fail(code, message): raise WaveformError("waveform."+code, message)
@@ -68,11 +69,13 @@ def _capacity_rows(limits):
             for bucket,quota in sorted({"*": limits.global_quota, **limits.gateways}.items())]
 
 
-def migrate(settings, *, expected_database: str, limits: CapacityLimits) -> dict:
+def migrate(settings, *, expected_database: str, limits: CapacityLimits, shared_accounting_bucket=None) -> dict:
     if type(limits) is not CapacityLimits: _fail("capacity_missing", "Explicit validated capacities are required")
     try:
         with psycopg.connect(**(settings | {"connect_timeout": 3})) as conn:
             _target(conn, expected_database)  # Must be the first database statement.
+            if not valid_name(shared_accounting_bucket) or shared_accounting_bucket not in limits.gateways:
+                _fail('business_payer_missing', 'Explicit configured business payer is required')
             conn.execute("SET LOCAL lock_timeout='1s'")
             conn.execute("SET LOCAL statement_timeout='10s'")
             conn.execute("SET LOCAL search_path=pg_catalog,pg_temp")
@@ -82,6 +85,9 @@ def migrate(settings, *, expected_database: str, limits: CapacityLimits) -> dict
                 rows = _history(conn, complete=False)
                 existing = conn.execute(sql.SQL("SELECT {} FROM waveforms.capacity ORDER BY bucket").format(columns)).fetchall()
                 if existing != _capacity_rows(limits): _fail("capacity_mismatch", "Existing capacity configuration differs; no automatic overwrite")
+                if len(rows)>=3:
+                    binding=conn.execute('SELECT accounting_bucket FROM waveforms.business_settings WHERE singleton=1').fetchone()
+                    if binding!=(shared_accounting_bucket,): _fail('business_payer_mismatch','Persisted business payer differs')
             else:
                 rows = []
             # Refuse legacy imports before any pending DDL. Do not infer metadata.
@@ -94,6 +100,8 @@ def migrate(settings, *, expected_database: str, limits: CapacityLimits) -> dict
                 if version==1:
                     for row in _capacity_rows(limits):
                         conn.execute(sql.SQL("INSERT INTO waveforms.capacity({}) VALUES ({})").format(columns,sql.SQL(",").join(sql.Placeholder() for _ in row)),row)
+                if version==3:
+                    conn.execute('INSERT INTO waveforms.business_settings(singleton,accounting_bucket) VALUES(1,%s)',(shared_accounting_bucket,))
                 conn.execute("INSERT INTO waveforms.schema_migrations(version,sha256,structure_sha256) VALUES(%s,%s,%s)", (version,digest,structure_digest(conn)))
             version, filename = MIGRATIONS[-1]
             result = dict(version=str(version),sha256=_source(filename)[1],applied=applied)

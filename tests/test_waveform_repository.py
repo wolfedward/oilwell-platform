@@ -50,6 +50,15 @@ def capture_512():
 
 
 class WaveformRepositoryTests(WaveformDatabaseCase):
+    def test_online_unknown_config_is_preserved_as_null(self):
+        body=json.loads(capture()[0])
+        body['streams'][0]['channels'][0]['config_id']=None
+        raw=encoded(body)
+        stored=self.repo().ingest(observation(raw))
+        self.assertEqual(stored.status,'stored')
+        self.assertEqual(self.scalar('SELECT raw_payload FROM waveforms.facts WHERE fact_id=%s',(stored.fact_id,),role='receiver'),raw)
+        self.assertIsNone(self.scalar("SELECT specification->'channels'->0->'config_id' FROM waveforms.streams",role='receiver'))
+
     def repo(self, **kwargs):
         from backend.waveforms.repository import WaveformRepository
         return WaveformRepository(kwargs.pop("connect", self.connect), limits=kwargs.pop("limits", LIMITS),

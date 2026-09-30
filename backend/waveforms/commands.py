@@ -99,3 +99,37 @@ def lock_import_guard(cursor, kind, *identity):
                          separators=(",", ":")).encode("utf-8")
     number = int.from_bytes(sha256(encoded).digest()[:8], "big", signed=True)
     cursor.execute("SELECT pg_advisory_xact_lock(%s)", (number,))
+
+
+def evidence_request_hash(operation, target, command, *, kind=None, body=None,
+                          decision=None, attachment=None):
+    """Fixed business commands, independently bound to validated actual content."""
+    from .evidence_contracts import validate_body, canonical_bytes
+    if type(command) is not Command or operation not in {'create','review','revoke','upload'}:
+        raise ContractError('contract_invalid')
+    if operation in {'create','upload'}:
+        if target is not None or command.expected_version!=0: raise ContractError('contract_invalid')
+    elif type(target) is not UUID or command.expected_version<1: raise ContractError('contract_invalid')
+    if operation=='create':
+        if decision is not None or attachment is not None: raise ContractError('contract_invalid')
+        content={'kind':kind,'body':validate_body(kind,body)}
+    elif operation=='upload':
+        if any(v is not None for v in (kind,body,decision)): raise ContractError('contract_invalid')
+        require_fields(attachment, ('media_type','payload_bytes','payload_sha256'))
+        if attachment['media_type'] not in ('application/pdf','image/png','image/jpeg'): raise ContractError('contract_invalid')
+        require_count(attachment['payload_bytes'], minimum=1, maximum=4194304)
+        require_sha(attachment['payload_sha256']); content=dict(attachment)
+    else:
+        if any(v is not None for v in (kind,body,attachment)): raise ContractError('contract_invalid')
+        if operation=='review':
+            if decision not in ('approve','reject'): raise ContractError('contract_invalid')
+            content={'decision':decision}
+        else:
+            if decision is not None: raise ContractError('contract_invalid')
+            content={}
+    envelope={'protocol':'waveform.business-command/1',
+        'operation':'attachments.upload' if operation=='upload' else 'evidence.'+operation,
+        'target':str(target) if target is not None else None,
+        'actor':{'domain':command.actor.domain,'user_id':command.actor.user_id},
+        'expected_version':str(command.expected_version),'reason':command.reason,'body':content}
+    return sha256(canonical_bytes(envelope)).hexdigest()

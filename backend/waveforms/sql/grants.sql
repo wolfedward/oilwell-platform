@@ -40,3 +40,16 @@ GRANT UPDATE(last_seen,last_success,last_failure,error_code) ON waveforms.worker
 GRANT SELECT ON waveforms.state_head TO {operator};
 GRANT SELECT,INSERT ON waveforms.operation_receipts TO {operator};
 GRANT INSERT ON waveforms.audit TO {operator};
+
+GRANT SELECT ON waveforms.business_settings,waveforms.evidence_versions,waveforms.evidence_events,
+    waveforms.restrictions,waveforms.quality_runs,waveforms.pair_versions,waveforms.pair_reviews,
+    waveforms.attachment_metadata,waveforms.provenance_metadata,waveforms.capture_restrictions,
+    waveforms.business_audit TO {reader},{operator};
+GRANT SELECT ON waveforms.business_receipts TO {operator};
+GRANT INSERT ON waveforms.attachments,waveforms.evidence_versions,waveforms.evidence_events,
+    waveforms.restrictions,waveforms.quality_runs,waveforms.pair_versions,waveforms.pair_reviews,
+    waveforms.business_audit,waveforms.business_receipts TO {operator};
+GRANT SELECT ON waveforms.registry_devices,waveforms.registry_device_states,waveforms.registry_well_bindings,
+    waveforms.registry_wells,waveforms.registry_head TO {reader};
+GRANT EXECUTE ON FUNCTION waveforms.lock_business_capacity(TEXT),waveforms.lock_business_captures(UUID[]) TO {operator};
+GRANT EXECUTE ON FUNCTION waveforms.audited_attachment(UUID,JSONB,TEXT) TO {reader};
