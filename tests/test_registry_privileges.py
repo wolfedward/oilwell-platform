@@ -197,14 +197,19 @@ class RegistryPrivilegeTests(RegistryDatabaseCase):
         role = sql.Identifier(self.settings["reader"]["user"])
         with self.changed(sql.SQL("GRANT UPDATE(name) ON device_registry.wells TO {}").format(role),
                           sql.SQL("REVOKE UPDATE(name) ON device_registry.wells FROM {}").format(role)):
-            runtime = self.runtime.build_registry_runtime(self.runtime_config())
+            with self.assertLogs('backend.registry.runtime',level='WARNING') as captured:
+                runtime = self.runtime.build_registry_runtime(self.runtime_config())
+            self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.privilege_unsafe'])
             self.assertEqual((runtime.status, runtime.code), ("unavailable", "registry.privilege_unsafe"))
             self.assertIsNone(runtime.service)
             self.assertIsNone(runtime.query)
 
     def test_runtime_connection_failure_is_sanitized_and_isolated(self):
-        runtime = self.runtime.build_registry_runtime(self.runtime_config(port=1))
+        with self.assertLogs('backend.registry.runtime',level='WARNING') as captured:
+            runtime = self.runtime.build_registry_runtime(self.runtime_config(port=1))
+        self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.connection_unavailable'])
         self.assertEqual((runtime.status, runtime.code), ("unavailable", "registry.connection_unavailable"))
         self.assertIsNone(runtime.service)
         for settings in self.settings.values():
             self.assertNotIn(settings["password"], repr(runtime))
+            self.assertNotIn(settings["password"], ''.join(captured.output))

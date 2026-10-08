@@ -49,7 +49,7 @@ class MigrationTargetTests(unittest.TestCase):
 
 class WaveformSchemaTests(WaveformDatabaseCase):
     @contextmanager
-    def migration_sandbox(self, *, v1=False):
+    def migration_sandbox(self, *, v1=False, version=None):
         """Real DDL in a rollback-only transaction; not commit evidence.
 
         setUp has already verified pinned cluster ownership and holds the reset
@@ -67,8 +67,8 @@ class WaveformSchemaTests(WaveformDatabaseCase):
         try:
             conn.execute("ALTER SCHEMA waveforms RENAME TO task9_held_waveforms")
             with patch.object(migration.psycopg, "connect", return_value=BorrowedConnection()):
-                if v1:
-                    with patch.object(migration, "MIGRATIONS", migration.MIGRATIONS[:1]):
+                if v1 or version is not None:
+                    with patch.object(migration, "MIGRATIONS", migration.MIGRATIONS[:1 if v1 else version]):
                         migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
                 yield conn
         finally:
@@ -78,6 +78,60 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                 self.assertEqual(check.execute("SELECT * FROM waveforms.facts ORDER BY fact_id").fetchall(), facts)
                 self.assertEqual(migration.structure_digest(check), structure)
                 self.assertIsNone(check.execute("SELECT to_regnamespace('task9_held_waveforms')").fetchone()[0])
+
+    def test_portable_index_digest_preserves_legacy_and_rejects_definition_name_flags(self):
+        with self.migration_sandbox(version=4) as conn:
+            legacy=migration.structure_digest(conn)
+            definition,old_oid=conn.execute("SELECT pg_get_indexdef(oid),oid FROM pg_class WHERE oid='waveforms.import_creator_open'::regclass").fetchone()
+            conn.execute('SAVEPOINT old_order')
+            conn.execute('DROP INDEX waveforms.import_creator_open'); conn.execute(definition)
+            self.assertNotEqual(conn.execute("SELECT oid FROM pg_class WHERE oid='waveforms.import_creator_open'::regclass").fetchone()[0],old_oid)
+            self.assertNotEqual(migration.structure_digest(conn),legacy,'Legacy OID ordering discrepancy must actually reproduce')
+            conn.execute('ROLLBACK TO SAVEPOINT old_order')
+            portable=migration.structure_digest(conn,migration_version=5)
+            self.assertEqual(migration.structure_digest(conn,migration_version=4),legacy)
+            conn.execute('DROP INDEX waveforms.import_creator_open'); conn.execute(definition)
+            self.assertEqual(migration.structure_digest(conn,migration_version=5),portable)
+            for mutation in ('ALTER INDEX waveforms.import_creator_open RENAME TO changed_name',
+                'ALTER INDEX waveforms.import_creator_open SET (fillfactor=80)',
+                'DROP INDEX waveforms.import_creator_open; CREATE INDEX import_creator_open ON waveforms.imports(import_id)'):
+                conn.execute('SAVEPOINT mutation'); conn.execute(mutation)
+                self.assertNotEqual(migration.structure_digest(conn,migration_version=5),portable)
+                conn.execute('ROLLBACK TO SAVEPOINT mutation')
+
+    def test_populated_v4_upgrade_appends_portable_history_without_rebaselining(self):
+        with self.migration_sandbox(version=4) as conn:
+            raw=b'exact populated v4 before portable migration'; fact=uuid4()
+            conn.execute("INSERT INTO waveforms.facts(fact_id,intake_gateway_id,raw_payload,payload_sha256,payload_bytes,received_at) VALUES(%s,'GW',%s,%s,%s,CURRENT_TIMESTAMP)",(fact,raw,sha256(raw).hexdigest(),len(raw)))
+            before=conn.execute('SELECT * FROM waveforms.schema_migrations ORDER BY version').fetchall()
+            facts=conn.execute('SELECT * FROM waveforms.facts').fetchall()
+            self.assertEqual(before[-1][2],migration.structure_digest(conn))
+            with self.assertRaises(WaveformError): migration.check_schema(conn,expected_database=TEST_DATABASE)
+            self.assertTrue(migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')['applied'])
+            self.assertEqual(migration.check_schema(conn,expected_database=TEST_DATABASE)['version'],'5')
+            self.assertEqual(conn.execute('SELECT * FROM waveforms.schema_migrations WHERE version<=4 ORDER BY version').fetchall(),before)
+            self.assertEqual(conn.execute('SELECT * FROM waveforms.facts').fetchall(),facts)
+            self.assertFalse(migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')['applied'])
+            self.assertEqual(conn.execute('SELECT structure_sha256 FROM waveforms.schema_migrations WHERE version=5').fetchone()[0],migration.structure_digest(conn,migration_version=5))
+
+    def test_tampered_v4_refuses_append5_and_failed_append5_rolls_back(self):
+        with self.migration_sandbox(version=4) as conn:
+            before=conn.execute('SELECT * FROM waveforms.schema_migrations ORDER BY version').fetchall()
+            conn.execute('SAVEPOINT tamper'); conn.execute('ALTER TABLE waveforms.facts ADD COLUMN unapproved int')
+            with self.assertRaises(WaveformError): migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
+            self.assertEqual(conn.execute('SELECT * FROM waveforms.schema_migrations ORDER BY version').fetchall(),before)
+            conn.execute('ROLLBACK TO SAVEPOINT tamper')
+            source=migration._source
+            def broken(filename='001_capture.sql'):
+                if filename=='005_portable_structure.sql':
+                    text='CREATE TABLE waveforms.append5_must_rollback(id int); SELECT missing_append5_function();'
+                    return text,sha256(text.encode()).hexdigest()
+                return source(filename)
+            with patch.object(migration,'_source',side_effect=broken):
+                with self.assertRaises(WaveformError),conn.transaction():
+                    migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
+            self.assertIsNone(conn.execute("SELECT to_regclass('waveforms.append5_must_rollback')").fetchone()[0])
+            self.assertEqual(conn.execute('SELECT * FROM waveforms.schema_migrations ORDER BY version').fetchall(),before)
 
     def test_fresh_chain_and_populated_v1_preserve_history_and_bytes(self):
         for v1 in (False, True):
@@ -93,7 +147,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                     outcomes = conn.execute("SELECT * FROM waveforms.message_outcomes").fetchall()
                     with self.assertRaises(WaveformError): migration.check_schema(conn, expected_database=TEST_DATABASE)
                 self.assertTrue(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
-                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "4")
+                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "5")
                 self.assertFalse(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
                 if v1:
                     self.assertEqual(conn.execute("SELECT * FROM waveforms.schema_migrations WHERE version=1").fetchall(), history)
@@ -128,7 +182,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
 
     def test_failed_pending_chain_rolls_back_real_production_transaction(self):
         # This uses the actual connect/commit/rollback implementation, unlike
-        # migration_sandbox. Inject a future pending stage after validated004.
+        # migration_sandbox. Inject a future pending stage after the current chain.
         before = self.scalar("SELECT json_agg(t ORDER BY version) FROM waveforms.schema_migrations t", role="migration_owner")
         fact = self.insert_fact(payload=b"synthetic failure preservation")
         source = migration._source
@@ -137,7 +191,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                 text = "CREATE TABLE waveforms.task9_must_rollback(id int); SELECT task9_missing_function();"
                 return text, sha256(text.encode()).hexdigest()
             return source(filename)
-        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (5,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
+        with patch.object(migration, "MIGRATIONS", (*migration.MIGRATIONS, (migration.MIGRATIONS[-1][0]+1,"task9_failure.sql"))), patch.object(migration, "_source", side_effect=broken):
             with self.assertRaises(WaveformError):
                 migrate(self.settings["migration_owner"], expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')
         self.assertIsNone(self.scalar("SELECT to_regclass('waveforms.task9_must_rollback')", role="migration_owner"))

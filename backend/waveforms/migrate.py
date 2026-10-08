@@ -13,7 +13,7 @@ SQL_DIR = Path(__file__).with_name("sql")
 MIGRATION_LOCK = 499001212
 ROLES = {"migration_owner", "receiver", "assembler", "receipt_publisher", "reader", "operator"}
 RUNTIME_ROLES = ROLES - {"migration_owner"}
-MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"), (3, "003_evidence.sql"), (4, "004_datasets.sql"))
+MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"), (3, "003_evidence.sql"), (4, "004_datasets.sql"), (5, "005_portable_structure.sql"))
 
 
 def _fail(code, message): raise WaveformError("waveform."+code, message)
@@ -31,8 +31,14 @@ def _source(filename="001_capture.sql"):
     return source, hashlib.sha256(source.encode()).hexdigest()
 
 
-def structure_digest(conn):
-    """Fingerprint definitions; ACL/owners and internal triggers are probed separately."""
+def structure_digest(conn, *, migration_version=4):
+    """Version1–4 keep their exact OID order; version5+ use portable index names.
+
+    The default preserves the legacy public helper contract. History callers
+    explicitly select the recorded version. ACL/owners remain separate probes.
+    """
+    if type(migration_version) is not int or migration_version<1:
+        raise ValueError('Positive migration version required')
     queries = (
         "SELECT c.relname,c.relkind,c.relrowsecurity,c.relforcerowsecurity,c.reloptions FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='waveforms' ORDER BY c.relname",
         "SELECT c.relname,a.attnum,a.attname,format_type(a.atttypid,a.atttypmod),a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid,true) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname='waveforms' AND a.attnum>0 AND NOT a.attisdropped ORDER BY c.relname,a.attnum",
@@ -42,6 +48,8 @@ def structure_digest(conn):
         "SELECT c.relname,pg_get_viewdef(c.oid,true) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='waveforms' AND c.relkind='v' ORDER BY c.relname",
         "SELECT p.proname,pg_get_function_identity_arguments(p.oid),pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='waveforms' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)",
     )
+    if migration_version>=5:
+        queries=queries[:4]+("SELECT c.relname,i.indisvalid,i.indisready,i.indislive,pg_get_indexdef(i.indexrelid) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_class ix ON ix.oid=i.indexrelid JOIN pg_namespace ixn ON ixn.oid=ix.relnamespace WHERE n.nspname='waveforms' ORDER BY n.nspname,c.relname,ixn.nspname,ix.relname",)+queries[5:]
     parts = [conn.execute(query).fetchall() for query in queries]
     return hashlib.sha256(json.dumps(parts, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
@@ -54,7 +62,7 @@ def _history(conn, *, complete):
     if (not rows or len(rows)>len(expected) or complete and len(rows)!=len(expected)
             or [row[:2] for row in rows] != expected[:len(rows)]):
         _fail("schema_mismatch", "Waveform migration history differs")
-    if rows[-1][2] != structure_digest(conn): _fail("schema_incomplete", "Waveform schema protections differ")
+    if rows[-1][2] != structure_digest(conn,migration_version=rows[-1][0]): _fail("schema_incomplete", "Waveform schema protections differ")
     return rows
 
 
@@ -102,7 +110,7 @@ def migrate(settings, *, expected_database: str, limits: CapacityLimits, shared_
                         conn.execute(sql.SQL("INSERT INTO waveforms.capacity({}) VALUES ({})").format(columns,sql.SQL(",").join(sql.Placeholder() for _ in row)),row)
                 if version==3:
                     conn.execute('INSERT INTO waveforms.business_settings(singleton,accounting_bucket) VALUES(1,%s)',(shared_accounting_bucket,))
-                conn.execute("INSERT INTO waveforms.schema_migrations(version,sha256,structure_sha256) VALUES(%s,%s,%s)", (version,digest,structure_digest(conn)))
+                conn.execute("INSERT INTO waveforms.schema_migrations(version,sha256,structure_sha256) VALUES(%s,%s,%s)", (version,digest,structure_digest(conn,migration_version=version)))
             version, filename = MIGRATIONS[-1]
             result = dict(version=str(version),sha256=_source(filename)[1],applied=applied)
         return result

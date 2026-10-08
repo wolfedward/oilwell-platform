@@ -248,7 +248,7 @@ class Calibration:
     """Pinned affine conversion; review restrictions never rewrite source flags."""
     def __init__(self,frame,stream,channel,evidence,first,last):
         self.channel=channel; self.stream=stream; self.frame=frame
-        self.reasons=set(); self.scale=self.offset=self.correction=None; self.range=None
+        self.reasons=set(); self.scale=self.offset=self.correction=None; self.range=None; self._range_bounds=None
         self.calibration=evidence.get(str(channel.calibration_id))
         cal=self.calibration
         self.config=evidence.get(cal.body['sampling_config_version_id']) if cal and cal.kind=='calibration' else None
@@ -267,6 +267,7 @@ class Calibration:
             self.reasons.add('unknown_calibration'); return
         self.scale=decimal_value(b['scale']); self.offset=decimal_value(b['offset']); self.correction=int(b['time_correction_ns'])
         self.range=b['calibrated_range']
+        if self.range: self._range_bounds=(decimal_value(self.range['min']),decimal_value(self.range['max']))
         if self.range and self.range['unit']!=channel.unit: self.reasons.add('unknown_units')
         if any(b[k] is None or b[k]=='' for k in ('calibrated_range','measurement_uncertainty','method','basis','direction','residual_ns')):
             self.reasons.add('unknown_calibration')
@@ -292,7 +293,7 @@ class Calibration:
         value=Fraction(raw)*self.scale+self.offset
         if finite_float(value) is None:
             self.reasons.add('engineering_nonfinite'); return None,'engineering_nonfinite'
-        if self.range and (value<decimal_value(self.range['min']) or value>decimal_value(self.range['max'])): self.reasons.add('out_of_range')
+        if self._range_bounds and (value<self._range_bounds[0] or value>self._range_bounds[1]): self.reasons.add('out_of_range')
         return value,None
 
     def metadata(self):

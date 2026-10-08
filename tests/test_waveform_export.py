@@ -27,6 +27,102 @@ class ExportContractTests(unittest.TestCase):
 
 
 class ExportDatabaseTests(DatasetCase):
+    def test_open_uses_one_snapshot_reader_and_closes_before_live_recheck(self):
+        from backend.waveforms.commands import Actor
+        from backend.waveforms.errors import WaveformError
+        from backend.waveforms.pair_contracts import capture_key
+        service,version,vector=self.frozen(two=True); exporter=self.exporter()
+        actor=Actor('local','open-reader','Open reader','admin')
+        body,command=self.export_command(version.id,'research',actor); record=exporter.create(body,command)
+        readers=[]; operators=[]; open_readers=[]; reader=exporter._read_connect; operator=exporter._connect
+        def observed_reader():
+            connection=reader(); readers.append(connection); return connection
+        def observed_operator():
+            self.assertTrue(all(c.closed for c in readers),'Reader survived into operator guard')
+            open_readers.append(len(readers))
+            connection=operator(); operators.append(connection); return connection
+        exporter._read_connect=observed_reader; exporter._connect=observed_operator
+        context=exporter.open(record.id,actor=actor)
+        self.assertEqual(open_readers,[1],'Actor/export/version/members must use one physical reader')
+        self.assertEqual(len(readers),2,'The independent live registry reader remains required for this pair')
+        self.assertEqual(len(operators),1); self.assertTrue(all(c.closed for c in readers+operators))
+        key=capture_key(vector['selection']['captures'][0]['key'])
+        self.assertEqual(b''.join(context.stream_capture(key)),b'\n'.join(vector['wire_captures'][0])+b'\n')
+        with self.assertRaises(WaveformError) as denied:
+            exporter.open(record.id,actor=Actor('local','other','Other','admin'))
+        self.assertEqual(denied.exception.code,'waveform.dataset_export_actor')
+        context=exporter.open(record.id,actor=actor)
+        calibration=UUID(vector['selection']['channels'][-1]['calibration']['id'])
+        vector['evidence_service'].revoke(calibration,vector['evidence_command']('revoke',calibration,2))
+        before=self.scalar("SELECT count(*) FROM waveforms.business_audit WHERE action='exports.download'")
+        with self.assertRaises(WaveformError) as revoked: next(context.stream_manifest())
+        self.assertEqual(revoked.exception.code,'waveform.dataset_export_denied')
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.business_audit WHERE action='exports.download'"),before)
+        self.assertTrue(context._closed); self.assertTrue(all(c.closed for c in readers+operators))
+
+    def test_raw_archive_metadata_queries_are_batched_without_changing_bytes(self):
+        import tempfile
+        import psycopg
+        from pathlib import Path
+        from unittest.mock import patch
+        from tests.waveform_resource_scenarios import prepare_members
+        from tests.waveform_pairing_support import REVIEWER
+        from backend.waveforms.wire import parse_frame
+        with tempfile.TemporaryDirectory() as root:
+            members=prepare_members(self,root,count=3); service=self.dataset_service()
+            originals=[Path(root,f'reference-{n}.owpwave').read_bytes() for n in range(3)]
+        body=dict(title='Batch metadata',purpose='raw_archive',split_plan=dict(kind='none'))
+        draft=service.create(body,self.command('create',body=body))
+        body=dict(target_id=str(draft.id),changes=dict(upsert_members=members))
+        draft=service.update(body,self.command('update',draft.id,draft.revision,body=body)); body=dict(target_id=str(draft.id))
+        draft=service.submit(body,self.command('submit',draft.id,draft.revision,body=body))
+        version=service.freeze(body,self.command('freeze',draft.id,draft.revision,REVIEWER,body=body))
+        counts=[]; execute=psycopg.Cursor.execute
+        def counted(cur,*args,**kwargs): counts.append(1); return execute(cur,*args,**kwargs)
+        with self.connect('reader') as conn:
+            with patch.object(psycopg.Cursor,'execute',counted): prepared=service.load_prepared(conn.cursor(),version.id)
+        load_count=len(counts); counts.clear()
+        with self.connect('operator') as conn:
+            cur=conn.cursor(); service._guard(cur)
+            with patch.object(psycopg.Cursor,'execute',counted): reasons=service.recheck_dataset(cur,prepared,strict=False)
+            conn.rollback()
+        recheck_count=len(counts)
+        self.assertEqual({c['member']['reference_id'] for c in prepared['certificates']},{m['reference_id'] for m in members})
+        self.assertEqual(reasons,('quality_pending','registry_unresolved'))
+        exporter=self.exporter(); body,cmd=self.export_command(version.id,'evidence',REVIEWER); record=exporter.create(body,cmd)
+        first=b''.join(exporter.open(record.id,actor=REVIEWER).stream_manifest())
+        self.assertEqual(first,b''.join(exporter.open(record.id,actor=REVIEWER).stream_manifest()))
+        self.assertEqual(sha256(first).hexdigest(),version.content_sha256)
+        for original in originals:
+            self.assertEqual(b''.join(exporter.open(record.id,actor=REVIEWER).stream_capture(parse_frame(original.splitlines()[0]).key)),original)
+        self.assertTrue(all(c.closed or c is self.guard for c in self.connections))
+        self.assertLessEqual(load_count,3,'One member list, one quality batch, one capture batch')
+        self.assertLessEqual(recheck_count,3,'Existing two lock queries plus one current metadata batch')
+        # The first-advance map must be fresh even if this same exporter just opened it.
+        import json
+        from copy import deepcopy
+        from backend.waveforms.repository import WaveformRepository
+        from tests.test_waveform_repository import observation
+        from tests.waveform_vectors import encoded
+        from tests.waveform_support import LIMITS
+        context=exporter.open(record.id,actor=REVIEWER); snapshots=deepcopy([c['snapshot'] for c in prepared['certificates']])
+        self.assertNotIn('capture_conflict',context.metadata.restriction_reasons)
+        frame=parse_frame(originals[0].splitlines()[0]); changed=json.loads(originals[0].splitlines()[0]); changed['producer']['recorder_version']='late'
+        WaveformRepository(self.connect,limits=LIMITS,prefix='oil',ingress_gateway_id='GW').ingest(
+            observation(encoded(changed),topic=f'oil/v2/{frame.key.gateway_id}/{frame.key.device_id}/waveform'))
+        audits=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
+        iterator=context.stream_capture(frame.key)
+        try:
+            self.assertEqual(next(iterator),originals[0].splitlines()[0])
+            self.assertIn('capture_conflict',context.metadata.restriction_reasons)
+            self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata'),audits+1)
+        finally: iterator.close()
+        with self.connect('operator') as conn:
+            cur=conn.cursor(); service._guard(cur)
+            self.assertIn('capture_conflict',service.recheck_dataset(cur,prepared,strict=False)); conn.rollback()
+        self.assertEqual([c['snapshot'] for c in prepared['certificates']],snapshots)
+        self.assertTrue(all(c.closed or c is self.guard for c in self.connections))
+
     def test_literal_oracle_through_audited_real_archive_export(self):
         from backend.waveforms.commands import Actor,Command,quality_request_hash
         from backend.waveforms.repository import WaveformRepository

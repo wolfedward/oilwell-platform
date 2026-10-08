@@ -10,7 +10,7 @@ import json
 from uuid import UUID
 
 from .capacity import row
-from .contracts import ManifestFrame,ChunkFrame
+from .contracts import CaptureKey,ManifestFrame,ChunkFrame
 from .dataset_contracts import fail,snapshot_hash,reason_codes
 from .evidence_contracts import canonical_bytes,thaw
 from .pair_contracts import capture_key,key_dict,pair_content,public,bounded
@@ -25,7 +25,7 @@ def applicable(snapshot):
 
 
 class DatasetContext(ContextBuilder):
-    def certificate(self,cur,member):
+    def certificate(self,cur,member,*,quality_rows=None):
         pair=None; review=None
         if member['kind']=='pair':
             cur.execute('SELECT * FROM waveforms.pair_versions WHERE pair_version_id=%s',(UUID(member['reference_id']),)); pair=row(cur)
@@ -36,7 +36,9 @@ class DatasetContext(ContextBuilder):
         else: ids=[UUID(member['quality_run_id'])]
         runs=[]
         for id in ids:
-            cur.execute('SELECT * FROM waveforms.quality_runs WHERE quality_run_id=%s',(id,)); run=row(cur)
+            if quality_rows is None:
+                cur.execute('SELECT * FROM waveforms.quality_runs WHERE quality_run_id=%s',(id,)); run=row(cur)
+            else: run=quality_rows.get(id)
             if run is None: fail('member_missing','Quality certificate does not exist')
             runs.append(run)
         first=runs[0]; selection=first['parameters']['selection']
@@ -75,7 +77,7 @@ class DatasetContext(ContextBuilder):
         return public(RegistryContext(self._read_connect).resolve(sources,utc_start=old['utc_start'],start_ns=Fraction(old['start_ns']),
             end_ns=Fraction(old['end_ns']),uncertainty_ns=Fraction(old['uncertainty_ns']) if old['uncertainty_ns'] is not None else None,revision=None))
 
-    def current(self,cur,certificate,captures,*,registry):
+    def current(self,cur,certificate,captures,*,registry,metadata=None):
         reasons=[]; snap=certificate['snapshot']; member=certificate['member']
         if certificate['status']!='eligible': reasons.append('quality_'+certificate['status'])
         if member['kind']=='pair':
@@ -97,12 +99,16 @@ class DatasetContext(ContextBuilder):
                     or proof['payload_sha256']!=p['manifest_sha256'] or capture['manifest_sha256']!=p['manifest_sha256'] or proof['transport']!=p['transport']): reasons.append('unknown_origin')
                 elif p['transport']=='file' and (str(proof['import_id'])!=p['import_id'] or proof['import_state']!='complete' or proof['line_number'] is None): reasons.append('import_not_sealed')
         for chosen in certificate['selection']['captures']:
-            key=capture_key(chosen['key']); capture=self._capture(cur,key)
+            key=capture_key(chosen['key']); capture=self._capture(cur,key) if metadata is None else metadata.get(key)
             if not capture or capture['manifest_sha256']!=chosen['manifest_sha256']: fail('member_identity','Capture manifest changed')
-            completion=self._completion(cur,capture['capture_pk'])
-            if capture['state']!='complete' or not completion or completion['status']!='complete': reasons.append('capture_not_complete')
-            cur.execute('SELECT EXISTS(SELECT 1 FROM waveforms.capture_restrictions WHERE subject_id=%s)',(capture['capture_pk'],))
-            if cur.fetchone()[0]: reasons.append('capture_conflict')
+            if metadata is None:
+                completion=self._completion(cur,capture['capture_pk'])
+                complete=completion is not None and completion['status']=='complete'
+                cur.execute('SELECT EXISTS(SELECT 1 FROM waveforms.capture_restrictions WHERE subject_id=%s)',(capture['capture_pk'],))
+                restricted=cur.fetchone()[0]
+            else: complete,restricted=capture['completion_status']=='complete',capture['restricted']
+            if capture['state']!='complete' or not complete: reasons.append('capture_not_complete')
+            if restricted: reasons.append('capture_conflict')
         historical=snap['registry']['historical']
         if applicable(registry)!=applicable(historical): reasons.append('registry_applicability_changed')
         if registry is None or registry['status']=='pending': reasons.append('registry_unresolved')
@@ -149,21 +155,23 @@ class DatasetContext(ContextBuilder):
 
     def recheck_dataset(self,cur,prepared,*,strict):
         self.lock_captures(cur,prepared['captures']); reasons=[]
+        # Call-local metadata is read only after all existing capture locks.
+        metadata=self.capture_rows(cur,prepared['captures'],current=True)
         for certificate in prepared['certificates']:
             registry=self.registry_now(certificate)
             if strict and registry!=certificate['snapshot']['registry']['freeze']: fail('stale_preparation','Registry changed after manifest preparation')
-            current=self.current(cur,certificate,prepared['captures'],registry=registry)
+            current=self.current(cur,certificate,prepared['captures'],registry=registry,metadata=metadata)
             if strict: self.restriction_snapshot(cur,certificate,prepared['captures'],current,expected=certificate['snapshot']['restrictions'])
             reasons.extend(current)
         return reason_codes(reasons)
 
-    def file_prepare(self,key,capture,requests,actor):
-        payload=self._raw(capture['manifest_fact_id'],actor); frame=parse_frame(payload)
+    def file_prepare(self,key,capture,requests,actor,*,connection):
+        payload=self._raw(capture['manifest_fact_id'],actor,connection=connection); frame=parse_frame(payload)
         if type(frame) is not ManifestFrame or frame.key!=key or frame.raw_sha256!=capture['manifest_sha256']: fail('file_identity','Manifest differs')
         plan=[dict(fact_id=str(capture['manifest_fact_id']),raw_sha256=frame.raw_sha256,raw_length=len(payload))]
         digest=sha256(payload+b'\n'); length=len(payload)+1; fingerprints=[]
-        with self._reader() as conn:
-            slots=conn.execute('SELECT stream_id,chunk_index,fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s ORDER BY stream_id,chunk_index LIMIT 513',(capture['capture_pk'],)).fetchall()
+        slots=connection.execute('SELECT stream_id,chunk_index,fact_id FROM waveforms.chunk_slots WHERE capture_pk=%s ORDER BY stream_id,chunk_index LIMIT 513',(capture['capture_pk'],)).fetchall()
+        connection.commit()  # End the slots read before the next audited fact.
         if len(slots)>512: fail('file_limit','Too many chunks')
         slots={(s,i):id for s,i,id in slots}
         for stream in frame.streams:
@@ -181,7 +189,7 @@ class DatasetContext(ContextBuilder):
             for index in range(stream.chunk_count):
                 fact=slots.get((stream.stream_id,index))
                 if fact is None: fail('file_identity','Sealed slot is absent')
-                raw=self._raw(fact,actor); chunk=parse_frame(raw)
+                raw=self._raw(fact,actor,connection=connection); chunk=parse_frame(raw)
                 count=min(stream.chunk_frames,stream.frame_count-index*stream.chunk_frames)
                 if (type(chunk) is not ChunkFrame or chunk.key!=key or chunk.manifest_sha256!=frame.raw_sha256 or chunk.stream_id!=stream.stream_id
                     or chunk.chunk_index!=index or chunk.sample_start!=index*stream.chunk_frames or chunk.sample_count!=count): fail('file_identity','Chunk layout differs')
@@ -214,9 +222,12 @@ class DatasetContext(ContextBuilder):
                 for channel in certificate['selection']['channels']:
                     requests[capture_key(channel['capture'])][tuple(channel[k] for k in ('stream_id','channel_id','first_index','last_index'))]=channel
         files={}; kinds=set()
-        for ordinal,key in enumerate(sorted(captures,key=lambda k:(k.gateway_id,k.device_id,str(k.capture_id)))):
-            file=self.file_prepare(key,captures[key],tuple(requests[key].values()),actor)
-            file['descriptor']['filename']=f'capture-{ordinal+1:04d}.owpwave'; files[key]=file; kinds.add(file['frame'].body['source_kind'])
+        # One owned reader for sequential file work, never service/global state.
+        # It closes before the separate current-metadata phase/publication locks.
+        with self._reader() as file_connection:
+            for ordinal,key in enumerate(sorted(captures,key=lambda k:(k.gateway_id,k.device_id,str(k.capture_id)))):
+                file=self.file_prepare(key,captures[key],tuple(requests[key].values()),actor,connection=file_connection)
+                file['descriptor']['filename']=f'capture-{ordinal+1:04d}.owpwave'; files[key]=file; kinds.add(file['frame'].body['source_kind'])
         if purpose=='software_pair_test' and not kinds<={'synthetic','bench_measurement'} or purpose=='field_pair_input' and kinds!={'field_measurement'}: fail('source_mismatch','Source kinds do not match purpose')
         with self._reader() as conn:
             conn.execute('SET TRANSACTION READ ONLY'); cur=conn.cursor()
@@ -245,17 +256,41 @@ class DatasetContext(ContextBuilder):
                 files[key]['descriptor']['source_files']=[originals[id] for id in sorted(originals)]
         return dict(certificates=certificates,captures=captures,files=files,source_kinds=sorted(kinds))
 
+    def capture_rows(self,cur,keys,*,current=False):
+        keys=list(dict.fromkeys(keys))
+        if len(keys)>2000: fail('member_limit','Too many physical captures')
+        captures={}
+        for start in range(0,len(keys),100):
+            batch=keys[start:start+100]
+            fields=',done.status AS completion_status,EXISTS(SELECT 1 FROM waveforms.capture_restrictions r WHERE r.subject_id=c.capture_pk) AS restricted' if current else ''
+            join=' LEFT JOIN waveforms.completion done ON done.capture_pk=c.capture_pk' if current else ''
+            cur.execute('SELECT c.gateway_id,c.device_id,c.capture_id,c.capture_pk,c.manifest_fact_id,c.manifest_sha256,c.state'+fields+
+                ' FROM unnest(%s::text[],%s::text[],%s::uuid[]) AS wanted(gateway_id,device_id,capture_id) JOIN waveforms.capture_metadata c USING(gateway_id,device_id,capture_id)'+join,
+                ([k.gateway_id for k in batch],[k.device_id for k in batch],[k.capture_id for k in batch]))
+            while (capture:=row(cur)) is not None:
+                key=CaptureKey(*(capture.pop(k) for k in ('gateway_id','device_id','capture_id')))
+                captures[key]=capture
+        return captures
+
     def load_prepared(self,cur,version_id):
         cur.execute('SELECT kind,reference_id,quality_run_id,split,snapshot FROM waveforms.dataset_members WHERE version_id=%s ORDER BY ordinal LIMIT 1001',(version_id,))
         members=cur.fetchall()
         if len(members)>1000: fail('member_limit','Frozen member bound differs')
-        certificates=[]; captures={}
-        for kind,reference,quality,split,snapshot in members:
-            # Immutable producer values are loaded before guarding; retain original frozen review pins.
-            certificate=self.certificate(cur,dict(kind=kind,reference_id=str(reference),quality_run_id=str(quality),split=split))
-            certificate['snapshot']=snapshot; certificates.append(certificate)
-            for chosen in certificate['selection']['captures']:
-                key=capture_key(chosen['key']); capture=self._capture(cur,key)
-                if not capture: fail('member_missing','Frozen capture absent')
-                captures[key]=capture
+        certificates=[]; keys=set()
+        for start in range(0,len(members),100):
+            batch=members[start:start+100]; quality_rows={}
+            ids=list({quality for kind,reference,quality,split,snapshot in batch if kind=='capture'})
+            if ids:
+                cur.execute('SELECT * FROM waveforms.quality_runs WHERE quality_run_id=ANY(%s)',(ids,))
+                while (run:=row(cur)) is not None: quality_rows[run['quality_run_id']]=run
+            for kind,reference,quality,split,snapshot in batch:
+                # Same certificate validation; only capture-member SQL is batched.
+                certificate=self.certificate(cur,dict(kind=kind,reference_id=str(reference),quality_run_id=str(quality),split=split),
+                    quality_rows=quality_rows if kind=='capture' else None)
+                certificate['snapshot']=snapshot; certificates.append(certificate)
+                keys.update(capture_key(chosen['key']) for chosen in certificate['selection']['captures'])
+                if len(keys)>2000: fail('member_limit','Too many physical captures')
+            del quality_rows
+        captures=self.capture_rows(cur,keys)
+        if set(captures)!=keys: fail('member_missing','Frozen capture absent')
         return dict(certificates=certificates,captures=captures)

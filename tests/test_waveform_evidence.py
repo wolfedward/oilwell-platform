@@ -125,6 +125,19 @@ class EvidenceContractTests(unittest.TestCase):
         body['scale'] = '0'
         with self.assertRaises(ContractError): evidence_content('calibration', body)
 
+    def test_calibration_content_matches_independent_literal_and_digest(self):
+        from backend.waveforms.evidence_contracts import evidence_content
+        body=dict(unit='kN',scale='1.25',offset='-2.5',source_kind='synthetic',
+            endpoint=dict(device_id='D',gateway_id='OTHER',stream_id='s',channel_id='c'),
+            sampling_config_version_id='00000000-0000-0000-0000-000000000001',sampling_config_sha256='a'*64,
+            attachment_ids=[],notes=None,valid_from=None,valid_to=None,calibrated_range=None,zero=None,
+            direction=None,measurement_uncertainty=None,time_correction_ns=None,residual_ns=None,
+            method=None,basis=None,calibrated_at=None)
+        expected=b'{"body":{"attachment_ids":[],"basis":null,"calibrated_at":null,"calibrated_range":null,"direction":null,"endpoint":{"channel_id":"c","device_id":"D","gateway_id":"OTHER","stream_id":"s"},"measurement_uncertainty":null,"method":null,"notes":null,"offset":"-2.5","residual_ns":null,"sampling_config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sampling_config_version_id":"00000000-0000-0000-0000-000000000001","scale":"1.25","source_kind":"synthetic","time_correction_ns":null,"unit":"kN","valid_from":null,"valid_to":null,"zero":null},"kind":"calibration","protocol":"waveform.evidence-content/1"}'
+        content,digest=evidence_content('calibration',body)
+        self.assertEqual(content,expected)
+        self.assertEqual(digest,'87871b6d56bc0ded1de39f82ec59f9b9f9d90a566cbcb3dbc91a5e27c7c90927')
+
     def test_attachment_signatures_size_and_external_content(self):
         from backend.waveforms.evidence_contracts import validate_attachment
         validate_attachment(b'%PDF-1.7\nsynthetic', 'application/pdf')

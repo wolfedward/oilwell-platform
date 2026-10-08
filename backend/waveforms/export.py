@@ -107,7 +107,14 @@ class DatasetExporter(DatasetService):
         except psycopg.Error as error: raise WaveformError('waveform.export_unavailable','Export creation failed; no durable success') from error
 
     def open(self,export_id,*,actor):
-        record=self._record(export_id,actor); metadata=self.describe(record.version_id,purpose=record.intent,actor=actor)
+        with self._reader() as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'); cur=conn.cursor()
+            record=self._export(cur,export_id,actor)
+            value=self._version_row(cur,record.version_id); prepared=self.load_prepared(cur,record.version_id)
+        with self._connect() as conn:
+            cur=conn.cursor(); self._guard(cur)
+            reasons=self.recheck_dataset(cur,prepared,strict=False); conn.rollback()
+        metadata=self._metadata(value,record.intent,reasons)
         if not metadata.allowed: fail('export_denied','Export intent is no longer permitted')
         return ExportContext(self,record,actor,metadata,self.__token)
 

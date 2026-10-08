@@ -132,8 +132,9 @@ class DatasetContractTests(unittest.TestCase):
     def test_same_cycle_variants_cannot_cross_splits(self):
         splits=feature(self,'dataset_splits')
         from backend.waveforms.errors import WaveformError
-        members=[physical_member(1,'train',0,10),physical_member(2,'train',8,18),physical_member(3,'test',16,26)]
-        with self.assertRaises(WaveformError): splits.check_splits(members,dict(kind='well_holdout'))
+        members=[physical_member(1,'train',0,10,well='one'),physical_member(2,'train',8,18,well='two'),physical_member(3,'test',16,26,well='three')]
+        with self.assertRaises(WaveformError) as caught: splits.check_splits(members,dict(kind='well_holdout'))
+        self.assertEqual(caught.exception.code,'waveform.dataset_physical_leakage')
         members=[physical_member(1,'train',0,10,well='one'),physical_member(2,'test',10,20,well='two')]
         with self.assertRaises(WaveformError): splits.check_splits(members,dict(kind='well_holdout'))
 
@@ -152,6 +153,146 @@ class DatasetContractTests(unittest.TestCase):
 
 
 class DatasetDatabaseTests(DatasetCase):
+    def test_capture_metadata_batches_keep_composite_keys_and_missing_rows(self):
+        from uuid import uuid4
+        from backend.waveforms.contracts import CaptureKey
+        from tests.waveform_support import FIXED_TIME
+        shared=uuid4(); expected={}
+        # Narrow metadata-only rows, like the existing lock-order fixture; no101 raw imports.
+        keys=[CaptureKey('GW','D0',shared),CaptureKey('GW','D1',shared),CaptureKey('GW','D2',shared)]
+        keys.extend(CaptureKey('GW','D'+str(n),uuid4()) for n in range(98))
+        with self.connect('receiver') as conn:
+            for key in keys:
+                id=uuid4(); expected[key]=id
+                conn.execute("INSERT INTO waveforms.captures(capture_pk,intake_gateway_id,gateway_id,device_id,capture_id,first_seen,last_valid_at) VALUES(%s,'GW',%s,%s,%s,%s,%s)",
+                    (id,key.gateway_id,key.device_id,key.capture_id,FIXED_TIME,FIXED_TIME))
+        missing=CaptureKey('MISSING','D0',shared); batches=[]
+        class Cursor:
+            def __init__(self,cur): self.cur=cur
+            def __getattr__(self,name): return getattr(self.cur,name)
+            def execute(self,sql,params):
+                batches.append(len(params[0])); return self.cur.execute(sql,params)
+        service=self.dataset_service()
+        for current in (False,True):
+            batches.clear()
+            with self.connect('reader') as conn:
+                rows=service.capture_rows(Cursor(conn.cursor()),keys+[missing,keys[0]],current=current)
+            self.assertEqual(batches,[100,2]); self.assertEqual({key:value['capture_pk'] for key,value in rows.items()},expected)
+            self.assertNotIn(missing,rows)
+            self.assertTrue(all(row['state']=='collecting' and row['manifest_sha256'] is None for row in rows.values()))
+            if current: self.assertTrue(all(row['completion_status'] is None and row['restricted'] is False for row in rows.values()))
+            # Request each colliding UUID alone: returning an unrequested source must fail.
+            for selected in (keys[0],keys[1],missing):
+                with self.connect('reader') as conn:
+                    actual=service.capture_rows(conn.cursor(),[selected],current=current)
+                self.assertEqual({key:value['capture_pk'] for key,value in actual.items()},
+                    {} if selected==missing else {selected:expected[selected]})
+
+    def test_prefetched_quality_missing_or_wrong_anchor_never_falls_back(self):
+        from uuid import uuid4
+        from backend.waveforms.capacity import row
+        from backend.waveforms.errors import WaveformError
+        pair,_=self.pair(two=True); service=self.dataset_service()
+        with self.connect('reader') as conn:
+            cur=conn.cursor(); cur.execute('SELECT * FROM waveforms.quality_runs WHERE quality_run_id=%s',(pair.left_quality_run_id,)); quality=row(cur)
+            member=dict(kind='capture',reference_id=str(quality['capture_pk']),quality_run_id=str(pair.left_quality_run_id),split='unassigned')
+            for selected,rows,code in ((member,{},'waveform.dataset_member_missing'),
+                (member|dict(reference_id=str(uuid4())),{pair.left_quality_run_id:quality},'waveform.dataset_member_identity')):
+                with self.subTest(code=code),self.assertRaises(WaveformError) as caught: service.certificate(cur,selected,quality_rows=rows)
+                self.assertEqual(caught.exception.code,code)
+
+    def test_sequential_file_preparation_bounds_readers_and_preserves_exact_bytes_audits(self):
+        import struct
+        from tests.waveform_pairing_support import REVIEWER
+        pair,vector=self.pair(two=True); service=self.dataset_service(); readers=[]
+        def reader():
+            conn=self.connect('reader'); readers.append(conn); return conn
+        service._read_connect=reader
+        member=dict(kind='pair',reference_id=str(pair.id),quality_run_id=str(pair.left_quality_run_id),split='unassigned')
+        before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
+        prepared=service.prepare_dataset([member],'software_pair_test',REVIEWER)
+        self.assertEqual(len(readers),4,'Three phase readers plus this pair certificate registry recheck')
+        self.assertTrue(all(c.closed for c in readers))
+        self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata')-before,4)
+        self.assertEqual(len(prepared['files']),2)
+        for frame,wire in zip(vector['frames'],vector['wire_captures']):
+            file=prepared['files'][frame.key]; exact=b'\n'.join(wire)+b'\n'
+            self.assertEqual(file['descriptor']['file_sha256'],sha256(exact).hexdigest())
+            self.assertEqual(file['descriptor']['content_length'],len(exact))
+            self.assertEqual([(p['raw_sha256'],p['raw_length']) for p in file['plan']],[(sha256(raw).hexdigest(),len(raw)) for raw in wire])
+        expected={}
+        for channel,values in [('total_active_power',(-3,0,3)),('load',(10,10,10)),('displacement',(0,4,0))]:
+            header=b'{"count":3,"encoding":"i32le","protocol":"waveform.dataset-payload/1"}'
+            expected[channel]=sha256(header+b''.join(struct.pack('<iB',value,0) for value in values)).hexdigest()
+        actual={p['channel_id']:p['content_sha256'] for file in prepared['files'].values() for p in file['fingerprints']}
+        self.assertEqual(actual,expected)
+
+    def test_preparation_audit_commit_uncertainty_and_parse_failure_close_owned_readers(self):
+        import psycopg
+        from unittest.mock import patch
+        from backend.waveforms import dataset_context
+        from tests.waveform_pairing_support import REVIEWER
+        pair,_=self.pair(two=True)
+        member=dict(kind='pair',reference_id=str(pair.id),quality_run_id=str(pair.left_quality_run_id),split='unassigned')
+        class CommitLoss:
+            def __init__(self,conn,after): self.connection,self.after=conn,after
+            def __getattr__(self,name): return getattr(self.connection,name)
+            def __enter__(self): self.connection.__enter__(); return self
+            def __exit__(self,*args): return self.connection.__exit__(*args)
+            def commit(self):
+                if self.after: self.connection.commit()
+                raise psycopg.OperationalError('Synthetic raw audit commit uncertainty')
+        for failure in ('audit','before_commit','after_commit','parse'):
+            with self.subTest(failure=failure):
+                readers=[]; service=self.dataset_service()
+                def reader():
+                    conn=self.connect('reader'); readers.append(conn)
+                    return CommitLoss(conn,failure=='after_commit') if len(readers)==2 and failure in ('before_commit','after_commit') else conn
+                service._read_connect=reader
+                before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
+                if failure=='audit':
+                    with self.connect('migration_owner') as conn:
+                        old=conn.execute("SELECT metadata_rows FROM waveforms.capacity WHERE bucket='GW'").fetchone()[0]
+                        conn.execute("UPDATE waveforms.capacity SET metadata_rows=used_metadata_rows WHERE bucket='GW'")
+                expected=ValueError if failure=='parse' else psycopg.Error
+                parse_error=ValueError('Synthetic parse failure') if failure=='parse' else AssertionError('Bytes used after unsuccessful audit commit')
+                try:
+                    with patch.object(dataset_context,'parse_frame',side_effect=parse_error):
+                        with self.assertRaises(expected): service.prepare_dataset([member],'software_pair_test',REVIEWER)
+                finally:
+                    if failure=='audit':
+                        with self.connect('migration_owner') as conn:
+                            conn.execute("UPDATE waveforms.capacity SET metadata_rows=%s WHERE bucket='GW'",(old,))
+                self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata')-before,int(failure in ('after_commit','parse')))
+                self.assertEqual(len(readers),2); self.assertTrue(all(c.closed for c in readers))
+                self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.dataset_versions'),0)
+
+    def test_concurrent_preparations_keep_file_reader_operation_local(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from tests.waveform_pairing_support import REVIEWER
+        pair,_=self.pair(two=True); service=self.dataset_service()
+        member=dict(kind='pair',reference_id=str(pair.id),quality_run_id=str(pair.left_quality_run_id),split='unassigned')
+        original=service.file_prepare; readers={}; barrier=threading.Barrier(2); lock=threading.Lock()
+        def file_prepare(*args,connection):
+            thread=threading.get_ident()
+            with lock:
+                first=thread not in readers
+                if first: readers[thread]=connection
+                self.assertIs(readers[thread],connection)
+            if first: barrier.wait(10)
+            return original(*args,connection=connection)
+        service.file_prepare=file_prepare
+        before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures=[pool.submit(service.prepare_dataset,[member],'software_pair_test',REVIEWER) for _ in range(2)]
+            results=[future.result(timeout=30) for future in futures]
+        self.assertEqual(len(readers),2); self.assertEqual(len({id(conn) for conn in readers.values()}),2)
+        self.assertTrue(all(conn.closed for conn in readers.values()))
+        self.assertEqual(self.scalar('SELECT count(*) FROM waveforms.audit_metadata')-before,8)
+        self.assertEqual({key:file['descriptor']['file_sha256'] for key,file in results[0]['files'].items()},
+                         {key:file['descriptor']['file_sha256'] for key,file in results[1]['files'].items()})
+
     def test_raw_scan_hash_and_manifest_staging_precede_guards(self):
         from unittest.mock import patch
         from backend.waveforms import dataset_context,datasets
@@ -168,8 +309,8 @@ class DatasetDatabaseTests(DatasetCase):
         guard=service._guard; raw=service._raw; scan=dataset_context.iter_samples; stage=datasets.stage_manifest
         def guarded(cur):
             result=guard(cur); state['guarded']=True; return result
-        def raw_before(*args):
-            self.assertFalse(state['guarded']); state['raws']+=1; return raw(*args)
+        def raw_before(*args,**kwargs):
+            self.assertFalse(state['guarded']); state['raws']+=1; return raw(*args,**kwargs)
         def scan_before(*args,**kwargs):
             self.assertFalse(state['guarded']); state['scans']+=1; return scan(*args,**kwargs)
         def stage_before(*args):

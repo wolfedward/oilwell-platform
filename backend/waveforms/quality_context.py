@@ -4,6 +4,7 @@ Factories must admit an operator and a reader connection simultaneously. The
 history lock is cooperative: updated registry writers must be rolled out together.
 """
 from dataclasses import asdict, replace
+from contextlib import nullcontext
 from datetime import datetime
 from fractions import Fraction
 from hashlib import sha256
@@ -48,8 +49,10 @@ class ContextBuilder(EvidenceService):
         cur.execute('SELECT '+COMPLETION_COLUMNS+' FROM waveforms.completion WHERE capture_pk=%s',(id,))
         return row(cur)
 
-    def _raw(self,fact,actor):
-        with self._reader() as conn:
+    def _raw(self,fact,actor,*,connection=None):
+        # A dataset preparation may lend its operation-local reader. Every fact
+        # still has its own durable audit commit before any bytes leave here.
+        with self._reader() if connection is None else nullcontext(connection) as conn:
             cur=conn.cursor(); prepare_transaction(cur)
             cur.execute('SELECT waveforms.audited_raw(%s,%s)',(fact,Jsonb(asdict(actor))))
             payload=bytes(cur.fetchone()[0]); prepare_transaction(cur); conn.commit()

@@ -114,6 +114,54 @@ class SummaryTests(unittest.TestCase):
         value=w.Calibration(frame,d.stream,d.channel,{str(cal.id):cal,str(config.id):config},0,2)
         self.assertIn('unknown_units',value.reasons)
 
+    def bounded_calibration(self,**changes):
+        from tests.waveform_pairing_support import pure_case
+        from backend.waveforms.contracts import ManifestFrame
+        from backend.waveforms.evidence_contracts import freeze,thaw
+        from dataclasses import replace
+        context,_=pure_case(); d=context.streams[1]; key=(d.key,d.stream.stream_id,d.channel.channel_id)
+        config=context.sampling_configs[key]; cal=context.calibrations[key]; body=thaw(cal.body)
+        body.update(scale='-0.5',offset='0.25',calibrated_range=dict(min='-1.25',max='2.75',unit=d.channel.unit))
+        body.update(changes); cal=replace(cal,body=freeze(body))
+        frame=ManifestFrame(d.key,'a'*64,dict(source_kind='synthetic',utc_start=None,utc_uncertainty_ns=None),(d.stream,))
+        return self.module().Calibration(frame,d.stream,d.channel,{str(cal.id):cal,str(config.id):config},0,2)
+
+    def test_calibrated_bounds_are_parsed_once_per_instance_not_per_sample(self):
+        w=self.module(); decimal=w.decimal_value; calls=[]
+        def observed(text): calls.append(text); return decimal(text)
+        with patch.object(w,'decimal_value',side_effect=observed):
+            for _ in range(2):
+                cal=self.bounded_calibration()
+                for raw,want in [(3,Fraction(-5,4)),(-5,Fraction(11,4)),(0,Fraction(1,4))]*3:
+                    self.assertEqual(cal.value(raw,0),(want,None))
+        self.assertEqual(calls.count('-1.25'),2)
+        self.assertEqual(calls.count('2.75'),2)
+
+    def test_negative_scale_exact_inclusive_bounds_and_outside_values_retained(self):
+        # Hand-derived binary-exact raw inputs, not the conversion helper's output.
+        for raw,want,outside in [(3,Fraction(-5,4),False),(-5,Fraction(11,4),False),
+            (Fraction(3145729,1048576),Fraction(-2621441,2097152),True),
+            (Fraction(-5242881,1048576),Fraction(5767169,2097152),True)]:
+            with self.subTest(raw=raw):
+                cal=self.bounded_calibration()
+                self.assertEqual(cal.value(raw,0),(want,None))
+                self.assertEqual('out_of_range' in cal.reasons,outside)
+
+    def test_calibration_quality_and_defensive_nonfinite_short_circuits(self):
+        # Huge raw is defensive helper input, outside the wire's finite f32/i32 grammar.
+        for quality,reason in [(1,'missing_sample'),(2,'clipped'),(3,'bad'),(4,'uncertain')]:
+            cal=self.bounded_calibration()
+            self.assertEqual(cal.value(10**1000,quality),(None,reason))
+            self.assertNotIn('engineering_nonfinite',cal.reasons); self.assertNotIn('out_of_range',cal.reasons)
+        cal=self.bounded_calibration()
+        self.assertEqual(cal.value(10**1000,0),(None,'engineering_nonfinite'))
+        self.assertIn('engineering_nonfinite',cal.reasons); self.assertNotIn('out_of_range',cal.reasons)
+        missing=self.bounded_calibration(scale=None)
+        self.assertEqual(missing.value(3,0),(None,'unknown_calibration'))
+        unbounded=self.bounded_calibration(calibrated_range=None)
+        self.assertEqual(unbounded.value(100,0),(Fraction(-199,4),None))
+        self.assertIn('unknown_calibration',unbounded.reasons); self.assertNotIn('out_of_range',unbounded.reasons)
+
 
 class WindowDatabaseTests(DatasetCase):
     def service(self):
