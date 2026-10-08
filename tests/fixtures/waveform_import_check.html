@@ -25,6 +25,51 @@ try{
  check(raw.length===descriptor.line_count,'all missing lines uploaded');
  check(raw[0].headers['X-Waveform-Reason']===encodeURIComponent('导入验证'),'reason uses percent encoded UTF8');
  check(![...saved.values()].some(v=>v.includes('data_base64')||v.includes('Bearer')),'recovery persists no payload or credentials');
+ if('FIXTURE_MODE'==='rejection'){
+  const rejectionSaved=new Map([['other-browser-key','leave intact']]);
+  const rejectionStorage={getItem:k=>rejectionSaved.get(k)||null,setItem:(k,v)=>rejectionSaved.set(k,v),removeItem:k=>rejectionSaved.delete(k)};
+  const id='00000000-0000-0000-0000-000000000088';let createCalls=0,reads=0,rawCalls=0,version='1',cancelEnvelope;
+  const rejectedApi={post:async(path,envelope)=>{
+    if(path.endsWith('/imports')){
+      createCalls++;if(createCalls===1)throw Object.assign(Error('gateway'),{status:409,code:'waveform.import_gateway'});
+      return{import_id:id,version:'1',state:'pending',missing_lines:Array.from({length:descriptor.line_count},(_,i)=>i)};
+    }
+    if(path.endsWith('/cancel')){cancelEnvelope=envelope;return{import_id:id,version:'8',state:'cancelled',missing_lines:[]};}
+    return{import_id:id,version:'9',state:'sealed',missing_lines:[]};
+   },get:async()=>{reads++;return{import_id:id,version, state:'pending',missing_lines:Array.from({length:descriptor.line_count},(_,i)=>i)};},
+   raw:async(path,bytes,options)=>{rawCalls++;if(rawCalls===1)throw Object.assign(Error('version'),{status:409,code:'waveform.import_version'});if(rawCalls===2)check(options.headers['If-Match']==='7','resumed line uses reread version');return{import_id:id,version:String(rawCalls+6),state:'pending',missing_lines:Array.from({length:descriptor.line_count-(rawCalls-1)},(_,i)=>i+rawCalls-1)};}};
+  const rejectionClient=createWaveformClient(rejectedApi),rejectionSession=createImportSession({client:rejectionClient,actorId:'rejected',origin:'http://fixture',storage:rejectionStorage});
+  try{await rejectionSession.start(original,descriptor,'first');}catch(e){check(e.code==='waveform.import_gateway','gateway rejection is definitive');}
+  check(rejectionSession.saved().pending===null&&rejectionSession.saved().session===null,'rejected create frees pending local command');
+  check(rejectionSaved.get('other-browser-key')==='leave intact','rejected create preserves unrelated storage');
+  try{await rejectionSession.start(original,descriptor,'replacement');}catch(e){check(e.code==='waveform.import_version','replacement reached version conflict');}
+  check(createCalls===2&&rawCalls===1,'replacement create begins a new command');
+  check(rejectionSession.saved().pending===null&&rejectionSession.saved().session.version==='1','definitive version rejection clears stale command');
+  version='7';await rejectionSession.resume(original,descriptor);
+  check(reads>=2&&rawCalls===descriptor.line_count+1,'resume rereads current session and uploads with current version');
+  let cancelReads=0;const cancelApi={post:async(path,envelope)=>{
+    if(path.endsWith('/imports'))return{import_id:id,version:'1',state:'pending',missing_lines:[0]};
+    cancelEnvelope=envelope;return{import_id:id,version:'8',state:'cancelled',missing_lines:[]};
+   },get:async()=>{cancelReads++;return{import_id:id,version:cancelReads===1?'1':'7',state:'pending',missing_lines:[0]};},
+   raw:async()=>{throw Object.assign(Error('version'),{status:409,code:'waveform.import_version'});}};
+  const cancelClient=createWaveformClient(cancelApi),cancelSession=createImportSession({client:cancelClient,actorId:'cancel-rejected',origin:'http://fixture',storage:rejectionStorage});
+  try{await cancelSession.start(original,descriptor,'cancel candidate');}catch(e){check(e.code==='waveform.import_version','cancel candidate sees definitive version conflict');}
+  await cancelSession.cancel('cancel after conflict');
+  check(cancelReads>=3&&cancelEnvelope.expected_version==='7','cancel rereads actual version before new command');
+  let unknownRaw=0;const unknownApi={post:async()=>({import_id:id,version:'1',state:'pending',missing_lines:[0]}),
+   get:async()=>({import_id:id,version:'1',state:'pending',missing_lines:[0]}),
+   raw:async(path,line,options)=>{unknownRaw++;if(unknownRaw===2){
+      check(options.headers['Idempotency-Key']===unknownPending.envelope.idempotency_key,'unknown 409 replays original key');
+      const expected=bytes.slice(descriptor.lines[0].offset,descriptor.lines[0].offset+descriptor.lines[0].length);
+      check(line.length===expected.length&&line.every((v,i)=>v===expected[i]),'unknown 409 replays exact original bytes');
+    }throw Object.assign(Error('unknown rejection'),{status:409,code:'waveform.import_future_error'});}};
+  const unknownClient=createWaveformClient(unknownApi),unknownSession=createImportSession({client:unknownClient,actorId:'unknown-rejection',origin:'http://fixture',storage:rejectionStorage});
+  try{await unknownSession.start(original,descriptor,'unknown');}catch{}
+  const unknownPending=structuredClone(unknownSession.saved().pending);
+  check(unknownPending?.envelope.idempotency_key&&unknownSession.saved().pendingLine===0,'unknown 409 retains uncertain line command');
+  try{await unknownSession.resume(original,descriptor);}catch{}
+  check(unknownRaw===2&&JSON.stringify(unknownSession.saved().pending)===JSON.stringify(unknownPending),'unknown 409 preserves original pending envelope');
+ }
  if('FIXTURE_MODE'==='lifecycle'){
   const {api:transport}=await import(API_MODULE);let posted,unauth=0;
   const onUnauth=()=>unauth++;window.addEventListener('platform:unauthenticated',onUnauth);
@@ -47,11 +92,13 @@ try{
   const before=lateProgress;interrupted.dispose();check(requestSignal.aborted,'leaving import aborts active network');held({import_id:'00000000-0000-0000-0000-000000000099',version:'2',state:'pending',missing_lines:[]});await upload;
   check(lateProgress===before&&interrupted.saved().pending!==null,'late upload success does not delete uncertain recovery identity');
   check(createImportSession({client:createWaveformClient(pendingApi),actorId:'8',origin:'http://other',storage:storage2}).saved()===null,'recovery is origin scoped');
-  const pendingEnvelope=structuredClone(interrupted.saved().pending);let replays=0;
-  pendingApi.raw=async(p,b,o)=>{replays++;check(o.headers['Idempotency-Key']===pendingEnvelope.envelope.idempotency_key&&o.headers['If-Match']===pendingEnvelope.envelope.expected_version,'raw replay preserves prior version and key');throw Object.assign(Error('revoked'),{status:403});};
+  const pendingEnvelope=structuredClone(interrupted.saved().pending),pendingLine=interrupted.saved().pendingLine;
+  const exactLine=descriptor.lines[pendingLine],exactBytes=bytes.slice(exactLine.offset,exactLine.offset+exactLine.length);let replays=0;
+  pendingApi.raw=async(p,b,o)=>{replays++;check(o.headers['Idempotency-Key']===pendingEnvelope.envelope.idempotency_key&&o.headers['If-Match']===pendingEnvelope.envelope.expected_version,'raw replay preserves prior version and key');check(b.length===exactBytes.length&&b.every((v,i)=>v===exactBytes[i]),'uncertain raw replay retains exact original bytes');throw Object.assign(Error('revoked'),{status:403});};
   const retryClient=createWaveformClient(pendingApi),retry=createImportSession({client:retryClient,actorId:'8',origin:'http://fixture',storage:storage2});
   try{await retry.resume(original,descriptor);}catch{}try{await retry.resume(original,descriptor);}catch{}
   check(replays===1,'403 permanently stops retry transport until new authenticated workspace');
+  check(JSON.stringify(retry.saved().pending)===JSON.stringify(pendingEnvelope),'permission loss retains original uncertain command');
  }
  document.querySelector('#root').textContent='同源、同账号恢复成功；所有片段与原文件逐字节一致。';
  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});

@@ -535,6 +535,14 @@ def restore_retained(source,root,run_id):
         guard=source.guard_alive,records=records,connections=source.connections)
 
 
+def _unlock_backup_guard(fixture,primary):
+    try:
+        if not fixture.guard.closed: fixture.guard.execute('SELECT pg_advisory_unlock(%s)',(499001213,))
+    except BaseException as failure:
+        if primary is None: raise
+        primary.add_note('Backup source guard unlock cleanup: '+type(failure).__name__)
+
+
 def backup_restore(fixture,config_path,root,run_id):
     """Caller has quiesced its writers and still owns the source reset guard.
 
@@ -584,7 +592,8 @@ def backup_restore(fixture,config_path,root,run_id):
             admin.rollback()
         return _restore_archive(authority,root,run_id,archive=archive,fingerprint=source_fingerprint,guard=guard_alive,records=records)
     finally:
-        if not fixture.guard.closed: fixture.guard.execute('SELECT pg_advisory_unlock(%s)',(499001213,))
+        import sys
+        _unlock_backup_guard(fixture,sys.exc_info()[1])
 
 
 class _ExportClock:

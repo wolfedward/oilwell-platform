@@ -11,7 +11,7 @@ import unittest
 
 from backend.waveforms.errors import ContractError
 from backend.waveforms.files import iter_file_frames, scan_file
-from tests.waveform_vectors import golden_capture
+from tests.waveform_vectors import bit_pattern_capture, golden_capture
 
 
 class WaveformFileTests(unittest.TestCase):
@@ -106,6 +106,15 @@ class WaveformFileTests(unittest.TestCase):
             chunk["manifest_sha256"] = changed_digest
             reissued_chunks.append(json.dumps(chunk, separators=(",", ":")).encode("utf-8"))
         self.assert_rejected(changed + b"\n" + b"\n".join(reissued_chunks), "digest_mismatch")
+
+    def test_interleaved_f32_nonfinite_bits_rejected_with_valid_digests(self):
+        for bits in (bytes.fromhex('0000807f'), bytes.fromhex('000080ff'), bytes.fromhex('0000c07f')):
+            with self.subTest(bits=bits.hex()):
+                self.assert_rejected(bit_pattern_capture(bits, 'f32le'), 'layout_invalid')
+                self.assertEqual(scan_file(BytesIO(bit_pattern_capture(bits, 'i32le'))).manifest.streams[0].channels[1].encoding, 'i32le')
+
+    def test_missing_f32_zero_is_accepted(self):
+        self.assertEqual(scan_file(BytesIO(bit_pattern_capture(b'\0\0\0\0', 'f32le', quality=1))).manifest.streams[0].channels[1].encoding, 'f32le')
 
     def test_rejects_oversized_file_before_line_scan(self):
         self.assert_rejected(b" " * (33_554_432 + 514), "payload_too_large")

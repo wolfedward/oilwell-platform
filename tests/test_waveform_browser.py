@@ -11,7 +11,7 @@ import unittest
 
 from backend.waveforms.files import scan_file
 from backend.waveforms.errors import ContractError
-from tests.waveform_vectors import golden_capture, encoded
+from tests.waveform_vectors import bit_pattern_capture, golden_capture, encoded
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,6 +43,9 @@ def vectors():
         ('truncated', original[:-8]), ('zip', b'PK\x03\x04' + original),
         ('manifest-literal-lf', manifest.replace(b'Synthetic Test', b'Synthetic\nTest') + b'\n' + b'\n'.join(chunks)),
     ])
+    for label, bits in [('positive-infinity', '0000807f'), ('negative-infinity', '000080ff'), ('nan-sample', '0000c07f')]:
+        rows.append((label, bit_pattern_capture(bytes.fromhex(bits), 'f32le')))
+        rows.append((label + '-i32', bit_pattern_capture(bytes.fromhex(bits), 'i32le')))
     changed = json.loads(chunks[0]); changed['data_base64'] += '\n'
     rows.append(('noncanonical-base64', b'\n'.join((manifest, encoded(changed), *chunks[1:]))))
     for label, config in [('null-config', None), ('opaque-config', 'CFG1'), ('bad-config-int', 0), ('bad-config-bool', False), ('bad-config-space', 'unknown label')]:
@@ -60,6 +63,13 @@ def vectors():
         rows.append((label, b'\n'.join((raw, *[c.replace(sha256(manifest).hexdigest().encode(), sha256(raw).hexdigest().encode()) for c in chunks]))))
     output = []
     for label, raw in rows:
+        if label in ('positive-infinity', 'negative-infinity', 'nan-sample'):
+            output.append(dict(name=label, base64=base64.b64encode(raw).decode(), accepted=False, reason_code='layout_invalid'))
+            continue
+        if label.endswith('-i32'):
+            output.append(dict(name=label, base64=base64.b64encode(raw).decode(), accepted=True,
+                               hash=sha256(raw).hexdigest(), lines=len(chunks)+1, final_lf=False))
+            continue
         try:
             desc = scan_file(BytesIO(raw))
             expected = {'accepted': True, 'hash': desc.sha256, 'lines': len(desc.lines), 'final_lf': desc.final_lf}
@@ -109,6 +119,9 @@ class WaveformBrowserTests(unittest.TestCase):
 
     def test_resume_import_original_bytes(self):
         self.run_fixture('waveform_import_check.html', with_vectors=True)
+
+    def test_definitive_import_rejections_allow_replacement_refresh_and_cancel(self):
+        self.run_fixture('waveform_import_check.html', mode='rejection', with_vectors=True)
 
     def test_stale_selection_and_revoked_retry(self):
         for width in (1440, 1024):

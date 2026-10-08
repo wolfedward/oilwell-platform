@@ -1103,6 +1103,77 @@ class VerificationToolTests(unittest.TestCase):
                 if len(failures)>1:
                     self.assertTrue(all(any(stage in note for note in caught.exception.__notes__) for stage in failures[1:]))
 
+    def test_output_owner_socket_failure_still_exits_sampler_and_stops_owned_child(self):
+        from types import SimpleNamespace
+        from tests import waveform_resource_scenarios as resources
+        calls=[]; socket_error=OSError('socket close')
+        class Socket:
+            def close(self): calls.append('socket'); raise socket_error
+        class Monitor:
+            samples=[]
+            def __exit__(self,*args): calls.append('sampler')
+        class Stack:
+            def stop(self,name): calls.append('child')
+        class Evidence:
+            result={}
+            def events(self,name): calls.append('events')
+        with self.assertRaises(OSError) as caught:
+            resources._finish_output_owners([Socket()],Monitor(),Stack(),Evidence(),[],0,error=None)
+        self.assertIs(caught.exception,socket_error)
+        self.assertEqual(calls,['socket','sampler','child','events'])
+
+    def test_sender_cleanup_keeps_body_error_and_attempts_later_owned_stages(self):
+        from types import SimpleNamespace
+        from tests import waveform_resource_scenarios as resources
+        calls=[]; primary=ValueError('body'); stop_error=OSError('stop')
+        class Stack:
+            processes={'sender_measure':SimpleNamespace(returncode=0), 'publish':SimpleNamespace(returncode=0)}
+            def stop(self,name):
+                calls.append('stop '+name)
+                if name=='sender_measure': raise stop_error
+            def events(self,name,*args,**kwargs): calls.append('events '+name); return []
+        result={}; resources._finish_sender_workers(Stack(),SimpleNamespace(returncode=0),result,0,error=primary)
+        self.assertEqual(calls,['stop sender_measure','events sender_measure','stop sender_measure','events sender_measure','stop publish','events publish'])
+        self.assertIn('stop',primary.__notes__[0])
+
+    def test_sender_sample_close_failure_still_saves_cleanup_envelope(self):
+        from types import SimpleNamespace
+        from tests import waveform_resource_scenarios as resources
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); error=OSError('samples close'); calls=[]
+            class Samples:
+                def close(self): calls.append('samples'); raise error
+            process=SimpleNamespace(poll=lambda:0)
+            stack=SimpleNamespace(instances=[dict(instance_id='one',component='sender',pid=1,process=process)],broker=None)
+            result={}
+            with self.assertRaises(OSError) as caught:
+                resources._finish_sender_evidence(Samples(),stack,result,root,0,error=None)
+            self.assertIs(caught.exception,error)
+            self.assertEqual(calls,['samples'])
+            self.assertTrue((root/'result.json').is_file())
+            self.assertTrue(result['cleanup']['complete'])
+
+    def test_sender_abort_failure_does_not_replace_body_error(self):
+        from types import SimpleNamespace
+        from tests import waveform_resource_scenarios as resources
+        body=ValueError('body'); abort=OSError('abort')
+        class Stack:
+            def kill_owned(self,*args,**kwargs): raise abort
+        resources._abort_sender(Stack(),SimpleNamespace(poll=lambda:None),{},body)
+        self.assertIn('OSError',body.__notes__[0])
+
+    def test_backup_guard_unlock_failure_preserves_primary(self):
+        from types import SimpleNamespace
+        from tools import waveform_restore as restore
+        calls=[]; primary=ValueError('restore'); unlock_error=OSError('unlock')
+        class Guard:
+            closed=False
+            def execute(self,*args): calls.append('unlock'); raise unlock_error
+        restore._unlock_backup_guard(SimpleNamespace(guard=Guard()),primary)
+        self.assertEqual(calls,['unlock']); self.assertIn('OSError',primary.__notes__[0])
+        with self.assertRaises(OSError) as caught: restore._unlock_backup_guard(SimpleNamespace(guard=Guard()),None)
+        self.assertIs(caught.exception,unlock_error)
+
     def test_lease_gate_requires_fresh_complete_bound_actual_bytes(self):
         tool=self.tool(); report=complete_report()
         report.pop('lease_measurement'); report['artifacts']=[a for a in report['artifacts'] if a['relative_path']!='lease-measurement.json']

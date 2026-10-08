@@ -914,6 +914,56 @@ class SenderDeadline:
             raise RuntimeError('safety.sender_operation_deadline')
 
 
+def _abort_sender(stack,process,result,error):
+    try:
+        if process.poll() is None: result['abort']=stack.kill_owned('sender_measure',reason='resource_abort')
+    except BaseException as failure:
+        error.add_note('Sender abort cleanup: '+type(failure).__name__)
+
+
+def _finish_sender_workers(stack,process,result,began,*,error):
+    first=error
+    def attempt(stage,action):
+        nonlocal first
+        try: return action()
+        except BaseException as failure:
+            if first is None: first=failure
+            else: first.add_note('Sender '+stage+' cleanup: '+type(failure).__name__)
+            return None
+    attempt('sender-stop',lambda:stack.stop('sender_measure'))
+    result['events']=attempt('sender-events',lambda:stack.events('sender_measure'))
+    result['exit_code']=process.returncode; result['elapsed_seconds']=time.monotonic()-began
+    result['workers']={}
+    for name,child in stack.processes.items():
+        attempt(name+'-stop',lambda name=name:stack.stop(name))
+        stopped=attempt(name+'-events',lambda name=name:stack.events(name,'stopped',current=True))
+        result['workers'][name]=dict(exit_code=child.returncode,stopped=stopped[-1] if stopped else None)
+    if first is not None and first is not error: raise first
+
+
+def _finish_sender_evidence(samples_file,stack,result,evidence,entered,*,error):
+    import json
+    first=error
+    def attempt(stage,action):
+        nonlocal first
+        try: return action()
+        except BaseException as failure:
+            if first is None: first=failure
+            else: first.add_note('Sender '+stage+' cleanup: '+type(failure).__name__)
+            return None
+    attempt('samples-close',samples_file.close)
+    processes=[]
+    for item in [*stack.instances,*(stack.broker.instances if stack.broker else [])]:
+        exit_code=attempt('process-state',item['process'].poll)
+        processes.append(dict(instance_id=item['instance_id'],component=item['component'],pid=item['pid'],exit_code=exit_code))
+    result['cleanup']=dict(complete=all(p['exit_code'] is not None for p in processes),processes=processes)
+    result['total_elapsed_seconds']=time.monotonic()-entered
+    def save():
+        with (evidence/'result.json').open('x',encoding='utf-8') as output: json.dump(result,output,indent=2)
+    attempt('envelope',save)
+    if first is not None and first is not error: raise first
+
+
 def measured_sender(fixture,root,paths,*,with_receipts=False):
     """Persist each owned sample and post-cleanup envelope even on failure."""
     import json
@@ -962,16 +1012,12 @@ def measured_sender(fixture,root,paths,*,with_receipts=False):
                         if with_receipts else len(progress)>=2)
                     if done: break
                     time.sleep(.05)
-            except BaseException:
-                if process.poll() is None: result['abort']=stack.kill_owned('sender_measure',reason='resource_abort')
+            except BaseException as error:
+                _abort_sender(stack,process,result,error)
                 raise
             finally:
-                stack.stop('sender_measure'); result['events']=stack.events('sender_measure')
-                result['exit_code']=process.returncode; result['elapsed_seconds']=time.monotonic()-began
-                result['workers']={}
-                for name,child in stack.processes.items():
-                    stack.stop(name); stopped=stack.events(name,'stopped',current=True)
-                    result['workers'][name]=dict(exit_code=child.returncode,stopped=stopped[-1] if stopped else None)
+                import sys
+                _finish_sender_workers(stack,process,result,began,error=sys.exc_info()[1])
             if any(v['exit_code']!=0 or not v['stopped'] or v['stopped'].get('remaining_threads') for v in result['workers'].values()):
                 raise AssertionError('Sender scenario child residue')
         result['status']='passed'
@@ -982,12 +1028,25 @@ def measured_sender(fixture,root,paths,*,with_receipts=False):
         error.add_note('Sender measurement envelope: '+str(evidence/'result.json'))
         raise
     finally:
-        samples_file.close()
-        processes=[dict(instance_id=i['instance_id'],component=i['component'],pid=i['pid'],exit_code=i['process'].poll())
-            for i in [*stack.instances,*(stack.broker.instances if stack.broker else [])]]
-        result['cleanup']=dict(complete=all(p['exit_code'] is not None for p in processes),processes=processes)
-        result['total_elapsed_seconds']=time.monotonic()-entered
-        with (evidence/'result.json').open('x',encoding='utf-8') as output: json.dump(result,output,indent=2)
+        import sys
+        _finish_sender_evidence(samples_file,stack,result,evidence,entered,error=sys.exc_info()[1])
+
+
+def _finish_output_owners(clients,monitor,stack,evidence,samples,began,*,error):
+    first=error
+    def attempt(stage,action):
+        nonlocal first
+        try: action()
+        except BaseException as failure:
+            if first is None: first=failure
+            else: first.add_note('Output '+stage+' cleanup: '+type(failure).__name__)
+    for sock in clients: attempt('socket',sock.close)
+    attempt('sampler',lambda:monitor.__exit__(type(first) if first else None,first,getattr(first,'__traceback__',None)))
+    attempt('child',lambda:stack.stop('http_measure'))
+    attempt('events',lambda:evidence.events('http_measure'))
+    attempt('evidence',lambda:evidence.result.update(samples=samples,continuous_samples=monitor.samples,
+        elapsed_seconds=time.monotonic()-began))
+    if first is not None and first is not error: raise first
 
 
 def measured_output_owners(fixture,root,route):
@@ -1048,11 +1107,8 @@ def measured_output_owners(fixture,root,route):
             if b' 200 ' not in half_headers.splitlines()[0] or json.loads(half_body)!=json.loads(body):
                 raise AssertionError('Valid half-closed client response differs')
         finally:
-            for sock in clients: sock.close()
-            try: monitor.__exit__(None,None,None)
-            finally:
-                stack.stop('http_measure'); evidence.events('http_measure')
-                evidence.result.update(samples=samples,continuous_samples=monitor.samples,elapsed_seconds=time.monotonic()-began)
+            import sys
+            _finish_output_owners(clients,monitor,stack,evidence,samples,began,error=sys.exc_info()[1])
         end=stack.await_event('http_measure','stopped')
         if end['output_owners'] or end['connections'] or end['remaining_threads']: raise AssertionError('Output cleanup residue')
         return evidence.complete(dict(half_close_bytes=len(half_body),healthy_bytes=len(body),healthy=True,reset=True,cleanup=end))

@@ -2,6 +2,13 @@ import {scanWaveformFile, digest} from './file-scan.js';
 import {node, button, field, metadata, errorText} from './client.js';
 export {scanWaveformFile} from './file-scan.js';
 const metadataKeys = ['file_sha256', 'bytes', 'line_count', 'final_lf', 'gateway_id', 'device_id', 'capture_id'];
+const definitiveImportCodes = new Set([
+  'waveform.import_request_hash', 'waveform.import_idempotency_conflict', 'waveform.import_not_found',
+  'waveform.import_gateway', 'waveform.import_version', 'waveform.import_terminal',
+  'waveform.import_session_limit', 'waveform.import_source_limit', 'waveform.import_line',
+  'waveform.import_identity', 'waveform.import_line_conflict', 'waveform.import_file_bytes',
+  'waveform.import_line_rejected', 'waveform.import_incomplete', 'waveform.import_file_digest',
+]);
 
 export function createImportSession({client, actorId, origin = location.origin, storage = localStorage, onProgress = () => {}}) {
   if (actorId === undefined || actorId === null || actorId === '') throw Error('需要已认证账号身份');
@@ -15,11 +22,29 @@ export function createImportSession({client, actorId, origin = location.origin, 
   }
   function save(value) {storage.setItem(key, JSON.stringify(value));}
   function active() {return !disposed && client.current();}
+  function definitiveImportRejection(error) {
+    return error?.status === 409 && definitiveImportCodes.has(error.code);
+  }
   async function submit(state, command, bytes) {
     state.pending = command; save(state); // Persist identity before even starting a request.
-    const result = bytes ? await client.raw(command, bytes) : await client.send(command);
+    let result;
+    try {result = bytes ? await client.raw(command, bytes) : await client.send(command);}
+    catch (error) {
+      if (active() && definitiveImportRejection(error)) {
+        state.pending = null; state.pendingLine = null;
+        if (!state.session) state.rejectedCreate = true;
+        save(state);
+        if (state.session) {
+          try {
+            const info = await client.read(`/imports/${state.session.import_id}`);
+            if (info && active()) {state.session = info; save(state); onProgress(info);}
+          } catch { /* A later resume or cancel rereads the actual session. */ }
+        }
+      }
+      throw error;
+    }
     if (!result || !active()) return null;
-    state.session = result; state.pending = null; save(state); onProgress(result); return result;
+    state.session = result; state.pending = null; state.rejectedCreate = false; save(state); onProgress(result); return result;
   }
   async function continueUpload(file, descriptor, state) {
     if (descriptor.file_sha256 !== state.metadata.file_sha256 || descriptor.bytes !== state.metadata.bytes || descriptor.line_count !== state.metadata.line_count) throw Error('请选择摘要一致的原文件');
@@ -56,7 +81,7 @@ export function createImportSession({client, actorId, origin = location.origin, 
   return {
     saved,
     start(file, descriptor, reason) {return exclusive(async () => {
-      const old = saved(); if (old && !['sealed', 'cancelled'].includes(old.session?.state)) throw Error('已有未完成导入，请用原文件恢复');
+      const old = saved(); if (old && !old.rejectedCreate && !['sealed', 'cancelled'].includes(old.session?.state)) throw Error('已有未完成导入，请用原文件恢复');
       const metadata = Object.fromEntries(metadataKeys.map(k => [k, descriptor[k]]));
       const state = {format: 1, actor: String(actorId), origin, metadata, reason, session: null, pendingLine: null,
         pending: client.prepare('/imports', '0', reason, metadata, 'waveform.import')};
@@ -65,8 +90,11 @@ export function createImportSession({client, actorId, origin = location.origin, 
     resume(file, descriptor) {return exclusive(() => {const state = saved(); if (!state) throw Error('当前账号没有已保存的导入'); return continueUpload(file, descriptor, state);});},
     cancel(reason) {return exclusive(async () => {
       const state = saved(); if (!state?.session || state.pending) throw Error('请先恢复并确认原操作，再取消会话');
+      const info = await client.read(`/imports/${state.session.import_id}`);
+      if (!info || !active()) return null;
+      state.session = info; save(state);
       state.pendingLine = null;
-      return submit(state, client.prepare(`/imports/${state.session.import_id}/cancel`, state.session.version, reason, {}, 'waveform.import'));
+      return submit(state, client.prepare(`/imports/${info.import_id}/cancel`, info.version, reason, {}, 'waveform.import'));
     });},
     dispose() {disposed = true; client.cancelPending();},
   };
@@ -83,7 +111,7 @@ export function mountImports({root, client, permissions, actorId, isCurrent}) {
   const picker = field(root, '原始 .owpwave 文件', 'wavefile', {type: 'file'}); picker.accept = '.owpwave';
   const reason = field(root, '导入 / 取消理由', 'reason', {value: '人工导入原始录波', maxLength: 512});
   const session = createImportSession({client, actorId, onProgress: info => {if (current()) status.textContent = `会话 ${info.import_id} · ${info.state} · 缺 ${info.missing_lines.length} 行 · 版本 ${info.version}`;}});
-  const old = session.saved(); if (old) metadata(details, [['保存的文件摘要', old.metadata.file_sha256], ['会话', old.session?.import_id || '创建结果待确认'], ['状态', old.session?.state || '需重试原创建操作']]);
+  const old = session.saved(); if (old) metadata(details, [['保存的文件摘要', old.metadata.file_sha256], ['会话', old.session?.import_id || (old.rejectedCreate ? '创建被拒绝' : '创建结果待确认')], ['状态', old.session?.state || (old.rejectedCreate ? '可重新开始导入' : '需重试原创建操作')]]);
   async function action(kind) {
     if (!current()) return; for (const b of controls.querySelectorAll('button')) b.disabled = true;
     try {

@@ -64,3 +64,31 @@ def golden_capture():
                                        sample_start=first, sample_count=count, manifest_sha256=digest,
                                        data_sha256=sha256(piece).hexdigest(), data_base64=base64.b64encode(piece).decode("ascii"))))
     return raw, tuple(chunks)
+
+
+def bit_pattern_capture(bits: bytes, encoding: str, *, quality: int = 0) -> bytes:
+    """Put literal sample bits in the middle channel of an interleaved stream."""
+    if len(bits) != 4:
+        raise ValueError("Four sample bytes required")
+    manifest_raw, chunk_raws = golden_capture()
+    manifest = json.loads(manifest_raw)
+    manifest["streams"][0]["channels"][1]["encoding"] = encoding
+    chunks = [json.loads(raw) for raw in chunk_raws]
+    for chunk in chunks:
+        if chunk["stream_id"] != "electrical":
+            continue
+        data = bytearray(base64.b64decode(chunk["data_base64"]))
+        if encoding == "f32le":
+            for frame in range(chunk["sample_count"]):
+                data[frame * 15 + 5:frame * 15 + 9] = b"\0\0\0\0"
+        if chunk["chunk_index"] == 0:
+            data[5:10] = bits + bytes([quality])
+        chunk["data_base64"] = base64.b64encode(data).decode("ascii")
+        chunk["data_sha256"] = sha256(data).hexdigest()
+    electrical = b"".join(base64.b64decode(chunk["data_base64"]) for chunk in chunks
+                       if chunk["stream_id"] == "electrical")
+    manifest["streams"][0]["data_sha256"] = sha256(electrical).hexdigest()
+    new_manifest = encoded(manifest)
+    for chunk in chunks:
+        chunk["manifest_sha256"] = sha256(new_manifest).hexdigest()
+    return b"\n".join((new_manifest, *(encoded(chunk) for chunk in chunks)))

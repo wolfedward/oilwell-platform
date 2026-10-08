@@ -9,6 +9,7 @@ from .contracts import (
     MAX_MANIFEST_BYTES,
 )
 from .errors import ContractError
+from .samples import iter_samples
 from .wire import parse_frame
 
 
@@ -133,6 +134,8 @@ def scan_file(source: BinaryIO) -> FileManifest:
                     or frame.sample_start != expected_start or frame.sample_count != expected_count
                     or len(frame.data) != expected_count * stream.frame_bytes):
                 raise ContractError("layout_invalid")
+            for _ in iter_samples(stream, frame.data, sample_start=frame.sample_start):
+                pass
             chunks[key] = line
         records.append(line)
 

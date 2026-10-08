@@ -114,7 +114,11 @@ export async function scanWaveformFile(file) {
       const s = m.streams.find(s => s.stream_id === body.stream_id); if (!s) fail('reference_conflict');
       const key = body.stream_id + '/' + body.chunk_index, start = body.chunk_index * s.chunk_frames, n = Math.min(s.chunk_frames, s.frame_count - start);
       if (chunks.has(key) || body.chunk_index >= s.chunk_count || n <= 0 || body.sample_start !== start || body.sample_count !== n || data.length !== n * s.frame_bytes) fail('layout_invalid');
-      // Encoding-aware finite checks are server assembly checks, not scan_file's grammar.
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      for (let frame = 0; frame < n; frame++) for (let channel = 0; channel < s.channels.length; channel++) {
+        const position = frame * s.frame_bytes + channel * 5;
+        if (s.channels[channel].encoding === 'f32le' && data[position + 4] !== 1 && !Number.isFinite(view.getFloat32(position, true))) fail('layout_invalid');
+      }
       chunks.set(key, line);
     }
     lines.push(line); offset = end + 1;

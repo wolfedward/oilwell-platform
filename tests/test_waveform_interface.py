@@ -37,11 +37,15 @@ def outcome(raw):
 class WaveformInterfaceTests(unittest.TestCase):
     def test_public_validator_matches_center(self):
         shared = vectors()
-        self.assertEqual(len(shared), 34)
+        self.assertEqual(len(shared), 40)
         by_name = {row["name"]: row for row in shared}
         self.assertTrue(outcome(base64.b64decode(by_name["count-minus-zero"]["base64"]))["ok"])
         self.assertEqual(outcome(base64.b64decode(by_name["fraction-count"]["base64"]))["reason_code"], "contract_invalid")
         self.assertEqual(outcome(base64.b64decode(by_name["duplicate-key"]["base64"]))["reason_code"], "json_duplicate_key")
+        for name in ('positive-infinity', 'negative-infinity', 'nan-sample'):
+            self.assertFalse(by_name[name]['accepted'])
+            self.assertEqual(by_name[name]['reason_code'], 'layout_invalid')
+            self.assertTrue(by_name[name+'-i32']['accepted'])
         with tempfile.TemporaryDirectory(prefix="standalone-waveform-") as folder:
             isolated = Path(folder)
             for name in SIBLINGS:
