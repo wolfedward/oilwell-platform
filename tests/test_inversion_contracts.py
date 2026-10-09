@@ -224,6 +224,57 @@ class InversionContractTests(unittest.TestCase):
             with self.subTest(matrix=matrix), self.assertRaises(ValueError):
                 parse_parameter_set(parameter_wire(body), draft=True)
 
+    def test_partial_axes_order_supplied_nodes_across_null_slots(self):
+        bad_axes = {
+            0: (None, "3", "2"),
+            1: ("2", None, "1"),
+            2: ("2", "2", None),
+        }
+        for axis in ("power_W", "motor_speed_rad_s"):
+            for null_index in (0, 1, 2):
+                body = parameter_body(); grid = body["drive"]["loss_grid"]
+                grid[axis] = ["1", "2", "3"]
+                if axis == "power_W":
+                    for matrix in ("loss_W", "error_W"):
+                        grid[matrix].append(["0", "0"])
+                else:
+                    for matrix in ("loss_W", "error_W"):
+                        for row in grid[matrix]: row.append("0")
+                grid[axis][null_index] = None
+                with self.subTest(axis=axis, null_index=null_index, state="valid"):
+                    draft = parse_parameter_set(parameter_wire(body), draft=True)
+                    self.assertEqual(missing_fields(draft), (f"drive.loss_grid.{axis}[{null_index}]",))
+                    self.assertIsNone(draft.drive)
+                grid[axis] = list(bad_axes[null_index])
+                with self.subTest(axis=axis, null_index=null_index, state="invalid"), self.assertRaises(ValueError):
+                    parse_parameter_set(parameter_wire(body), draft=True)
+            body = parameter_body(); grid = body["drive"]["loss_grid"]
+            grid[axis] = ["1", None, "1"]
+            if axis == "power_W":
+                for matrix in ("loss_W", "error_W"): grid[matrix].append(["0", "0"])
+            else:
+                for matrix in ("loss_W", "error_W"):
+                    for row in grid[matrix]: row.append("0")
+            with self.subTest(axis=axis, state="equal_across_null"), self.assertRaises(ValueError):
+                parse_parameter_set(parameter_wire(body), draft=True)
+
+    def test_missing_axis_preserves_compatible_matrices_but_rejects_conflicts(self):
+        body = parameter_body(); grid = body["drive"]["loss_grid"]
+        grid["power_W"] = None
+        self.assertEqual(missing_fields(parse_parameter_set(parameter_wire(body), draft=True)),
+                         ("drive.loss_grid.power_W",))
+        grid["error_W"].append(["0", "0"])
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+        body = parameter_body(); grid = body["drive"]["loss_grid"]
+        grid["motor_speed_rad_s"] = None
+        self.assertEqual(missing_fields(parse_parameter_set(parameter_wire(body), draft=True)),
+                         ("drive.loss_grid.motor_speed_rad_s",))
+        grid["loss_W"][0].append("0")
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
     def test_load_domain_is_explicit_and_strict(self):
         body = parameter_body(); del body["domain"]["load_N"]
         self.assertEqual(missing_fields(parse_parameter_set(parameter_wire(body), draft=True)),

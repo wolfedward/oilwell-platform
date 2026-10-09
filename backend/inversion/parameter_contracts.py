@@ -499,6 +499,9 @@ def _collect_missing(value, shape, path, missing):
         if path == "drive.loss_grid":
             power = value.get("power_W")
             speed = value.get("motor_speed_rad_s")
+            supplied_matrices = [value[key] for key in ("loss_W", "error_W") if value.get(key) is not None]
+            if power is None and len({len(matrix) for matrix in supplied_matrices}) > 1: fail()
+            if speed is None and len({len(row) for matrix in supplied_matrices for row in matrix if row is not None}) > 1: fail()
             for matrix_name in ("loss_W", "error_W"):
                 matrix = value.get(matrix_name)
                 if matrix is None: continue
@@ -520,8 +523,9 @@ def _collect_missing(value, shape, path, missing):
                 missing.append(child); complete = False
             elif not _collect_missing(item, item_shape, child, missing):
                 complete = False
-        if path in {"drive.loss_grid.power_W", "drive.loss_grid.motor_speed_rad_s"} and complete:
-            _axis(value)
+        if path in {"drive.loss_grid.power_W", "drive.loss_grid.motor_speed_rad_s"}:
+            supplied_nodes = [decimal(item) for item in value if item is not None]
+            if any(left >= right for left, right in zip(supplied_nodes, supplied_nodes[1:])): fail()
         unique_field = ("id" if path == "bodies.component_ledger" or path == "provenance.operating_conditions"
                         or path.endswith((".evidence_refs", ".attachment_pins", ".installation_evidence_refs"))
                         else "role" if path == "provenance.channel_bindings" else None)
