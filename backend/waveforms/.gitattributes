@@ -1,0 +1,5 @@
+errors.py text eol=lf
+contracts.py text eol=lf
+wire.py text eol=lf
+samples.py text eol=lf
+files.py text eol=lf

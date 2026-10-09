@@ -192,18 +192,25 @@ class RegistryConfigTests(unittest.TestCase):
         self.assertIsNone(runtime.query)
         raw = copy.deepcopy(self.base)
         raw.pop("postgres_query")
-        runtime = self.runtime.build_registry_runtime(self.write(raw))
+        with self.assertLogs('backend.registry.runtime',level='WARNING') as captured:
+            runtime = self.runtime.build_registry_runtime(self.write(raw))
+        self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.query_identity_required'])
         self.assertEqual((runtime.status, runtime.code), ("unavailable", "registry.query_identity_required"))
         self.assertIsNone(runtime.service)
         self.assertIsNone(runtime.query)
 
     def test_runtime_load_failure_is_isolated_and_does_not_print_secret_values(self):
         self.path.write_text('registry = "broken-test-password"\n', encoding="utf-8")
-        runtime = self.runtime.build_registry_runtime(self.path)
+        with self.assertLogs('backend.registry.runtime',level='WARNING') as captured:
+            runtime = self.runtime.build_registry_runtime(self.path)
+        self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.config_invalid'])
+        self.assertNotIn('broken-test-password',''.join(captured.output))
         self.assertEqual(runtime.status, "unavailable")
         self.assertNotIn("broken-test-password", repr(runtime))
         self.assertIsNone(runtime.service)
 
     def test_missing_file_is_unavailable_but_no_config_path_is_disabled(self):
-        self.assertEqual(self.runtime.build_registry_runtime(self.root / "missing.toml").status, "unavailable")
+        with self.assertLogs('backend.registry.runtime',level='WARNING') as captured:
+            self.assertEqual(self.runtime.build_registry_runtime(self.root / "missing.toml").status, "unavailable")
+        self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.config_invalid'])
         self.assertEqual(self.runtime.build_registry_runtime(None).status, "disabled")

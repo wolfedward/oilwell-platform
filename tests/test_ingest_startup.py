@@ -168,7 +168,9 @@ class LiveManagementStartupTests(IngestDatabaseCase):
         with self.admin() as conn:
             conn.execute(sql.SQL('REVOKE INSERT ON ingest_reliability.audit_events FROM {}').format(sql.Identifier(self.settings['operator']['user'])))
         try:
-            result = self.module.build_reliability_runtime(self.path)
+            with self.assertLogs('backend.ingest_reliability.runtime',level='WARNING') as captured:
+                result = self.module.build_reliability_runtime(self.path)
+            self.assertEqual([r.getMessage() for r in captured.records],['Incident management unavailable: ingest.privilege_unsafe'])
             self.assertEqual(result.status, 'unavailable')
             self.assertIsNone(result.operations)
             self.assertIsNone(result.queries)
@@ -180,7 +182,9 @@ class LiveManagementStartupTests(IngestDatabaseCase):
         with self.connect('migrator') as conn:
             conn.execute('ALTER VIEW ingest_reliability.worker_health_metadata RENAME TO held_health_metadata')
         try:
-            result = self.module.build_reliability_runtime(self.path)
+            with self.assertLogs('backend.ingest_reliability.runtime',level='WARNING') as captured:
+                result = self.module.build_reliability_runtime(self.path)
+            self.assertEqual([r.getMessage() for r in captured.records],['Incident management unavailable: ingest.schema_incomplete'])
             self.assertEqual(result.status, 'unavailable')
             self.assertIsNone(self.scalar("SELECT to_regclass('ingest_reliability.worker_health_metadata')", role='migrator'))
         finally:
@@ -228,7 +232,8 @@ class PlatformCapabilityTests(unittest.TestCase):
         with self.platform(ingest_runtime=runtime, registry_runtime=RegistryRuntime('disabled')) as (_, http):
             caps = http('/api/auth/me')[1]['data']['capabilities']
             self.assertEqual(caps, {'ingest_reliability': {'enabled': True, 'status': 'unavailable'},
-                                    'registry': {'enabled': False, 'status': 'disabled'}})
+                                    'registry': {'enabled': False, 'status': 'disabled'},
+                                    'waveforms': {'enabled': False, 'status': 'disabled'}})
             status, result = http('/api/ingest-reliability/cases')
             self.assertEqual((status, result['error']['code']), (503, 'ingest.schema_incomplete'))
             self.assertNotIn('data', result)
@@ -241,13 +246,15 @@ class PlatformCapabilityTests(unittest.TestCase):
                 '[postgres]\nhost="127.0.0.1"\nport=3822\ndatabase="oilwell_registry_test"\nuser="old_ingest"\npassword_env="INGEST_NOT_READ"\nsslmode="disable"\n'
                 '[postgres_query]\nhost="127.0.0.1"\nport=3822\ndatabase="oilwell_registry_test"\nuser="old_reader"\npassword_env="OLD_QUERY_UNIT_ONLY"\nsslmode="disable"\n', encoding='utf-8')
             with patch.dict(os.environ, {'OLD_QUERY_UNIT_ONLY': 'private-query-test-only'}):
-                with self.platform(center_config_path=path) as (server, http):
+                with self.assertLogs('backend.ingest_reliability.runtime',level='WARNING') as captured, self.platform(center_config_path=path) as (server, http):
                     self.assertIsNotNone(server.central_telemetry)
                     self.assertEqual(server.ingest_runtime.status, 'unavailable')
                     self.assertEqual(http('/api/health')[0], 200)
                     status, result = http('/api/ingest-reliability/cases')
                     self.assertEqual((status, result['error']['code']), (503, 'ingest.config_invalid'))
                     self.assertNotIn('private-query-test-only', json.dumps(result))
+                self.assertEqual([r.getMessage() for r in captured.records],['Incident management unavailable: ingest.config_invalid'])
+                self.assertNotIn('private-query-test-only',''.join(captured.output))
 
 
 class PermissionBootstrapTests(unittest.TestCase):

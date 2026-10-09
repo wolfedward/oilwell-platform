@@ -24,6 +24,9 @@ from backend.registry.api import RegistryApi
 from backend.registry.runtime import build_registry_runtime
 from backend.ingest_reliability.api import IngestReliabilityApi
 from backend.ingest_reliability.runtime import build_reliability_runtime
+from backend.waveforms.api import WaveformApi
+from backend.waveforms.runtime import build_waveform_runtime
+from backend.ingest_reliability.config import _origin
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -41,6 +44,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if WaveformApi(self).get(self.path): return
         if IngestReliabilityApi(self).get(self.path): return
         if RegistryApi(self).get(self.path): return
         if CentralTelemetryApi(self).get(self.path): return
@@ -63,6 +67,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self):
+        if WaveformApi(self).post(self.path): return
         if IngestReliabilityApi(self).post(self.path): return
         if RegistryApi(self).post(self.path): return
         path = urlsplit(self.path).path
@@ -85,6 +90,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
         if StrategyApi(self).patch(self.path): return
@@ -97,6 +103,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
 
     def _unsupported_method(self):
+        if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
         self.send_error(HTTPStatus.NOT_IMPLEMENTED, "Unsupported method")
@@ -272,8 +279,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         status = self.server.registry_runtime.status
         capability = {"enabled": status != "disabled", "status": status}
         ingest_status = self.server.ingest_runtime.status
+        waveform_status = self.server.waveform_runtime.status
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
             "capabilities": {"registry": capability,
+                             "waveforms": {"enabled": waveform_status != "disabled", "status": waveform_status},
                              "ingest_reliability": {"enabled": ingest_status != "disabled", "status": ingest_status}}}})
 
     def _users_get(self, path):
@@ -551,12 +560,16 @@ class PlatformHTTPServer(ThreadingHTTPServer):
         return super().serve_forever(*args, **kwargs)
     def server_close(self):
         try:
-            simulator = getattr(self, "simulator", None)
-            if simulator: simulator.stop()
-            workflow_worker = getattr(self, "workflow_worker", None)
-            if workflow_worker: workflow_worker.stop()
-            acquisition_worker = getattr(self, "acquisition_worker", None)
-            if acquisition_worker: acquisition_worker.stop()
+            try:
+                waveform_runtime = getattr(self, "waveform_runtime", None)
+                if waveform_runtime: waveform_runtime.close()
+            finally:
+                simulator = getattr(self, "simulator", None)
+                if simulator: simulator.stop()
+                workflow_worker = getattr(self, "workflow_worker", None)
+                if workflow_worker: workflow_worker.stop()
+                acquisition_worker = getattr(self, "acquisition_worker", None)
+                if acquisition_worker: acquisition_worker.stop()
         finally:
             # The listening socket must close even if a lifecycle component
             # reports that it could not meet its shutdown bound.
@@ -572,6 +585,7 @@ def create_server(
     center_config_path=None,
     registry_runtime=None,
     ingest_runtime=None,
+    waveform_config_path=None,
 ) -> ThreadingHTTPServer:
     if central_repository is not None and center_config_path is not None:
         raise ValueError("central_repository and center_config_path are mutually exclusive")
@@ -584,6 +598,9 @@ def create_server(
     server.central_telemetry = central_repository
     server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
     server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
+    server.waveform_runtime = build_waveform_runtime(waveform_config_path)
+    waveform_hosts = ('127.0.0.1', 'localhost') if host in ('127.0.0.1', 'localhost') else (host,)
+    server.waveform_runtime.allowed_origins = tuple(_origin(f'http://{name}:{server.server_port}') for name in waveform_hosts)
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker

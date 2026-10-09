@@ -1,0 +1,280 @@
+"""Actual independently credentialed role and controlled raw-access checks."""
+from uuid import uuid4
+import psycopg
+from psycopg import sql
+from psycopg.types.json import Jsonb
+from backend.waveforms.errors import WaveformError
+from backend.waveforms.privileges import probe_role
+from tests.waveform_support import WaveformDatabaseCase, RUNTIME_ROLES
+
+ACTOR = {"domain": "local", "user_id": "1", "username": "tester", "role_code": "reader"}
+
+
+class WaveformPrivilegeTests(WaveformDatabaseCase):
+    def test_http_snapshot_and_missing_chunk_columns_are_exact(self):
+        with self.connect('reader') as conn:
+            try:
+                conn.execute('SELECT singleton,version FROM waveforms.state_head')
+                conn.execute('SELECT capture_pk,stream_id,chunk_count FROM waveforms.streams')
+            except psycopg.errors.InsufficientPrivilege: self.fail('HTTP snapshot metadata privileges required')
+        reader=sql.Identifier(self.settings['reader']['user'])
+        for table,columns,extra in (('state_head','singleton,version',None),('streams','capture_pk,stream_id,chunk_count','specification')):
+            changes=[(f'REVOKE SELECT({columns.split(",")[0]}) ON waveforms.{table} FROM {{}}',None),
+                     (f'GRANT SELECT ON waveforms.{table} TO {{}}',f'REVOKE SELECT ON waveforms.{table} FROM {{}}'),
+                     (f'GRANT SELECT({columns}) ON waveforms.{table} TO {{}} WITH GRANT OPTION',f'REVOKE GRANT OPTION FOR SELECT({columns}) ON waveforms.{table} FROM {{}}')]
+            if extra: changes.append((f'GRANT SELECT({extra}) ON waveforms.{table} TO {{}}',f'REVOKE SELECT({extra}) ON waveforms.{table} FROM {{}}'))
+            for change,undo in changes:
+                with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+                try:
+                    with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+                finally:
+                    with self.connect('migration_owner') as conn:
+                        if undo: conn.execute(sql.SQL(undo).format(reader))
+                        conn.execute(sql.SQL(f'GRANT SELECT({columns}) ON waveforms.{table} TO {{}}').format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
+    def test_dataset_original_import_columns_are_exact(self):
+        with self.connect('reader') as conn:
+            try: conn.execute('SELECT import_id,file_sha256,file_bytes,line_count,final_lf FROM waveforms.imports LIMIT 1')
+            except psycopg.errors.InsufficientPrivilege: self.fail('R58 original import metadata unavailable')
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            with self.connect('operator') as conn: conn.execute('SELECT file_sha256 FROM waveforms.imports')
+        reader=sql.Identifier(self.settings['reader']['user'])
+        changes=(
+            ('REVOKE SELECT(final_lf) ON waveforms.imports FROM {}','GRANT SELECT(final_lf) ON waveforms.imports TO {}'),
+            ('GRANT SELECT(state) ON waveforms.imports TO {}','REVOKE SELECT(state) ON waveforms.imports FROM {}'),
+            ('GRANT SELECT ON waveforms.imports TO {}','REVOKE SELECT ON waveforms.imports FROM {}'),
+            ('GRANT SELECT(final_lf) ON waveforms.imports TO {} WITH GRANT OPTION','REVOKE GRANT OPTION FOR SELECT(final_lf) ON waveforms.imports FROM {}'))
+        for change,undo in changes:
+            with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+            try:
+                with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+            finally:
+                with self.connect('migration_owner') as conn:
+                    conn.execute(sql.SQL(undo).format(reader))
+                    # PostgreSQL table-level REVOKE also removes column SELECT.
+                    conn.execute(sql.SQL('GRANT SELECT(import_id,file_sha256,file_bytes,line_count,final_lf) ON waveforms.imports TO {}').format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
+    def test_quality_metadata_columns_are_exact(self):
+        for role in ('reader','operator'):
+            with self.connect(role) as conn:
+                try:
+                    conn.execute('SELECT capture_pk,manifest_fact_id,status,reason_code,result,completed_at FROM waveforms.completion LIMIT 1')
+                    if role=='reader': conn.execute('SELECT capture_pk,stream_id,chunk_index,fact_id FROM waveforms.chunk_slots LIMIT 1')
+                except psycopg.errors.InsufficientPrivilege: self.fail('Task11 fixed metadata columns unavailable')
+            for query in ('SELECT intake_gateway_id FROM waveforms.completion','SELECT raw_payload FROM waveforms.facts'):
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    with self.connect(role) as conn: conn.execute(query)
+            probe_role(lambda:self.connect(role),role)
+        reader=sql.Identifier(self.settings['reader']['user'])
+        for change,undo in (
+            ('GRANT SELECT(intake_gateway_id) ON waveforms.completion TO {}','REVOKE SELECT(intake_gateway_id) ON waveforms.completion FROM {}'),
+            ('REVOKE SELECT(status) ON waveforms.completion FROM {}','GRANT SELECT(status) ON waveforms.completion TO {}')):
+            with self.connect('migration_owner') as conn: conn.execute(sql.SQL(change).format(reader))
+            try:
+                with self.assertRaises(WaveformError): probe_role(lambda:self.connect('reader'),'reader')
+            finally:
+                with self.connect('migration_owner') as conn: conn.execute(sql.SQL(undo).format(reader))
+        probe_role(lambda:self.connect('reader'),'reader')
+
+    def test_import_receiver_rights_are_minimal(self):
+        probe_role(lambda:self.connect("receiver"), "receiver")
+        for role, statements in {
+            "receiver": ("UPDATE waveforms.operation_receipts SET request_hash=repeat('f',64)",
+                         "DELETE FROM waveforms.import_events", "UPDATE waveforms.import_events SET version=2",
+                         "UPDATE waveforms.imports SET final_lf=true", "UPDATE waveforms.imports SET actor='{}'"),
+            "operator": ("INSERT INTO waveforms.imports(import_id) VALUES(gen_random_uuid())",
+                         "INSERT INTO waveforms.facts(fact_id) VALUES(gen_random_uuid())",
+                         "INSERT INTO waveforms.import_events(import_id) VALUES(gen_random_uuid())"),
+        }.items():
+            for statement in statements:
+                with self.subTest(role=role, statement=statement), self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    with self.connect(role) as conn: conn.execute(statement)
+
+    def test_assembler_observation_read_is_narrow(self):
+        with self.connect("assembler") as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM waveforms.observations").fetchone()[0], 0)
+        for statement in ("UPDATE waveforms.observations SET duplicate_count=0", "DELETE FROM waveforms.observations",
+                          "INSERT INTO waveforms.observations(observation_id) VALUES(gen_random_uuid())"):
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                with self.connect("assembler") as conn:
+                    conn.execute(statement)
+        assembler = sql.Identifier(self.settings["assembler"]["user"])
+        with self.admin() as conn:
+            conn.execute(sql.SQL("GRANT UPDATE(duplicate_count) ON waveforms.observations TO {}").format(assembler))
+        try:
+            with self.assertRaises(WaveformError):
+                probe_role(lambda: self.connect("assembler"), "assembler")
+        finally:
+            with self.admin() as conn:
+                conn.execute(sql.SQL("REVOKE UPDATE(duplicate_count) ON waveforms.observations FROM {}").format(assembler))
+
+    def test_actual_runtime_roles_pass_readonly_probe(self):
+        for role in RUNTIME_ROLES:
+            with self.subTest(role=role): probe_role(lambda: self.connect(role), role)
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.audit", role="migration_owner"), 0)
+
+    def test_reader_no_raw_table_access(self):
+        fact = self.insert_fact()
+        for role in ("reader", "operator", "receipt_publisher"):
+            with self.subTest(role=role):
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    with self.connect(role) as conn: conn.execute("SELECT raw_payload FROM waveforms.facts WHERE fact_id=%s", (fact,))
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.fact_metadata"), 1)
+
+    def test_roles_cannot_change_facts_or_audit_directly(self):
+        fact = self.insert_fact()
+        for role in RUNTIME_ROLES:
+            for statement in ("UPDATE waveforms.facts SET raw_payload='bad' WHERE fact_id=%s",
+                              "DELETE FROM waveforms.facts WHERE fact_id=%s"):
+                with self.subTest(role=role,statement=statement):
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                        with self.connect(role) as conn: conn.execute(statement,(fact,))
+        for role in ("reader","assembler","receipt_publisher"):
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                with self.connect(role) as conn:
+                    conn.execute("INSERT INTO waveforms.audit(intake_gateway_id,fact_id,actor,action) VALUES('GW',%s,%s,'raw.read')",(fact,Jsonb(ACTOR)))
+
+    def test_raw_audit_rollback_is_atomic_and_unknown_id_fails(self):
+        fact=self.insert_fact()
+        with self.connect("reader") as conn:
+            conn.execute("SELECT waveforms.audited_raw(%s,%s)",(fact,Jsonb(ACTOR)))
+            conn.rollback()
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.audit",role="migration_owner"),0)
+        self.assertEqual(self.scalar("SELECT used_metadata_rows FROM waveforms.capacity WHERE bucket='GW'",role="migration_owner"),0)
+        with self.assertRaises(psycopg.errors.NoDataFound):
+            with self.connect("reader") as conn: conn.execute("SELECT waveforms.audited_raw(%s,%s)",(uuid4(),Jsonb(ACTOR)))
+
+    def test_publisher_can_update_health_and_cannot_insert_content(self):
+        worker=uuid4()
+        with self.connect("receipt_publisher") as conn:
+            conn.execute("INSERT INTO waveforms.worker_health(worker_id,component,gateway_id,last_seen) VALUES(%s,'receipt_publisher','GW',CURRENT_TIMESTAMP)",(worker,))
+            conn.execute("UPDATE waveforms.worker_health SET last_success=CURRENT_TIMESTAMP WHERE worker_id=%s",(worker,))
+        self.assertTrue(self.scalar("SELECT last_success IS NOT NULL FROM waveforms.worker_health WHERE worker_id=%s",(worker,),role="receipt_publisher"))
+        for role in ("assembler","receipt_publisher","reader","operator"):
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege): self.insert_fact(role=role)
+
+    def test_operator_can_write_bounded_audit_and_operation_receipt(self):
+        fact=self.insert_fact()
+        key=uuid4()
+        with self.connect("operator") as conn:
+            conn.execute("INSERT INTO waveforms.audit(intake_gateway_id,fact_id,actor,action) VALUES('GW',%s,%s,'case.note')",(fact,Jsonb(ACTOR)))
+            conn.execute("INSERT INTO waveforms.operation_receipts(intake_gateway_id,actor_domain,actor_id,idempotency_key,request_hash,result) VALUES('GW','local','1',%s,%s,'{}')",(key,"a"*64))
+            conn.execute("UPDATE waveforms.state_head SET version=version+1 WHERE singleton=1")
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.operation_receipts WHERE idempotency_key=%s",(key,),role="operator"),1)
+        self.assertEqual(self.scalar("SELECT version FROM waveforms.state_head",role="operator"),2)
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            with self.connect("operator") as conn: conn.execute("DELETE FROM waveforms.operation_receipts WHERE idempotency_key=%s",(key,))
+
+    def test_probe_rejects_public_function_and_grant_option(self):
+        with self.admin() as conn: conn.execute("GRANT EXECUTE ON FUNCTION waveforms.audited_raw(uuid,jsonb) TO PUBLIC")
+        try:
+            with self.assertRaises(WaveformError) as caught: probe_role(lambda:self.connect("reader"),"reader")
+            self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+        finally:
+            with self.admin() as conn: conn.execute("REVOKE EXECUTE ON FUNCTION waveforms.audited_raw(uuid,jsonb) FROM PUBLIC")
+        reader=self.settings["reader"]["user"]
+        with self.admin() as conn: conn.execute(sql.SQL("GRANT SELECT ON waveforms.fact_metadata TO {} WITH GRANT OPTION").format(sql.Identifier(reader)))
+        try:
+            with self.assertRaises(WaveformError) as caught: probe_role(lambda:self.connect("reader"),"reader")
+            self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+        finally:
+            with self.admin() as conn: conn.execute(sql.SQL("REVOKE GRANT OPTION FOR SELECT ON waveforms.fact_metadata FROM {}").format(sql.Identifier(reader)))
+
+    def test_runtime_cannot_ddl(self):
+        for role in RUNTIME_ROLES:
+            for statement in ("CREATE TABLE waveforms.forbidden(id int)", "CREATE TABLE public.forbidden(id int)",
+                              "CREATE TEMP TABLE forbidden(id int)", "CREATE SCHEMA forbidden"):
+                with self.subTest(role=role, statement=statement):
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                        with self.connect(role) as conn: conn.execute(statement)
+
+    def test_exact_raw_read_commits_audit_and_rejects_bad_actor(self):
+        fact = self.insert_fact(payload=b"original")
+        with self.connect("reader") as conn:
+            self.assertEqual(conn.execute("SELECT waveforms.audited_raw(%s,%s)", (fact, Jsonb(ACTOR))).fetchone()[0], b"original")
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.audit WHERE fact_id=%s AND action='raw.read'", (fact,), role="migration_owner"), 1)
+        for actor in (None, [], "bad", {}, ACTOR | {"display_name": "extra"}, ACTOR | {"user_id": True}, ACTOR | {"username": "x"*129}, ACTOR | {"username":"\n"}, ACTOR | {"username":" "}):
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                with self.connect("reader") as conn: conn.execute("SELECT waveforms.audited_raw(%s,%s)", (fact, Jsonb(actor)))
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            with self.connect("operator") as conn: conn.execute("SELECT waveforms.audited_raw(%s,%s)", (fact, Jsonb(ACTOR)))
+
+    def test_raw_read_fails_when_audit_capacity_exhausted(self):
+        fact = self.insert_fact()
+        with self.connect("migration_owner") as conn:
+            conn.execute("UPDATE waveforms.capacity SET used_metadata_rows=metadata_rows WHERE bucket='GW'")
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.connect("reader") as conn: conn.execute("SELECT waveforms.audited_raw(%s,%s)", (fact, Jsonb(ACTOR)))
+        self.assertEqual(self.scalar("SELECT count(*) FROM waveforms.audit", role="migration_owner"), 0)
+
+    def test_probe_rejects_public_column_leak(self):
+        with self.admin() as conn: conn.execute("GRANT SELECT(raw_payload) ON waveforms.facts TO PUBLIC")
+        try:
+            with self.assertRaises(WaveformError): probe_role(lambda: self.connect("reader"), "reader")
+        finally:
+            with self.admin() as conn: conn.execute("REVOKE SELECT(raw_payload) ON waveforms.facts FROM PUBLIC")
+
+    def test_probe_rejects_extra_relations_in_ordinary_pg_prefixed_schema(self):
+        self.insert_fact(payload=b"synthetic extra-schema raw")
+        reader=sql.Identifier(self.settings["reader"]["user"])
+        for kind in ("TABLE","VIEW"):
+            with self.subTest(kind=kind):
+                schema=sql.Identifier("pgwaveformtest"+uuid4().hex)
+                relation=sql.SQL("{}.raw_leak").format(schema)
+                with self.connect("migration_owner") as conn:
+                    conn.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+                try:
+                    with self.connect("migration_owner") as conn:
+                        conn.execute(sql.SQL("CREATE {} {} AS SELECT raw_payload FROM waveforms.facts").format(sql.SQL(kind),relation))
+                        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema,reader))
+                        conn.execute(sql.SQL("GRANT SELECT ON {} TO {}").format(relation,reader))
+                    with self.connect("reader") as conn:
+                        self.assertEqual(conn.execute(sql.SQL("SELECT raw_payload FROM {}").format(relation)).fetchone()[0],b"synthetic extra-schema raw")
+                    with self.assertRaises(WaveformError) as caught:
+                        probe_role(lambda:self.connect("reader"),"reader")
+                    self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+                finally:
+                    with self.connect("migration_owner") as conn:
+                        conn.execute(sql.SQL("DROP {} IF EXISTS {}").format(sql.SQL(kind),relation))
+                        conn.execute(sql.SQL("DROP SCHEMA {}").format(schema))
+
+    def test_probe_rejects_extra_function_in_ordinary_pg_prefixed_schema(self):
+        self.insert_fact(payload=b"synthetic extra-function raw")
+        reader=sql.Identifier(self.settings["reader"]["user"])
+        schema=sql.Identifier("pgwaveformtest"+uuid4().hex)
+        function=sql.SQL("{}.raw_leak()").format(schema)
+        with self.connect("migration_owner") as conn:
+            conn.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        try:
+            with self.connect("migration_owner") as conn:
+                conn.execute(sql.SQL("CREATE FUNCTION {} RETURNS bytea LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS {}").format(function,sql.Literal("SELECT raw_payload FROM waveforms.facts LIMIT 1")))
+                conn.execute(sql.SQL("REVOKE ALL ON FUNCTION {} FROM PUBLIC").format(function))
+                conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema,reader))
+                conn.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(function,reader))
+            with self.connect("reader") as conn:
+                self.assertEqual(conn.execute(sql.SQL("SELECT {}").format(function)).fetchone()[0],b"synthetic extra-function raw")
+            with self.assertRaises(WaveformError) as caught:
+                probe_role(lambda:self.connect("reader"),"reader")
+            self.assertEqual(caught.exception.code,"waveform.privilege_unsafe")
+        finally:
+            with self.connect("migration_owner") as conn:
+                conn.execute(sql.SQL("DROP FUNCTION IF EXISTS {}").format(function))
+                conn.execute(sql.SQL("DROP SCHEMA {}").format(schema))
+
+    def test_probe_rejects_owner_membership(self):
+        owner, reader = (self.settings[r]["user"] for r in ("migration_owner", "reader"))
+        with self.admin() as conn: conn.execute(sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE").format(sql.Identifier(owner), sql.Identifier(reader)))
+        try:
+            with self.assertRaises(WaveformError): probe_role(lambda: self.connect("reader"), "reader")
+        finally:
+            with self.admin() as conn: conn.execute(sql.SQL("REVOKE {} FROM {}").format(sql.Identifier(owner), sql.Identifier(reader)))
+
+    def test_probe_rejects_superuser_and_disabled_fk(self):
+        with self.assertRaises(WaveformError): probe_role(self.admin, "reader")
+        with self.admin() as conn: conn.execute("ALTER TABLE waveforms.observations DISABLE TRIGGER ALL")
+        try:
+            with self.assertRaises(WaveformError): probe_role(lambda: self.connect("receiver"), "receiver")
+        finally:
+            with self.admin() as conn: conn.execute("ALTER TABLE waveforms.observations ENABLE TRIGGER ALL")

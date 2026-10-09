@@ -716,3 +716,39 @@ html:has(.ingest-reliability), body:has(.ingest-reliability) { min-width: 0; }
 @media (max-width: 700px) {
   .field-registry .registry-status-grid, .field-registry .registry-metadata { grid-template-columns: minmax(0,1fr); }
 }
+:root { --wave-line: #187c94; }
+html:has(.waveforms), body:has(.waveforms) { min-width: 0; }
+body:has(.waveforms) .topbar { min-width: 0; }
+body:has(.waveforms) .topnav { overflow-x: auto; }
+.waveforms { min-width: 0; max-width: 100%; }
+.wave-body { padding: 22px; min-width: 0; }
+.wave-tabs, .wave-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin: 16px 0; }
+.wave-tabs .active { background: #176e85; color: white; }
+.wave-notice { padding: 12px 16px; border-left: 3px solid #32899c; background: #eef7f9; color: #284f5d; line-height: 1.7; }
+.wave-muted { color: #687c87; font-size: 13px; line-height: 1.7; }
+.wave-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; align-items: end; }
+.waveforms label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; min-width: 0; color: #45606e; }
+.waveforms input, .waveforms select, .waveforms textarea { width: 100%; min-width: 0; border: 1px solid #cfdae1; border-radius: 6px; padding: 9px; font: inherit; background: white; }
+.waveforms textarea { min-height: 110px; resize: vertical; }
+.waveforms button { white-space: normal; overflow-wrap: anywhere; }
+.waveforms details { margin: 18px 0; padding: 14px; border: 1px solid #dce6eb; border-radius: 8px; }
+.waveforms summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.wave-metadata { display: grid; grid-template-columns: minmax(115px, 170px) minmax(0, 1fr); gap: 7px 16px; margin: 14px 0; font-size: 13px; }
+.wave-metadata dt { color: #647986; }
+.wave-metadata dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.wave-table-wrap { overflow-x: auto; margin-top: 18px; max-width: 100%; }
+.wave-table-wrap table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+.wave-table-wrap th, .wave-table-wrap td { text-align: left; border-bottom: 1px solid #e4ebef; padding: 12px; vertical-align: top; overflow-wrap: anywhere; white-space: normal; }
+.wave-table-wrap th:first-child { width: 15%; }.wave-table-wrap th:nth-child(2) { width: 13%; }.wave-table-wrap th:last-child { width: 30%; }
+.wave-table-wrap small { display: block; margin-top: 6px; }
+.wave-subpanel { margin-top: 22px; padding-top: 18px; border-top: 1px solid #dce6eb; min-width: 0; }
+.wave-command { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 12px 0; }
+.wave-command label { flex: 1 1 200px; }.wave-command p { flex-basis: 100%; margin: 0; }
+.wave-chart { margin: 20px 0; min-width: 0; background: white; border: 1px solid #dde7ec; border-radius: 8px; padding: 16px; }
+.wave-chart svg { display: block; width: 100%; max-height: 360px; }.wave-axis { fill: none; stroke: #b8c9d1; stroke-width: 1; }
+.wave-line { fill: none; stroke: var(--wave-line); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.wave-axis-text { fill: #4b6676; font-size: 12px; }
+.wave-hover-dot { fill: #146e83; stroke: white; stroke-width: 1.5; }.wave-hover-dot[hidden] { display: none; }
+.wave-tooltip { background: #193e4d; color: white; padding: 10px 12px; border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.wave-tooltip[hidden] { display: none; }.wave-status { overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .wave-body { padding: 14px; }.wave-metadata { grid-template-columns: 130px minmax(0, 1fr); }.wave-tabs { gap: 8px; } }

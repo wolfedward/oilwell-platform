@@ -1,0 +1,146 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const checks=[];const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
+try{
+ if('FIXTURE_MODE'==='history'){
+  const {renderWaveforms}=await import(PAGE_MODULE),root=document.querySelector('#root'),P='11111111-1111-4111-8111-111111111111',L='22222222-2222-4222-8222-222222222222',R='33333333-3333-4333-8333-333333333333',tick=()=>new Promise(r=>setTimeout(r,0));
+  for(const mode of ['distinct','same','unconfirmed']){
+   const reads=[],history={status:'resolved',resolution_reasons:[],revision:'9007199254740993',utc_start:'2026-09-29T00:00:00.000000Z',time_basis:{unit:'ns',reference:'utc_start',support:'inclusive_corrected_physical'},lower_ns:'-100/3',upper_ns:'2000000100/3',well:{id:P,area_code:'A',well_code:'HIST-WELL'}};
+   const sides=['left','right'].map((side,i)=>({side,quality_run_id:mode==='same'||!i?L:R,capture_pk:mode==='same'||!i?L:R,source_key:{gateway_id:'GW',device_id:mode==='same'||!i?'LEFT':'RIGHT',capture_id:mode==='same'||!i?L:R},manifest_sha256:'a'.repeat(64),purpose:'software_pair_test',status:mode==='unconfirmed'?'pending':'eligible',recorded_at:'2026-09-30T01:02:03.000000Z',historical_registry:mode==='unconfirmed'?null:history}));
+   const api={get:async path=>{reads.push(path);if(path.startsWith('/api/waveforms/pairs?'))return{items:[{pair_version_id:P,state:'proposed',version:'1'}],page:1,has_more:false};if(path.endsWith('/preview'))return{current_status:'pending',current_reasons:['fresh_gate']};if(path.startsWith('/api/waveforms/captures/'))return{utc_start:path.endsWith(L)?'2026-09-29T00:00:00.123456Z':null,utc_uncertainty_ns:'123456789',source_kind:'synthetic',cycle:{cycle_id:'DECLARED-CYCLE'},streams:[{source:{device_id:'ACTUAL-SENSOR'}}]};return{id:P,version:'1',left_quality_run_id:L,right_quality_run_id:mode==='same'?L:R,historical_evaluations:sides,body:{selection:{cycle:{cycle_id:'SELECTED-CYCLE'},channels:[]},joint_result:{status:'eligible',reasons:[],cycle_summary:{stroke:'4',unit:'m',cycles_per_minute:'30'}},physical_cycles:[{physical_cycle_key:'EXACT-CYCLE-PROOF',support:['0','2000000000']}]}};}};
+   await renderWaveforms({workspace:root,api,permissions:new Set(['waveform.read']),actorId:'1',authSession:{},capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,page:{},pageHeader:()=>'<h1>配对历史</h1>',params:{view:'pairs'}});root.querySelector('[data-wave-pair]').click();await tick();
+   check(root.querySelectorAll('[data-wave-pair-history]').length===2,'both exact historical sides displayed');check(root.textContent.includes(L)&&root.textContent.includes(mode==='same'?L:R),'actual fixed quality IDs retained');
+   check(root.textContent.includes('评估时历史归属')&&root.textContent.includes('测量声明锚点')&&root.textContent.includes('联合校正区间'),'history and declared measurement time are separately labeled');
+   check(root.textContent.includes('EXACT-CYCLE-PROOF')&&root.textContent.includes('cycles_per_minute')&&root.textContent.includes('SELECTED-CYCLE'),'stored same-cycle proof and quantitative summary retained');
+   check(reads.filter(p=>p.startsWith('/api/waveforms/captures/')).length===(mode==='same'?1:2),'capture discovery bounded and deduplicated by actual capture pk');
+   check(mode==='unconfirmed'?root.textContent.includes('归属未确认')&&!root.textContent.includes('HIST-WELL'):root.textContent.includes('HIST-WELL')&&root.textContent.includes('9007199254740993')&&root.textContent.includes('-100/3'),'confirmed and null histories stay distinct and exact');
+   if(mode==='same')check(root.textContent.includes('同一联合评估')&&root.textContent.includes('不代表两次独立测量'),'same quality run not presented as independent sides');
+   if(mode==='distinct'){
+    check(root.textContent.includes('123456789')&&root.textContent.includes('ACTUAL-SENSOR'),'measurement uncertainty and actual source rendered');await window.captureEvidence?.('pair-history','[data-wave-pair-detail]');
+    const originalGet=api.get,held=[];api.get=(path,options)=>path.startsWith('/api/waveforms/captures/')?new Promise(resolve=>held.push({resolve,signal:options.signal})):originalGet(path);
+    root.querySelector('[data-wave-pair]').click();await tick();const replaced=held.slice();root.querySelector('[data-wave-pair]').click();await tick();check(replaced.length===2&&replaced.every(r=>r.signal.aborted),'reselect pair aborts both historical capture discoveries');
+    replaced.forEach(r=>r.resolve({source_kind:'LATE-PAIR',streams:[]}));await tick();check(!root.querySelector('[data-wave-pair-detail]').textContent.includes('LATE-PAIR'),'late pair discovery cannot repaint replacement');
+    root.querySelector('[data-wave-tab="imports"]').click();await tick();check(held.every(r=>r.signal.aborted),'leaving pair view aborts current capture discoveries');
+   }
+  }document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else if('FIXTURE_MODE'==='cancellation'){
+  const {renderWaveforms}=await import(PAGE_MODULE),root=document.querySelector('#root'),tick=()=>new Promise(r=>setTimeout(r,0)),A='11111111-1111-4111-8111-111111111111',B='22222222-2222-4222-8222-222222222222',C='33333333-3333-4333-8333-333333333333';
+  const rows=[A,B,C].map((capture_pk,i)=>({capture_pk,device_id:['A','B','C'][i],gateway_id:'GW'})),requests=[];let listCount=0,holdDetail=true,dispose;
+  const api={get:(path,{signal})=>{const r={path,signal};requests.push(r);if(path.startsWith('/api/waveforms/captures?')){listCount++;return Promise.resolve({items:rows,page:1,has_more:false});}
+   if(path==='/api/waveforms/captures/'+B)return Promise.resolve({...rows[1],streams:[{stream_id:'s',source:{},rate:{num:1,den:1},first_sample_index:'0',frame_count:3,channels:[]}],missing_chunks:{}});
+   if(path==='/api/waveforms/captures/'+A&&!holdDetail)return Promise.resolve({...rows[0],streams:[],missing_chunks:{}});
+   return new Promise((resolve,reject)=>Object.assign(r,{resolve,reject}));}};
+  const context={workspace:root,api,permissions:new Set(['waveform.read']),actorId:'1',authSession:{},capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,registerDispose:d=>{dispose=d;},page:{},pageHeader:()=>'<h1>请求取消</h1>'};
+  await renderWaveforms(context);await tick();const oldReads=requests.filter(r=>r.resolve);check(oldReads.length===6,'two receiving workers issue six bounded enrichment reads');
+  root.querySelector('.wave-filters').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();check(oldReads.every(r=>r.signal.aborted),'filter replacement aborts previous enrichment generation');
+  const count=requests.length;oldReads.forEach(r=>r.resolve({items:[],streams:[]}));await tick();check(requests.length===count,'aborted generation does not start third row reads');
+  root.querySelector('[data-wave-select="'+A+'"]').click();await tick();const oldA=requests.at(-1);root.querySelector('[data-wave-select="'+B+'"]').click();await tick();check(oldA.signal.aborted,'capture replacement aborts initial detail read');
+  oldA.reject(Error('late'));await tick();check(root.querySelector('[data-wave-detail] h2')?.textContent.includes('B')&&!root.querySelector('[data-wave-detail]').textContent.includes('请求未能确认'),'B actual detail survives late A failure without new error feedback');
+  const windowRequest=requests.find(r=>r.path.includes('/streams/'));const provenance=requests.filter(r=>r.path.includes(B+'?view=provenance')).at(-1);
+  root.querySelector('[data-wave-stream]').click();await tick();check(windowRequest.signal.aborted&&!provenance.signal.aborted,'window replacement aborts only its own scope not sibling history');
+  root.querySelector('[data-wave-evidence-list]').click();await tick();const evidence=requests.at(-1);holdDetail=false;root.querySelector('[data-wave-select="'+A+'"]').click();await tick();check(provenance.signal.aborted&&evidence.signal.aborted&&requests.filter(r=>r.path.includes('/streams/')).every(r=>r.signal.aborted),'detail replacement aborts window history and evidence scopes');
+  const unresolved=requests.filter(r=>r.resolve&&!r.signal.aborted);dispose();check(unresolved.every(r=>r.signal.aborted),'workspace disposal aborts all remaining scoped reads');
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else if('FIXTURE_MODE'==='denial'){
+  const {renderWaveforms}=await import(PAGE_MODULE),root=document.querySelector('#root'),P='11111111-1111-4111-8111-111111111111',tick=()=>new Promise(r=>setTimeout(r,0));let transport=0,denied=true,dispose;
+  const api={get:async path=>{transport++;return path.includes('?')?{items:path.includes('/pairs?')?[{pair_version_id:P,state:'proposed',version:'1'}]:[],page:1,has_more:false}:{id:P,version:'1',body:{},historical_evaluations:[]};},post:async()=>{transport++;if(denied)throw Object.assign(Error('denied'),{status:403});return{version:'2'};}};
+  const context={workspace:root,api,permissions:new Set(['waveform.read','waveform.review']),actorId:'1',authSession:{},capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,registerDispose:d=>{dispose=d;},page:{},pageHeader:()=>'<h1>会话拒绝</h1>',params:{view:'pairs'}};
+  const select=async()=>{root.querySelector('[data-wave-pair]').click();await tick();const f=root.querySelector('[data-wave-action$="/review"]');f.querySelector('[name=reason]').value='独立复核';f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();};
+  await renderWaveforms(context);await select();const stopped=transport;
+  root.querySelector('[data-wave-tab="captures"]').click();await tick();root.querySelector('[data-wave-tab="pairs"]').click();await tick();check(transport===stopped,'403 survives tab replacement without new transport');
+  dispose();root.replaceChildren();await renderWaveforms({...context,permissions:new Set(context.permissions)});await tick();check(transport===stopped,'403 survives workspace reopen with same authenticated session');
+  denied=false;context.authSession={};await renderWaveforms(context);await select();check(transport>stopped&&root.textContent.includes('配对固定选择'),'explicit successful reauthentication permits fresh authorized operation');dispose();
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else if('FIXTURE_MODE'==='decisions'){
+  const {createWaveformClient}=await import(CLIENT_MODULE),{mountPairs}=await import(new URL('pairs.js',CLIENT_MODULE)),{mountEvidence}=await import(new URL('evidence.js',CLIENT_MODULE));
+  const root=document.querySelector('#root'),P='11111111-1111-4111-8111-111111111111',tick=()=>new Promise(r=>setTimeout(r,0)),permissions=new Set(['waveform.read','waveform.review']);
+  for(const kind of ['pair','evidence']){
+   root.replaceChildren();const calls=[];let rejectFirst,failed=false;
+   const client=createWaveformClient({get:async path=>path.includes('?')?{items:path.startsWith('/api/waveforms/pairs?')?[{pair_version_id:P,state:'proposed',version:'1'}]:[],page:1,has_more:false}:path.endsWith('/preview')?{}:kind==='pair'?{id:P,version:'1',body:{},historical_evaluations:[]}:{id:P,version:'1',kind:'origin',body:{}},post:async(path,body)=>{calls.push({path,body:structuredClone(body)});if(!failed)return new Promise((r,j)=>{rejectFirst=j;});return{version:'2'};}});
+   if(kind==='pair'){await mountPairs({root,client,permissions,isCurrent:()=>true}).ready;root.querySelector('[data-wave-pair]').click();}
+   else {mountEvidence({root,client,permissions,capture:{streams:[{channels:[{calibration_id:P}]}]},isCurrent:()=>true});root.querySelector('[data-wave-evidence]').click();}
+   await tick();let forms=[...root.querySelectorAll('[data-wave-action$="/review"]')],approve=forms[0],reject=forms[1];
+   for(const f of forms)f.querySelector('[name=reason]').value='独立决定';
+   const submit=f=>f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));submit(approve);submit(reject);await tick();
+   check(calls.length===1,kind+' concurrent conflicting decision never sends original under alternative control');
+   check(reject.querySelector('button').disabled,kind+' conflicting decision disabled while unresolved');
+   failed=true;rejectFirst(Object.assign(Error('uncertain'),{code:'network_error'}));await tick();submit(reject);await tick();check(calls.length===1,kind+' uncertain approve cannot be retried from reject');
+   check(approve.querySelector('button').textContent.includes('批准')&&approve.querySelector('button').textContent.includes('重试'),kind+' original intent has truthful retry entry');
+   submit(approve);await tick();check(calls.length===2&&JSON.stringify(calls[0])===JSON.stringify(calls[1]),kind+' explicit original retry retains exact command');client.dispose();
+  }
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else if('FIXTURE_MODE'==='management'){
+  const {renderWaveforms}=await import(PAGE_MODULE);const {createWaveformClient,createPager}=await import(CLIENT_MODULE);
+  const root=document.querySelector('#root'),P='11111111-1111-4111-8111-111111111111',D='22222222-2222-4222-8222-222222222222',V='33333333-3333-4333-8333-333333333333';
+  const permissions=new Set(['waveform.read','waveform.raw.read','waveform.import','waveform.evidence.manage','waveform.pair.manage','waveform.dataset.manage','waveform.review','waveform.export']);
+  const requests=[],posts=[];let frozen=false,deny=true;const tick=()=>new Promise(r=>setTimeout(r,5));
+  const api={get:async path=>{requests.push(path);const u=new URL(path,'http://fixture'),p=u.pathname;
+   if(p==='/api/waveforms/captures')return{items:[],page:1,has_more:false};
+   if(p==='/api/waveforms/pairs')return{items:[{pair_version_id:P,version:'9007199254740993',state:'proposed'}],page:1,has_more:false};
+   if(p.endsWith('/preview/window'))return{pair_id:P,pair_version:'9007199254740993',method_version:'linear_adjacent/1',reference:{time_basis:{coordinate:'corrected'}},mode:'summary',total_frames:3,budget:2000,status:'ok',restrictions:['pair_not_approved'],quantitative_use_allowed:false,closed:false,displacement_source:{source_kind:'synthetic',source:{device_id:'SENSOR-X'},key:{capture_id:P},unit:'m'},load_source:{source_kind:'synthetic',source:{device_id:'SENSOR-Y'},key:{capture_id:D},unit:'kN'},points:[{index:'9007199254740993',relative_ns:'0',displacement:2,load:10,displacement_indices:['9007199254740993'],load_indices:['7','8'],displacement_interpolated:false,load_interpolated:true,displacement_qualities:[0],load_qualities:[0,0]},{index:'9007199254740994',relative_ns:'1000000000/3',displacement:1,load:11,displacement_indices:['9007199254740994'],load_indices:['8'],displacement_interpolated:false,load_interpolated:false,displacement_qualities:[0],load_qualities:[0]}],gaps:[]};
+   if(p.endsWith('/preview'))return{pair_version_id:P,version:'9007199254740993',historical_status:'eligible',current_status:'eligible',current_reasons:[],current_restrictions:['synthetic'],dependencies_current:true};
+   if(p==='/api/waveforms/pairs/'+P)return{id:P,version:'9007199254740993',review_state:'proposed',creator:{user_id:'1'},body:{selection:{channels:[{role:'displacement',first_index:'9007199254740993',last_index:'9007199254740995'}]}}};
+   if(p==='/api/waveforms/datasets')return{items:[{dataset_id:D,title:'Synthetic dataset',state:frozen?'frozen':'draft',purpose:'software_pair_test',member_count:1}],page:1,has_more:false};
+   if(p==='/api/waveforms/datasets/'+D&&u.searchParams.has('view'))return{items:[],page:1,has_more:false};
+   if(p==='/api/waveforms/datasets/'+D)return{draft:{id:D,revision:'9007199254740993',title:'Synthetic dataset',state:frozen?'frozen':'draft',purpose:'software_pair_test',split_plan:{kind:'none'}},version:frozen?{id:V,draft_revision:'9007199254740993',purpose:'software_pair_test',content_sha256:'a'.repeat(64),restriction_reasons:['synthetic'],independent_split:false}:null};
+   throw Error('Unexpected GET '+path);
+  },post:async(path,body)=>{posts.push({path,body:structuredClone(body)});if(deny)throw Object.assign(Error('self review denied'),{status:403});return{export:{id:P},description:{allowed:true,dataset_purpose:'software_pair_test',intent:'evidence',restriction_reasons:['synthetic']}};},download:async()=>{}};
+  const managementContext={workspace:root,api,permissions,actorId:'1',authSession:{},capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,page:{},pageHeader:()=>'<h1>配对与数据集管理</h1>'};
+  await renderWaveforms(managementContext);
+  root.querySelector('[data-wave-tab="pairs"]').click();await tick();root.querySelector('[data-wave-pair]').click();await tick();
+  check(root.querySelectorAll('[data-wave-action$="/review"]').length===3,'administrator sees all review actions');
+  check(root.textContent.includes('待模型工作包接入'),'no production inverse fabricated');
+  root.querySelector('[data-wave-xy]').click();await tick();check(root.textContent.includes('SENSOR-X')&&root.textContent.includes('SENSOR-Y'),'XY uses two actual pinned source identities');
+  check(root.querySelectorAll('[data-wave-path]').length===1,'sensor XY is plotted in supplied temporal order');
+  check(root.querySelector('[data-wave-axis="x"]')?.textContent.includes('位移（m）')&&root.querySelector('[data-wave-axis="y"]')?.textContent.includes('载荷（kN）'),'XY axes use source displacement and load units');
+  await window.captureEvidence?.('xy','[data-wave-channel]');
+  check(requests.some(p=>p.includes('/preview/window?start=9007199254740993&count=3&mode=summary&budget=2000')),'XY request keeps exact index and correct route');
+  let form=root.querySelector('[data-wave-action$="/review"]');form.querySelector('[name=reason]').value='独立复核';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(form.textContent.includes('自审')&&form.querySelector('button').disabled,'backend self-review denial remains authoritative for admin');
+  check(posts[0].body.expected_version==='9007199254740993'&&posts[0].body.body.decision==='approve','real review envelope');
+  deny=false;await renderWaveforms({...managementContext,authSession:{},params:{view:'datasets'}});await tick();root.querySelector('[data-wave-dataset]').click();await tick();
+  root.querySelector('[data-wave-members]').click();await tick();check(requests.some(p=>p.includes('view=members&revision=9007199254740993')),'draft member read pins revision');
+  root.querySelector('[name=changes]').value=JSON.stringify({remove_members:[{kind:'pair',reference_id:P}]});
+  form=root.querySelector('[data-wave-action$="/update"]');form.querySelector('[name=reason]').value='移除成员';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(Object.keys(posts.at(-1).body.body).join() === 'changes'&&!JSON.stringify(posts.at(-1).body.body).includes('target_id'),'update sends HTTP body without service-only target');
+  frozen=true;root.querySelector('[data-wave-dataset]').click();await tick();root.querySelector('[data-wave-files]').click();await tick();
+  check(requests.some(p=>p.includes('view=files&version_id='+V)),'frozen files pin actual version');
+  form=root.querySelector('[data-wave-action$="/exports"]');form.querySelector('[name=reason]').value='证据下载';form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(posts.at(-1).body.expected_version==='0'&&JSON.stringify(posts.at(-1).body.body)==='{"purpose":"evidence"}','export uses independent intent and fresh version zero');
+  const pageCalls=[];let stale=false;const pager=createPager(createWaveformClient({get:async path=>{pageCalls.push(path);if(stale){stale=false;throw Object.assign(Error('refresh'),{status:409,code:'waveform.refresh_required'});}return{items:[],page:pageCalls.length===1?1:2,has_more:true,snapshot_revision:'opaque-whole-token',received_before:'2026-10-01T00:00:00.000000Z',received_after:'2026-09-30T00:00:00.000000Z'};}}),'/captures',{device_id:'A'},20);
+  await pager.load();await pager.load(2);const q=new URL(pageCalls[1],'http://fixture').searchParams;
+  check(q.get('snapshot_revision')==='opaque-whole-token'&&q.get('received_after')==='2026-09-30T00:00:00.000000Z','page preserves opaque token and effective time bounds');
+  stale=true;await pager.load(3);check(!new URL(pageCalls.at(-1),'http://fixture').searchParams.has('snapshot_revision'),'409 refresh restarts page1');
+  const {mountEvidence}=await import(new URL('evidence.js',CLIENT_MODULE));const evidenceRoot=document.createElement('section');root.append(evidenceRoot);let evidencePosts=0;
+  const evidenceClient=createWaveformClient({get:async()=>({id:P,kind:'origin',version:'1',review_state:'draft',body:{attachment_ids:[]},creator:{user_id:'1'}}),post:async()=>{evidencePosts++;return{id:P};}});
+  mountEvidence({root:evidenceRoot,client:evidenceClient,permissions,capture:{streams:[]},isCurrent:()=>true});
+  const create=evidenceRoot.querySelector('[data-wave-action="/evidence"]');evidenceRoot.querySelector('[name=body]').value='{}';create.querySelector('[name=reason]').value='新增来源资料';
+  create.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();create.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+  check(evidencePosts===2,'selecting saved evidence does not dispose independent create form');
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }else{
+ const {createWaveformClient}=await import(CLIENT_MODULE);let allowed=true,current=true,fail=true;const calls=[];
+ const api={post:async(path,body)=>{calls.push({path,body:structuredClone(body)});if(fail)throw Object.assign(Error('uncertain'),{code:'network_error'});return{version:'2'};},get:async()=>({items:[]})};
+ const client=createWaveformClient(api,{isCurrent:()=>current,can:()=>allowed});
+ const body={decision:'approve'};const command=client.prepare('/pairs/00000000-0000-0000-0000-000000000001/review','9007199254740993','复核理由',body,'waveform.review');body.decision='reject';
+ try{await client.send(command);}catch{}
+ fail=false;await client.send(command);check(JSON.stringify(calls[0])===JSON.stringify(calls[1]),'uncertain retry retains exact target/version/key/reason/body');
+ check(calls[0].body.body.decision==='approve'&&calls[0].body.expected_version==='9007199254740993','command is immutable exact version');
+ allowed=false;try{await client.send(command);}catch{}check(calls.length===2,'revoked permission stops retry before transport');
+ const {mountCommand}=await import(CLIENT_MODULE);const actionRoot=document.createElement('div');document.querySelector('#root').append(actionRoot);let stale=true;const versions=[];
+ const actionClient=createWaveformClient({post:async(p,b)=>{versions.push(b.expected_version);if(stale)throw Object.assign(Error('stale'),{status:409});return{version:'3'};}});
+ const args={root:actionRoot,client:actionClient,permissions:new Set(['waveform.review']),permission:'waveform.review',path:'/pairs/00000000-0000-0000-0000-000000000001/review',label:'复核',body:{decision:'approve'},isCurrent:()=>true};
+ let actionMount=mountCommand({...args,version:'1'});let f=actionRoot.querySelector('form');f.querySelector('input').value='确认';f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,0));actionMount.dispose();actionRoot.replaceChildren();
+ stale=false;mountCommand({...args,version:'2'});f=actionRoot.querySelector('form');f.querySelector('input').value='重新读取后确认';f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,0));check(versions.join(',')==='1,2','definite409 allows a new command only after rereading actual version');
+ allowed=true;let resolve;api.get=()=>new Promise(r=>{resolve=r;});const pending=client.read('/captures');client.dispose();resolve({secret:'late'});check(await pending===null,'late read cannot survive disposal');
+ const {renderWaveforms}=await import(PAGE_MODULE);const root=document.querySelector('#root');let held,mode='late',dispose;
+ const rows=[{capture_pk:'00000000-0000-0000-0000-000000000001',device_id:'A'},{capture_pk:'00000000-0000-0000-0000-000000000002',device_id:'B'}];
+ const fixtureApi={get:async path=>{if(path.split('?')[0]==='/api/waveforms/captures')return{items:rows,page:1,has_more:false};if(path.endsWith(rows[0].capture_pk))return new Promise((resolve,reject)=>{held={resolve,reject};});if(path.includes('?'))return path.includes('summary')?{...rows[1],streams:[],missing_chunks:{},completion:null}:{items:[],page:1,has_more:false};return{...rows[1],streams:[],missing_chunks:{},completion:null};}};
+ const ctx={workspace:root,api:fixtureApi,permissions:new Set(['waveform.read']),actorId:'1',capabilities:{waveforms:{enabled:true,status:'ready'}},isCurrent:()=>true,registerDispose:d=>{dispose=d;},pageHeader:()=>'<h1>同步波形</h1>',page:{}};
+ await renderWaveforms(ctx);root.querySelector('[data-wave-select="'+rows[0].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));root.querySelector('[data-wave-select="'+rows[1].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));
+ held.resolve({...rows[0],device_id:'LATE-A',streams:[]});await new Promise(r=>setTimeout(r,0));check(root.querySelector('[data-wave-detail] h2')?.textContent.includes('B')&&!root.querySelector('[data-wave-detail]').textContent.includes('请求未能确认'),'late success keeps actual B detail without error feedback');
+ root.querySelector('[data-wave-select="'+rows[0].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));root.querySelector('[data-wave-select="'+rows[1].capture_pk+'"]').click();await new Promise(r=>setTimeout(r,0));held.reject(Error('LATE-ERROR'));await new Promise(r=>setTimeout(r,0));check(root.querySelector('[data-wave-detail] h2')?.textContent.includes('B')&&!root.querySelector('[data-wave-detail]').textContent.includes('请求未能确认'),'late failure keeps actual B detail without error feedback');
+ dispose();check(root.scrollWidth<=innerWidth,'workspace fits viewport');document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+ }
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:e.stack,checks});}
+</script>

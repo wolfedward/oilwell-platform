@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE>
+<style>#result{display:none}body{padding:24px}#root{max-width:1100px}</style>
+<h1>同步波形 · 精确窗口</h1><div id="root" class="waveforms"></div><pre id="result">pending</pre>
+<script type="module">
+const checks=[]; const check=(v,n)=>{if(!v)throw Error(n);checks.push(n);};
+try {
+ const mod=await import(CHART_MODULE);check(typeof mod.mountWaveformChart==='function','chart mount exists');
+ const root=document.querySelector('#root'), base=9007199254740993n;
+ const point=(n,value)=>({index:String(base+BigInt(n)),raw_index:String(base+BigInt(n)),relative_ns:String(9007199254740993000n+BigInt(n)*1000000000n)+'/3',value,quality:0});
+ const result={source_kind:'synthetic',source:{gateway_id:'SOURCE-GW',device_id:'SOURCE-DEVICE',boot_id:'boot'},key:{gateway_id:'ROUTE-GW'},mode:'summary',start:String(base),count:9,total_frames:9,restrictions:[],channels:[{metadata:{channel_id:'load',quantity:'load',unit:'kN',calibration:null,sampling_config:null,reported_config_id:'CFG1'},time_basis:{coordinate:'corrected',utc_start:null,utc_uncertainty_ns:'0',time_correction_ns:'0'},status:'ok',restrictions:['historical_only'],points:[point(0,12.345),point(1,13),point(4,20),point(5,21),point(8,15)],gaps:[{first_index:String(base+2n),last_index:String(base+3n),reasons:['missing']},{first_index:String(base+6n),last_index:String(base+7n),reasons:['bad']}]}]};
+ let request; const mounted=mod.mountWaveformChart(root,result,{onWindowRequest:r=>{request=r;}});
+ check(root.querySelectorAll('[data-wave-path]').length===3,'two missing intervals split into three paths');
+ check(root.querySelector('[data-wave-axis="x"]')?.textContent.includes('时间')&&root.querySelector('[data-wave-axis="y"]')?.textContent.includes('kN'),'ordinary chart has named axes with actual units');
+ check(root.querySelectorAll('[data-wave-tick]').length===10,'both axes have readable numeric ticks');
+ check(!root.querySelector('circle:not([hidden])'),'points hidden before hover');
+ const hit=root.querySelector('[data-wave-point]'); hit.dispatchEvent(new MouseEvent('pointermove',{bubbles:true}));
+ const tip=root.querySelector('[data-wave-tooltip]');check(tip.textContent.includes('9007199254740993'),'exact index');
+ check(tip.textContent.includes('0.00')&&tip.textContent.includes('12.35'),'both hover axes use two decimals');
+ check(tip.textContent.includes('9007199254740993000/3'),'exact Fraction time retained');
+ check(root.textContent.includes('SOURCE-DEVICE')&&root.textContent.includes('synthetic')&&root.textContent.includes('historical_only'),'pinned source and restrictions');
+ root.querySelector('[data-wave-narrow]').click();check(request&&typeof request.start==='string'&&request.mode==='raw','narrow requests exact bounded raw window');
+ mounted.dispose();hit.dispatchEvent(new MouseEvent('pointermove',{bubbles:true}));check(tip.hidden,'dispose removes listeners');
+ const failed=structuredClone(result);failed.channels[0].status='gap_overflow';failed.channels[0].suggested_count=4;
+ mod.mountWaveformChart(root,failed,{onWindowRequest:r=>{request=r;}});check(!root.querySelector('[data-wave-path]'),'failed channel never draws partial');
+ check(root.textContent.includes('gap_overflow'),'failure reason visible');
+ mod.mountWaveformChart(root,result,{onWindowRequest:r=>{request=r;}});
+ await window.captureEvidence?.('ordinary','[data-wave-channel]');
+ check(root.scrollWidth<=innerWidth,'chart fits viewport');
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:e.stack,checks});}
+</script>

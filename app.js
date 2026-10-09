@@ -26,6 +26,7 @@ import { renderWorkOrders } from "./frontend/pages/work-orders.js";
 import { renderAcquisitionStream } from "./frontend/pages/acquisition.js";
 import { renderFieldRegistry } from "./frontend/pages/field-registry.js";
 import { renderIngestReliability } from "./frontend/pages/ingest-reliability.js";
+import { renderWaveforms } from "./frontend/pages/waveforms.js";
 import { renderQualityBoard } from "./frontend/pages/data-quality.js";
 import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
@@ -51,6 +52,7 @@ const NAVIGATION = [
       { id: "data-quality", label: "数据质量", description: "缺测、延迟、漂移与补传处置" },
       { id: "field-registry", label: "生产设备台账", description: "独立生产目录、点表版本、时效绑定与来源核查", permission: "registry.read" },
       { id: "ingest-reliability", label: "接收异常与回执", description: "隔离事实、人工处置、授权原文与回执发送", permission: "ingest.read" },
+      { id: "waveforms", label: "同步波形与数据集", description: "同步录波、来源与校准、配对复核和数据集", permission: "waveform.read" },
       { id: "devices", label: "测控终端", description: "设备心跳、通道、寄存器与运行状态" },
       { id: "device-command", label: "指令详情", description: "签名载荷、执行状态与分阶段回执", hidden: true },
     ],
@@ -106,8 +108,10 @@ const PAGE_INDEX = new Map(
 const app = document.querySelector("#app");
 let shellReady = false;
 let loginGeneration = 0;
+let waveformAuthSession = {};
 let shellEventsBound = false;
 let renderGeneration = 0;
+let disposeWaveforms = null;
 
 function roleLabel(code) {
   return ({
@@ -166,7 +170,7 @@ function renderChrome() {
     </button>`).join("");
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
-    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission)) && (page.id !== "field-registry" || state.user?.capabilities?.registry?.enabled === true) && (page.id !== "ingest-reliability" || state.user?.capabilities?.ingest_reliability?.enabled === true)).map((page) => `
+    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission)) && (page.id !== "field-registry" || state.user?.capabilities?.registry?.enabled === true) && (page.id !== "ingest-reliability" || state.user?.capabilities?.ingest_reliability?.enabled === true) && (page.id !== "waveforms" || state.user?.capabilities?.waveforms?.enabled === true)).map((page) => `
       <button type="button" data-page="${page.id}" class="${page.id === state.activePage ? "active" : ""}"
         aria-label="${escapeHtml(page.label)}" title="${escapeHtml(page.label)}"
         aria-current="${page.id === state.activePage ? "page" : "false"}">
@@ -194,7 +198,7 @@ async function renderModuleLanding(page) {
   workspace.innerHTML = `${pageHeader(page)}
     <section class="panel module-landing"><div class="landing-title"><span>${page.module.icon}</span>
       <div><p class="eyebrow">${escapeHtml(page.module.label.toUpperCase())}</p><h2>${escapeHtml(page.label)}</h2><p>${escapeHtml(page.description)}</p></div></div>
-      <div class="landing-links">${page.module.pages.filter(item => (item.id !== "field-registry" || (store.getState().user?.capabilities?.registry?.enabled === true && store.getState().user?.permissions?.includes("registry.read"))) && (item.id !== "ingest-reliability" || (store.getState().user?.capabilities?.ingest_reliability?.enabled === true && store.getState().user?.permissions?.includes("ingest.read")))).map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
+      <div class="landing-links">${page.module.pages.filter(item => (item.id !== "field-registry" || (store.getState().user?.capabilities?.registry?.enabled === true && store.getState().user?.permissions?.includes("registry.read"))) && (item.id !== "ingest-reliability" || (store.getState().user?.capabilities?.ingest_reliability?.enabled === true && store.getState().user?.permissions?.includes("ingest.read"))) && (item.id !== "waveforms" || (store.getState().user?.capabilities?.waveforms?.enabled === true && store.getState().user?.permissions?.includes("waveform.read")))).map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
         <strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.description)}</span><b>进入 →</b></button>`).join("")}</div>
       <div class="system-ready"><i></i><span><strong>服务接口已就绪</strong><small>页面读取当前登录账号的权限与本机业务数据。</small></span></div>
     </section>`;
@@ -202,6 +206,7 @@ async function renderModuleLanding(page) {
 
 async function renderPage(pageId, params = {}) {
   const generation = ++renderGeneration;
+  disposeWaveforms?.(); disposeWaveforms = null;
   components.closeAllModals();
   const page = PAGE_INDEX.get(pageId) || PAGE_INDEX.get("dashboard");
   const state = store.getState();
@@ -216,6 +221,9 @@ async function renderPage(pageId, params = {}) {
     const context = {
       api, components, format, escapeHtml, workspace, page, pageHeader, params,
       permissions: new Set(state.user?.permissions || []),
+      actorId: state.user?.id,
+      authSession: waveformAuthSession,
+      registerDispose: dispose => {if (generation === renderGeneration) disposeWaveforms = dispose; else dispose();},
       capabilities: state.user?.capabilities || {registry: {enabled: false, status: "disabled"}, ingest_reliability: {enabled: false, status: "disabled"}},
       navigate: openPage,
       isCurrent: () => generation === renderGeneration,
@@ -243,6 +251,7 @@ async function renderPage(pageId, params = {}) {
       acquisition: renderAcquisitionStream,
       "field-registry": renderFieldRegistry,
       "ingest-reliability": renderIngestReliability,
+      waveforms: renderWaveforms,
       "data-quality": renderQualityBoard,
       dynagraphs: renderDynagraphList,
       "dynagraph-analysis": renderDynagraphAnalysis,
@@ -283,6 +292,7 @@ function bindShellEvents() {
   shellEventsBound = true;
   app.addEventListener("click", async (event) => {
     if (event.target.closest("#logoutButton")) {
+      disposeWaveforms?.(); disposeWaveforms = null;
       try { await api.post("/api/auth/logout", {}); } catch (error) { /* session may already be invalid */ }
       await showLogin();
       return;
@@ -340,6 +350,7 @@ function bindShellEvents() {
 
 async function showShell(user) {
   loginGeneration += 1;
+  waveformAuthSession = {}; // Only reached after successful login/auth-me.
   store.setState({ user });
   app.innerHTML = shellMarkup(user);
   app.setAttribute("aria-busy", "false");
@@ -351,6 +362,7 @@ async function showShell(user) {
 
 async function showLogin() {
   const generation = ++loginGeneration;
+  ++renderGeneration; disposeWaveforms?.(); disposeWaveforms = null;
   shellReady = false;
   components.closeAllModals();
   store.reset();

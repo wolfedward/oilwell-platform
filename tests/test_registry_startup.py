@@ -73,7 +73,7 @@ class RegistryStartupTests(unittest.TestCase):
                 '[postgres]\nhost="127.0.0.1"\nport=3822\ndatabase="oilwell_registry_test"\nuser="test_ingest"\npassword_env="TEST_INGEST_UNUSED"\nsslmode="disable"\n'
                 '[postgres_query]\nhost="127.0.0.1"\nport=3822\ndatabase="oilwell_registry_test"\nuser="test_reader"\npassword_env="TEST_READER_ONLY"\nsslmode="disable"\n',encoding="utf-8")
             with patch.dict(os.environ,{"TEST_READER_ONLY":"not-a-real-connection-secret"}):
-                with self.platform(center_config_path=path) as (server,http):
+                with self.assertLogs('backend.registry.runtime',level='WARNING') as captured, self.platform(center_config_path=path) as (server,http):
                     self.assertIsNotNone(server.central_telemetry)
                     self.assertEqual(server.registry_runtime.status,"unavailable")
                     self.assertIsNone(server.registry_runtime.service)
@@ -81,3 +81,5 @@ class RegistryStartupTests(unittest.TestCase):
                     status,payload=http("/api/registry/devices")
                     self.assertEqual((status,payload["error"]["code"]),(503,"registry.writer_identity_required"))
                     self.assertNotIn("not-a-real-connection-secret",json.dumps(payload))
+                self.assertEqual([r.getMessage() for r in captured.records],['Registry unavailable: registry.writer_identity_required'])
+                self.assertNotIn('not-a-real-connection-secret',''.join(captured.output))

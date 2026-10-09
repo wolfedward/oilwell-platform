@@ -12,6 +12,16 @@ from .contracts import Change, Command
 from .errors import RegistryError
 from .values import MAX_VERSION
 
+# Shared by cooperating registry writers and waveform historical consumers.
+# first eight signed big-endian SHA256 bytes of the frozen protocol literal.
+REGISTRY_HISTORY_GUARD = 3418143640768687318
+
+
+def lock_history(cursor, *, shared: bool = False):
+    if type(shared) is not bool: raise ValueError('Explicit shared/exclusive mode required')
+    cursor.execute('SELECT pg_advisory_xact_lock_shared(%s)' if shared else
+                   'SELECT pg_advisory_xact_lock(%s)',(REGISTRY_HISTORY_GUARD,))
+
 
 def bump(value: int) -> int:
     if value >= MAX_VERSION:
@@ -39,6 +49,7 @@ class RegistryTransactions:
                     cur.execute("SET LOCAL lock_timeout = '1s'")
                     cur.execute("SET LOCAL statement_timeout = '3s'")
                     cur.execute("SET LOCAL TIME ZONE 'UTC'")
+                    lock_history(cur)
                     cur.execute("SELECT revision FROM device_registry.registry_head WHERE singleton=1 FOR UPDATE")
                     head = cur.fetchone()
                     if head is None:

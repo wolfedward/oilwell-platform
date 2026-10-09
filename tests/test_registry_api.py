@@ -250,7 +250,11 @@ class RegistryApiCase(unittest.TestCase):
 
     def test_internal_errors_do_not_expose_secrets_or_sql(self):
         self.runtime.query.read.side_effect = RuntimeError("password=private-test-secret SELECT FROM hidden")
-        status,payload = self.request("GET", "/api/registry/devices")
+        with self.assertLogs('backend.registry.api',level='WARNING') as captured:
+            status,payload = self.request("GET", "/api/registry/devices")
+        self.assertEqual([r.getMessage() for r in captured.records],['Registry request failed: registry.unavailable'])
+        self.assertNotIn('private-test-secret',''.join(captured.output))
+        self.assertNotIn('SELECT',''.join(captured.output))
         self.assertEqual(status,503)
         self.assertNotIn("private-test-secret",json.dumps(payload))
         self.assertNotIn("SELECT",json.dumps(payload))
