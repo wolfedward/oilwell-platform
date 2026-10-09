@@ -123,6 +123,10 @@ class InversionContractTests(unittest.TestCase):
         body = parameter_body(); body["phase"]["unwrap_kind"] = ["wrapped_2pi"]
         with self.assertRaises(ValueError):
             parse_parameter_set(parameter_wire(body))
+        body = parameter_body()
+        body["provenance"]["operating_conditions"][0]["temperature_K"] = {"min": "300", "max": "300"}
+        self.assertEqual(parse_parameter_set(parameter_wire(body)).provenance.operating_conditions[0].temperature_K.min,
+                         __import__("decimal").Decimal("300"))
 
     def test_exact_index_and_reference_separation(self):
         self.assertEqual(Sample(Fraction(1, 3), 9007199254741001, Fraction(2), 0).index,

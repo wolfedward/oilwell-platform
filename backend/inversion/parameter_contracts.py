@@ -36,11 +36,11 @@ def _source_kind(value):
     return value
 
 
-def _range(raw, *, integer_ns=False):
+def _range(raw, *, integer_ns=False, allow_equal=False):
     fields(raw, {"min", "max"})
     lo = integer_text(raw["min"]) if integer_ns else decimal(raw["min"])
     hi = integer_text(raw["max"]) if integer_ns else decimal(raw["max"])
-    if lo >= hi: fail()
+    if lo > hi or lo == hi and not allow_equal: fail()
     return Bound(lo, hi)
 
 
@@ -312,8 +312,8 @@ def _provenance(raw):
         start = utc(item["valid_from"]); end = utc(item["valid_to"])
         if start >= end: fail()
         parsed_conditions.append(OperatingCondition(name(item["id"]), start, end,
-            _range(item["temperature_K"]), _range(item["supply_voltage_V"]),
-            _range(item["supply_frequency_Hz"]), text(item["source_description"]),
+            _range(item["temperature_K"], allow_equal=True), _range(item["supply_voltage_V"], allow_equal=True),
+            _range(item["supply_frequency_Hz"], allow_equal=True), text(item["source_description"]),
             _pins(item["attachment_pins"])))
     if len({item.id for item in parsed_conditions}) != len(parsed_conditions): fail()
     return Provenance(organization, parsed_date, _pins(raw["attachment_pins"]),
@@ -436,7 +436,7 @@ def _partial_group(key, item):
                 name(row["id"]); start = utc(row["valid_from"]); end = utc(row["valid_to"])
                 if start >= end: fail()
                 for bound in ("temperature_K", "supply_voltage_V", "supply_frequency_Hz"):
-                    _range(row[bound])
+                    _range(row[bound], allow_equal=True)
                 text(row["source_description"]); _pins(row["attachment_pins"])
         if "channel_bindings" in item and item["channel_bindings"] is not None:
             _bindings(item["channel_bindings"])
