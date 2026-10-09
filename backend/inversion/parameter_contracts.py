@@ -195,6 +195,7 @@ class Domain:
     supply_frequency_Hz: Bound
     bandwidth_Hz: Bound
     window_ns: Bound
+    load_N: Bound
     evidence_refs: tuple[EvidencePin, ...]
 
 
@@ -358,14 +359,171 @@ _PARSERS = {"provenance": _provenance, "geometry": _geometry, "phase": _phase,
             "bodies": _bodies, "drive": _drive, "domain": _domain, "uncertainty": _uncertainty}
 
 
+def _choices(*allowed):
+    def validate(value):
+        if type(value) is not str or value not in allowed: fail()
+    return validate
+
+
+def _date(value):
+    if type(value) is not str or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value): fail()
+    try: date.fromisoformat(value)
+    except ValueError: fail()
+
+
+def _model_version(value):
+    if type(value) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", value): fail()
+
+
+def _list(item, minimum, maximum):
+    return ("list", item, minimum, maximum)
+
+
+def _optional(item):
+    return ("optional", item)
+
+
+_PIN_SHAPE = {"id": identity, "content_sha256": digest,
+              "review_version": lambda v: integer(v, minimum=1)}
+_PINS_SHAPE = _list(_PIN_SHAPE, 1, 64)
+_CHANNEL_SHAPE = {"gateway_id": name, "device_id": name, "capture_id": identity,
+                  "stream_id": name, "channel_id": name, "manifest_sha256": digest,
+                  "calibration_pin": _PIN_SHAPE, "sampling_pin": _PIN_SHAPE,
+                  "first_index": integer, "last_index": integer}
+_BOUND_SHAPE = {"min": decimal, "max": decimal}
+_INT_BOUND_SHAPE = {"min": integer_text, "max": integer_text}
+_CONDITION_SHAPE = {"id": name, "valid_from": utc, "valid_to": utc,
+                    "temperature_K": _BOUND_SHAPE, "supply_voltage_V": _BOUND_SHAPE,
+                    "supply_frequency_Hz": _BOUND_SHAPE, "source_description": text,
+                    "attachment_pins": _PINS_SHAPE}
+_BINDING_SHAPE = {"role": _choices("active_power", "crank_angle", "load", "displacement"),
+                  "source": _choices("native_waveform", "modbus"), "channel_pin": _CHANNEL_SHAPE,
+                  "installation_evidence_refs": _PINS_SHAPE,
+                  "modbus": _optional({"device_id": name,
+                                       "map_version": lambda v: integer(v, minimum=1),
+                                       "map_sha256": digest, "point_id": name})}
+_POLICY_SHAPE = {"schema": _choices("inversion.algorithm-policy/1"),
+                 "algorithm": _choices("beam_energy_balance/1"), "model_version": _model_version,
+                 "numerical_margin": lambda v: decimal(v, nonnegative=True),
+                 "motion_max_time_span_ns": lambda v: integer_text(v, minimum=1),
+                 "motion_max_angle_span_rad": lambda v: decimal(v, nonnegative=True),
+                 "motion_max_residual_rad": lambda v: decimal(v, nonnegative=True),
+                 "motion_max_condition": lambda v: decimal(v, positive=True),
+                 "max_load_error_N": lambda v: decimal(v, positive=True),
+                 "min_coverage_fraction": lambda v: decimal(v, nonnegative=True),
+                 "reference_max_gap_ns": lambda v: integer_text(v, minimum=1),
+                 "fill_max_time_span_ns": lambda v: integer_text(v, minimum=1),
+                 "fill_max_angle_span_rad": lambda v: decimal(v, nonnegative=True),
+                 "relative_error_min_denominator_N": lambda v: decimal(v, positive=True)}
+_GROUP_SHAPES = {
+    "geometry": {"pivot_x_m": decimal, "pivot_y_m": decimal,
+                 **{key: lambda v: decimal(v, positive=True) for key in (
+                     "crank_radius_m", "pitman_length_m", "rear_arm_m", "horsehead_radius_m")},
+                 "branch": _sign, "rotation_sign": _sign, "displacement_sign": _sign,
+                 "evidence_refs": _PINS_SHAPE},
+    "phase": {"channel_pin": _CHANNEL_SHAPE, "zero_reading_rad": decimal,
+              "encoder_direction": _sign, "unwrap_kind": _choices("wrapped_2pi", "unwrapped"),
+              "evidence_refs": _PINS_SHAPE},
+    "bodies": {**{key: decimal for key in ("crank_first_moment_x_kg_m", "crank_first_moment_y_kg_m",
+                 "beam_first_moment_x_kg_m", "beam_first_moment_y_kg_m")},
+               **{key: lambda v: decimal(v, nonnegative=True) for key in (
+                   "crank_inertia_kg_m2", "beam_inertia_kg_m2", "pitman_mass_kg", "pitman_inertia_kg_m2")},
+               "pitman_com_fraction": lambda v: decimal(v, nonnegative=True),
+               "gravity_m_s2": lambda v: decimal(v, positive=True),
+               "component_ledger": _list({"id": name, "name": lambda v: text(v, maximum=128),
+                                          "owner": _choices("upstream", "crank", "beam", "pitman")}, 1, 256),
+               "evidence_refs": _PINS_SHAPE},
+    "drive": {"supply_kind": _choices("direct_line_induction"),
+              "ratio": lambda v: decimal(v, positive=True),
+              "upstream_inertia_kg_m2": lambda v: decimal(v, nonnegative=True),
+              "loss_grid": {"power_W": _list(decimal, 2, 64),
+                            "motor_speed_rad_s": _list(decimal, 2, 64),
+                            "loss_W": _list(_list(lambda v: decimal(v, nonnegative=True), 2, 64), 2, 64),
+                            "error_W": _list(_list(lambda v: decimal(v, nonnegative=True), 2, 64), 2, 64),
+                            "evidence_refs": _PINS_SHAPE},
+              "crank_friction_Nm": lambda v: decimal(v, nonnegative=True),
+              "viscous_friction_Nm_s": lambda v: decimal(v, nonnegative=True),
+              "evidence_refs": _PINS_SHAPE},
+    "domain": {**{key: _BOUND_SHAPE for key in (
+        "power_W", "speed_rad_s", "acceleration_rad_s2", "temperature_K",
+        "supply_voltage_V", "supply_frequency_Hz", "bandwidth_Hz", "load_N")},
+        "window_ns": _INT_BOUND_SHAPE, "evidence_refs": _PINS_SHAPE},
+    "uncertainty": {**{key: lambda v: decimal(v, nonnegative=True) for key in (
+        "torque_bound_Nm", "factor_bound_m", "speed_bound_rad_s",
+        "numerical_budget_Nm", "numerical_factor_budget_m")}, "evidence_refs": _PINS_SHAPE},
+    "provenance": {"source_organization": lambda v: text(v, maximum=128), "source_date": _date,
+                   "attachment_pins": _PINS_SHAPE,
+                   "calibration_cycles": _list({"start_ns": integer_text, "end_ns": integer_text,
+                                                 "physical_cycle_id": name}, 1, 64),
+                   "operating_conditions": _list(_CONDITION_SHAPE, 1, 64),
+                   "channel_bindings": _list(_BINDING_SHAPE, 4, 4),
+                   "notes": lambda v: text(v, maximum=262144)},
+    "policy": {"body": _POLICY_SHAPE, "content_sha256": digest},
+}
+
+
+def _collect_missing(value, shape, path, missing):
+    """Check supplied draft nodes and collect stable paths for absent nodes."""
+    if isinstance(shape, dict):
+        if type(value) is not dict or not set(value) <= set(shape): fail()
+        complete = True
+        for key in sorted(shape):
+            child = f"{path}.{key}"
+            spec = shape[key]
+            if key not in value or value[key] is None and not (
+                type(spec) is tuple and spec[0] == "optional"):
+                missing.append(child); complete = False
+            elif value[key] is not None and not _collect_missing(value[key], spec, child, missing):
+                complete = False
+        if shape is _BOUND_SHAPE or shape is _INT_BOUND_SHAPE:
+            if value.get("min") is not None and value.get("max") is not None:
+                lo = integer_text(value["min"]) if shape is _INT_BOUND_SHAPE else decimal(value["min"])
+                hi = integer_text(value["max"]) if shape is _INT_BOUND_SHAPE else decimal(value["max"])
+                allow_equal = path.startswith("provenance.operating_conditions[")
+                if lo > hi or lo == hi and not allow_equal: fail()
+        if path == "policy.body":
+            if value.get("numerical_margin") is not None and decimal(value["numerical_margin"]) >= 1: fail()
+            if value.get("min_coverage_fraction") is not None and decimal(value["min_coverage_fraction"]) > 1: fail()
+            if value.get("fill_max_time_span_ns") is not None and value.get("reference_max_gap_ns") is not None:
+                if integer_text(value["fill_max_time_span_ns"]) > integer_text(value["reference_max_gap_ns"]): fail()
+        if path.startswith("provenance.channel_bindings[") and value.get("source") == "modbus" and value.get("modbus") is None:
+            child = path + ".modbus"
+            if child not in missing: missing.append(child)
+            complete = False
+        if path.startswith("provenance.channel_bindings[") and value.get("source") == "native_waveform" and value.get("modbus") is not None:
+            fail()
+        if path.startswith("provenance.calibration_cycles[") and value.get("start_ns") is not None and value.get("end_ns") is not None:
+            if integer_text(value["start_ns"]) >= integer_text(value["end_ns"]): fail()
+        if path.startswith("provenance.operating_conditions[") and value.get("valid_from") is not None and value.get("valid_to") is not None:
+            if utc(value["valid_from"]) >= utc(value["valid_to"]): fail()
+        return complete
+    if type(shape) is tuple and shape[0] == "optional":
+        return _collect_missing(value, shape[1], path, missing)
+    if type(shape) is tuple and shape[0] == "list":
+        _, item_shape, minimum, maximum = shape
+        if type(value) is not list or len(value) > maximum: fail()
+        complete = len(value) >= minimum
+        if not complete: missing.append(path)
+        for index, item in enumerate(value):
+            child = f"{path}[{index}]"
+            if item is None:
+                missing.append(child); complete = False
+            elif not _collect_missing(item, item_shape, child, missing):
+                complete = False
+        if path in {"drive.loss_grid.power_W", "drive.loss_grid.motor_speed_rad_s"} and complete:
+            _axis(value)
+        return complete
+    shape(value)
+    return True
+
+
 def _missing(body):
     paths = []
     for key in sorted(_TOP_FIELDS):
         if key not in body or body[key] is None and key != "parent_version":
             paths.append(key)
-        elif key in _GROUP_FIELDS and type(body[key]) is dict:
-            paths.extend(f"{key}.{field}" for field in sorted(_GROUP_FIELDS[key])
-                         if field not in body[key] or body[key][field] is None)
+        elif key in _GROUP_SHAPES:
+            _collect_missing(body[key], _GROUP_SHAPES[key], key, paths)
     return tuple(paths)
 
 
@@ -471,8 +629,13 @@ def parse_parameter_set(raw: bytes, *, draft: bool = False) -> ParameterSet:
         if item is None:
             groups[key] = None; continue
         if type(item) is not dict or not set(item) <= _GROUP_FIELDS[key]: fail()
-        if any(field not in item or item[field] is None for field in _GROUP_FIELDS[key]):
-            _partial_group(key, item)
+        group_missing = tuple(path for path in missing if path == key or path.startswith(key + "."))
+        if group_missing:
+            complete_fields = {field: value for field, value in item.items()
+                               if value is not None and not any(path == f"{key}.{field}" or
+                                   path.startswith(f"{key}.{field}.") or
+                                   path.startswith(f"{key}.{field}[") for path in group_missing)}
+            _partial_group(key, complete_fields)
             groups[key] = None; continue
         if key == "policy":
             fields(item, {"body", "content_sha256"})

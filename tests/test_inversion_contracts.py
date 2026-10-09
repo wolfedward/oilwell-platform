@@ -128,6 +128,73 @@ class InversionContractTests(unittest.TestCase):
         self.assertEqual(parse_parameter_set(parameter_wire(body)).provenance.operating_conditions[0].temperature_K.min,
                          __import__("decimal").Decimal("300"))
 
+    def test_draft_lists_nested_missing_paths_without_computable_groups(self):
+        body = parameter_body()
+        del body["geometry"]["evidence_refs"][0]["content_sha256"]
+        body["provenance"]["calibration_cycles"][0]["end_ns"] = None
+        del body["provenance"]["operating_conditions"][0]["temperature_K"]["max"]
+        body["provenance"]["channel_bindings"][0]["channel_pin"]["sampling_pin"]["review_version"] = None
+        del body["policy"]["body"]["motion_max_condition"]
+        body["drive"]["loss_grid"]["loss_W"][0][1] = None
+        draft = parse_parameter_set(parameter_wire(body), draft=True)
+        self.assertEqual(missing_fields(draft), (
+            "drive.loss_grid.loss_W[0][1]",
+            "geometry.evidence_refs[0].content_sha256",
+            "policy.body.motion_max_condition",
+            "provenance.calibration_cycles[0].end_ns",
+            "provenance.channel_bindings[0].channel_pin.sampling_pin.review_version",
+            "provenance.operating_conditions[0].temperature_K.max",
+        ))
+        for group in (draft.drive, draft.geometry, draft.policy, draft.provenance):
+            self.assertIsNone(group)
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body))
+
+    def test_draft_rejects_bad_supplied_nested_values(self):
+        for mutate in (
+            lambda p: p["geometry"]["evidence_refs"][0].update(review_version="1+2"),
+            lambda p: p["provenance"]["calibration_cycles"][0].update(start_ns="1+2"),
+            lambda p: p["provenance"]["operating_conditions"][0]["temperature_K"].update(min="300+1"),
+            lambda p: p["provenance"]["channel_bindings"][0]["channel_pin"].update(stream_id=["stream-1"]),
+            lambda p: p["policy"]["body"].update(numerical_margin="1+2"),
+            lambda p: p["drive"]["loss_grid"]["loss_W"][0].__setitem__(0, "1+2"),
+            lambda p: p["geometry"]["evidence_refs"][0].update(unknown="x"),
+        ):
+            body = parameter_body(); del body["policy"]["body"]["motion_max_condition"]
+            mutate(body)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["policy"]["body"]["motion_max_condition"]
+        body["policy"]["body"]["numerical_margin"] = "1"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); body["provenance"]["operating_conditions"][0]["source_description"] = None
+        body["provenance"]["operating_conditions"][0]["temperature_K"] = {"min": "310", "max": "290"}
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+    def test_modbus_draft_requires_mapping_identity(self):
+        body = parameter_body()
+        body["provenance"]["channel_bindings"][0]["source"] = "modbus"
+        draft = parse_parameter_set(parameter_wire(body), draft=True)
+        self.assertEqual(missing_fields(draft), ("provenance.channel_bindings[0].modbus",))
+        self.assertIsNone(draft.provenance)
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body))
+
+    def test_load_domain_is_explicit_and_strict(self):
+        body = parameter_body(); del body["domain"]["load_N"]
+        self.assertEqual(missing_fields(parse_parameter_set(parameter_wire(body), draft=True)),
+                         ("domain.load_N",))
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body))
+        body = parameter_body(); body["domain"]["load_N"] = {"min": "10", "max": "10"}
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body))
+        body = parameter_body(); body["domain"]["load_N"]["max"] = "10+2"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
     def test_exact_index_and_reference_separation(self):
         self.assertEqual(Sample(Fraction(1, 3), 9007199254741001, Fraction(2), 0).index,
                          9007199254741001)

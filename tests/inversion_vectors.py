@@ -33,7 +33,7 @@ def policy_wire():
 def parameter_body():
     policy = policy_body()
     policy_sha = sha256(policy_wire()).hexdigest()
-    return {
+    return json.loads(json.dumps({
         "schema": "inversion.parameter-set/1",
         "assembly_id": "33333333-3333-4333-8333-333333333333",
         "assembly_version": 1, "source_kind": "synthetic",
@@ -87,7 +87,7 @@ def parameter_body():
         "domain": {
             **{name: {"min": "0", "max": "10"} for name in (
                 "power_W", "speed_rad_s", "acceleration_rad_s2", "temperature_K",
-                "supply_voltage_V", "supply_frequency_Hz", "bandwidth_Hz", "window_ns")},
+                "supply_voltage_V", "supply_frequency_Hz", "bandwidth_Hz", "window_ns", "load_N")},
             "evidence_refs": [PIN],
         },
         "uncertainty": {
@@ -95,7 +95,7 @@ def parameter_body():
             "numerical_budget_Nm": "0", "numerical_factor_budget_m": "0", "evidence_refs": [PIN],
         },
         "policy": {"body": policy, "content_sha256": policy_sha},
-    }
+    }))
 
 
 def parameter_wire(body=None):
