@@ -267,6 +267,25 @@ class Provenance:
     notes: str
 
 
+def _bindings(bindings):
+    if type(bindings) is not list or len(bindings) != 4: fail()
+    parsed_bindings = []
+    for item in bindings:
+        fields(item, ChannelBinding.__dataclass_fields__)
+        if type(item["role"]) is not str or type(item["source"]) is not str or item["role"] not in {"active_power", "crank_angle", "load", "displacement"} or item["source"] not in {"native_waveform", "modbus"}:
+            fail()
+        modbus = item["modbus"]
+        if item["source"] == "modbus":
+            fields(modbus, ModbusBinding.__dataclass_fields__)
+            modbus = ModbusBinding(name(modbus["device_id"]), integer(modbus["map_version"], minimum=1),
+                                   digest(modbus["map_sha256"]), name(modbus["point_id"]))
+        elif modbus is not None: fail()
+        parsed_bindings.append(ChannelBinding(item["role"], item["source"],
+            ChannelPin.from_wire(item["channel_pin"]), _pins(item["installation_evidence_refs"]), modbus))
+    if {item.role for item in parsed_bindings} != {"active_power", "crank_angle", "load", "displacement"}: fail()
+    return tuple(parsed_bindings)
+
+
 def _provenance(raw):
     fields(raw, Provenance.__dataclass_fields__)
     organization = text(raw["source_organization"], maximum=128)
@@ -297,25 +316,8 @@ def _provenance(raw):
             _range(item["supply_frequency_Hz"]), text(item["source_description"]),
             _pins(item["attachment_pins"])))
     if len({item.id for item in parsed_conditions}) != len(parsed_conditions): fail()
-    bindings = raw["channel_bindings"]
-    if type(bindings) is not list or len(bindings) != 4: fail()
-    parsed_bindings = []
-    for item in bindings:
-        fields(item, ChannelBinding.__dataclass_fields__)
-        if type(item["role"]) is not str or type(item["source"]) is not str or item["role"] not in {"active_power", "crank_angle", "load", "displacement"} or item["source"] not in {"native_waveform", "modbus"}:
-            fail()
-        modbus = item["modbus"]
-        if item["source"] == "modbus":
-            fields(modbus, ModbusBinding.__dataclass_fields__)
-            modbus = ModbusBinding(name(modbus["device_id"]), integer(modbus["map_version"], minimum=1),
-                                   digest(modbus["map_sha256"]),
-                                   name(modbus["point_id"]))
-        elif modbus is not None: fail()
-        parsed_bindings.append(ChannelBinding(item["role"], item["source"],
-            ChannelPin.from_wire(item["channel_pin"]), _pins(item["installation_evidence_refs"]), modbus))
-    if {item.role for item in parsed_bindings} != {"active_power", "crank_angle", "load", "displacement"}: fail()
     return Provenance(organization, parsed_date, _pins(raw["attachment_pins"]),
-                      tuple(parsed_cycles), tuple(parsed_conditions), tuple(parsed_bindings), notes)
+                      tuple(parsed_cycles), tuple(parsed_conditions), _bindings(raw["channel_bindings"]), notes)
 
 
 @dataclass(frozen=True)
@@ -383,7 +385,13 @@ def _partial_group(key, item):
             if item[field] is not None: _sign(item[field])
     elif key == "bodies":
         for field in set(item) & set(Bodies.__dataclass_fields__) - {"component_ledger", "evidence_refs"}:
-            if item[field] is not None: decimal(item[field])
+            if item[field] is not None:
+                value = decimal(item[field], nonnegative=field in {
+                    "crank_inertia_kg_m2", "beam_inertia_kg_m2", "pitman_mass_kg", "pitman_inertia_kg_m2"},
+                    positive=field == "gravity_m_s2")
+                if field == "pitman_com_fraction" and not 0 <= value <= 1: fail()
+        if "component_ledger" in item and item["component_ledger"] is not None:
+            _ledger(item["component_ledger"])
     elif key == "uncertainty":
         for field in set(item) - {"evidence_refs"}:
             if item[field] is not None: decimal(item[field], nonnegative=True)
@@ -391,8 +399,11 @@ def _partial_group(key, item):
         for field in set(item) - {"evidence_refs"}:
             if item[field] is not None: _range(item[field], integer_ns=field == "window_ns")
     elif key == "drive":
+        if "supply_kind" in item and item["supply_kind"] is not None and item["supply_kind"] != "direct_line_induction": fail()
         if "ratio" in item and item["ratio"] is not None: decimal(item["ratio"], positive=True)
         if "loss_grid" in item and item["loss_grid"] is not None: _loss_grid(item["loss_grid"])
+        for field in ("upstream_inertia_kg_m2", "crank_friction_Nm", "viscous_friction_Nm_s"):
+            if field in item and item[field] is not None: decimal(item[field], nonnegative=True)
     elif key == "phase":
         if "zero_reading_rad" in item and item["zero_reading_rad"] is not None: decimal(item["zero_reading_rad"])
         if "channel_pin" in item and item["channel_pin"] is not None: ChannelPin.from_wire(item["channel_pin"])
@@ -409,6 +420,14 @@ def _partial_group(key, item):
             except ValueError: fail()
         if "notes" in item and item["notes"] is not None: text(item["notes"], maximum=262144)
         if "attachment_pins" in item and item["attachment_pins"] is not None: _pins(item["attachment_pins"])
+        if "calibration_cycles" in item and item["calibration_cycles"] is not None:
+            rows = item["calibration_cycles"]
+            if type(rows) is not list or not 1 <= len(rows) <= 64: fail()
+            for row in rows:
+                fields(row, CalibrationCycle.__dataclass_fields__)
+                start = integer_text(row["start_ns"]); end = integer_text(row["end_ns"])
+                if start >= end: fail()
+                name(row["physical_cycle_id"])
         if "operating_conditions" in item and item["operating_conditions"] is not None:
             rows = item["operating_conditions"]
             if type(rows) is not list or not 1 <= len(rows) <= 64: fail()
@@ -419,6 +438,13 @@ def _partial_group(key, item):
                 for bound in ("temperature_K", "supply_voltage_V", "supply_frequency_Hz"):
                     _range(row[bound])
                 text(row["source_description"]); _pins(row["attachment_pins"])
+        if "channel_bindings" in item and item["channel_bindings"] is not None:
+            _bindings(item["channel_bindings"])
+    elif key == "policy":
+        if "content_sha256" in item and item["content_sha256"] is not None:
+            digest(item["content_sha256"])
+        if "body" in item and item["body"] is not None:
+            parse_policy(canonical_bytes(item["body"]))
     if "evidence_refs" in item and item["evidence_refs"] is not None:
         _pins(item["evidence_refs"])
 

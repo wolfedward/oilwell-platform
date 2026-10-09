@@ -100,6 +100,26 @@ class InversionContractTests(unittest.TestCase):
         body["provenance"]["operating_conditions"][0]["temperature_K"]["min"] = "300+1"
         with self.assertRaises(ValueError):
             parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["provenance"]["source_date"]
+        body["provenance"]["calibration_cycles"][0]["end_ns"] = "1+2"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["bodies"]["gravity_m_s2"]
+        body["bodies"]["component_ledger"].append(body["bodies"]["component_ledger"][0])
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["drive"]["ratio"]
+        body["drive"]["crank_friction_Nm"] = "-1"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["provenance"]["source_date"]
+        body["provenance"]["channel_bindings"][0]["source"] = "script"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+        body = parameter_body(); del body["policy"]["content_sha256"]
+        body["policy"]["body"]["numerical_margin"] = "1+2"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
         body = parameter_body(); body["phase"]["unwrap_kind"] = ["wrapped_2pi"]
         with self.assertRaises(ValueError):
             parse_parameter_set(parameter_wire(body))
