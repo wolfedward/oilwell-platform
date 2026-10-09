@@ -182,6 +182,48 @@ class InversionContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_parameter_set(parameter_wire(body))
 
+    def test_partial_lists_still_enforce_supplied_id_uniqueness(self):
+        body = parameter_body()
+        body["bodies"]["component_ledger"].append({"id": "motor", "name": None, "owner": "beam"})
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+        body = parameter_body()
+        body["geometry"]["evidence_refs"].append({
+            "id": body["geometry"]["evidence_refs"][0]["id"],
+            "content_sha256": None, "review_version": 1})
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+        body = parameter_body()
+        body["geometry"]["evidence_refs"][0]["id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        body["geometry"]["evidence_refs"].append({
+            "id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            "content_sha256": None, "review_version": 1})
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+        body = parameter_body()
+        condition = body["provenance"]["operating_conditions"][0].copy()
+        condition["source_description"] = None
+        body["provenance"]["operating_conditions"].append(condition)
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+        body = parameter_body()
+        body["provenance"]["channel_bindings"][0]["channel_pin"]["sampling_pin"]["review_version"] = None
+        body["provenance"]["channel_bindings"][1]["role"] = "active_power"
+        with self.assertRaises(ValueError):
+            parse_parameter_set(parameter_wire(body), draft=True)
+
+    def test_partial_loss_grid_still_enforces_axis_dimensions(self):
+        for matrix in ("loss_W", "error_W"):
+            body = parameter_body(); grid = body["drive"]["loss_grid"]
+            grid[matrix][0].append("0")
+            grid[matrix][1][0] = None
+            with self.subTest(matrix=matrix), self.assertRaises(ValueError):
+                parse_parameter_set(parameter_wire(body), draft=True)
+
     def test_load_domain_is_explicit_and_strict(self):
         body = parameter_body(); del body["domain"]["load_N"]
         self.assertEqual(missing_fields(parse_parameter_set(parameter_wire(body), draft=True)),

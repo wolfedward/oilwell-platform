@@ -496,6 +496,16 @@ def _collect_missing(value, shape, path, missing):
             if integer_text(value["start_ns"]) >= integer_text(value["end_ns"]): fail()
         if path.startswith("provenance.operating_conditions[") and value.get("valid_from") is not None and value.get("valid_to") is not None:
             if utc(value["valid_from"]) >= utc(value["valid_to"]): fail()
+        if path == "drive.loss_grid":
+            power = value.get("power_W")
+            speed = value.get("motor_speed_rad_s")
+            for matrix_name in ("loss_W", "error_W"):
+                matrix = value.get(matrix_name)
+                if matrix is None: continue
+                if power is not None and len(matrix) != len(power): fail()
+                if speed is not None:
+                    for row in matrix:
+                        if row is not None and len(row) != len(speed): fail()
         return complete
     if type(shape) is tuple and shape[0] == "optional":
         return _collect_missing(value, shape[1], path, missing)
@@ -512,6 +522,14 @@ def _collect_missing(value, shape, path, missing):
                 complete = False
         if path in {"drive.loss_grid.power_W", "drive.loss_grid.motor_speed_rad_s"} and complete:
             _axis(value)
+        unique_field = ("id" if path == "bodies.component_ledger" or path == "provenance.operating_conditions"
+                        or path.endswith((".evidence_refs", ".attachment_pins", ".installation_evidence_refs"))
+                        else "role" if path == "provenance.channel_bindings" else None)
+        if unique_field is not None:
+            supplied = [item[unique_field] for item in value if type(item) is dict and item.get(unique_field) is not None]
+            if unique_field == "id" and path.endswith((".evidence_refs", ".attachment_pins", ".installation_evidence_refs")):
+                supplied = [identity(item) for item in supplied]
+            if len(supplied) != len(set(supplied)): fail()
         return complete
     shape(value)
     return True
