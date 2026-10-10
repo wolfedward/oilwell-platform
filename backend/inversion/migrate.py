@@ -11,7 +11,7 @@ from .transactions import InversionError
 
 SQL_DIR=Path(__file__).with_name('sql')
 MIGRATION_LOCK=499001611
-MIGRATIONS=((1,'001_inversion.sql'),(2,'002_assembly_versions.sql'),(3,'003_mechanical_validity.sql'),(4,'004_result_exports.sql'))
+MIGRATIONS=((1,'001_inversion.sql'),(2,'002_assembly_versions.sql'),(3,'003_mechanical_validity.sql'),(4,'004_result_exports.sql'),(5,'005_request_lookup.sql'))
 
 
 def _source(filename='001_inversion.sql'):

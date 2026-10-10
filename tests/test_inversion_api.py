@@ -1,0 +1,350 @@
+"""HTTP boundary with real SQLite identity and an ephemeral local server."""
+import http.client
+import json
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from backend.http_server import create_server
+from backend.seed import bootstrap_local_auth
+
+PREFIX = '/api/production-inversion'
+
+
+class ApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        with patch('backend.http_server.seed_database', bootstrap_local_auth):
+            self.server = create_server('127.0.0.1', 0, Path(self.tmp.name) / 'app.db')
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
+        self.addCleanup(self.close)
+        self.token = self.server.auth.login('administrator', 'Admin@2026').token
+
+    def close(self):
+        self.server.shutdown(); self.server.server_close(); self.thread.join(5)
+
+    def request(self, method, suffix, body=None, headers=None):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        base = {'Authorization': 'Bearer ' + self.token}
+        if body is not None: body = json.dumps(body); base['Content-Type'] = 'application/json'
+        conn.request(method, PREFIX + suffix, body, base | (headers or {}))
+        response = conn.getresponse(); payload = response.read(); conn.close()
+        return response.status, json.loads(payload) if payload else None, response.getheader('Cache-Control')
+
+    def test_health_reports_disabled_and_no_store(self):
+        status, body, cache = self.request('GET', '/health')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['data']['status'], 'disabled')
+        self.assertEqual(cache, 'no-store')
+
+    def test_unknown_method_path_headers_and_fields_refused(self):
+        for method, path, expected in [('DELETE','/runs',405),('GET','/runs/finish',400),('GET','/runs%2f',400),('GET','/health?surprise=1',400)]:
+            with self.subTest(path=path): self.assertEqual(self.request(method,path)[0],expected)
+        self.assertEqual(self.request('GET','/health',headers={'Transfer-Encoding':'chunked'})[0],400)
+        self.assertEqual(self.request('POST','/runs',{'actor':'forged'})[0],400)
+
+    def test_body_limit_before_json_parse(self):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        conn.request('POST', PREFIX+'/runs', b'{', {'Authorization':'Bearer '+self.token, 'Content-Type':'application/json','Content-Length':'262145'})
+        response=conn.getresponse(); response.read(); conn.close()
+        self.assertEqual(response.status, 400)
+
+    def test_preflight_requires_no_command_envelope(self):
+        from backend.inversion.runtime import InversionRuntime
+        class Queries:
+            def preflight(self, body): return dict(allowed=True, missing=[], provisional=True)
+        runtime = InversionRuntime('ready', queries=Queries())
+        runtime.allowed_origins = self.server.inversion_runtime.allowed_origins
+        self.server.inversion_runtime = runtime
+        from uuid import uuid4
+        body = {k:str(uuid4()) for k in ('dataset_version_id','pair_id','assembly_id','parameter_id','model_id')}
+        body.update({k:'a'*64 for k in ('dataset_sha256','pair_sha256','parameter_sha256','model_sha256')})
+        body.update(member_ordinal=0,pair_review_version=1,parameter_review_version=1,model_review_version=1,selection_version=1,operating_condition_ids=[str(uuid4())])
+        self.assertEqual(self.request('POST','/runs/preflight',{'body':body})[0],200)
+
+    def test_duplicate_auth_origin_and_body_ambiguity_refused(self):
+        for headers in ({'Host':'evil.invalid'},{'Origin':'http://evil.invalid'}):
+            self.assertEqual(self.request('GET','/health',headers=headers)[0],403)
+        conn=http.client.HTTPConnection(*self.server.server_address,timeout=5)
+        conn.putrequest('GET',PREFIX+'/health')
+        conn.putheader('Authorization','Bearer '+self.token)
+        conn.putheader('Authorization','Bearer '+self.token)
+        conn.endheaders(); response=conn.getresponse(); response.read(); conn.close()
+        self.assertEqual(response.status,400)
+        conn=http.client.HTTPConnection(*self.server.server_address,timeout=5)
+        conn.request('POST',PREFIX+'/runs',b'{"body":{},"body":{}}',{'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
+        response=conn.getresponse(); response.read(); conn.close(); self.assertEqual(response.status,400)
+
+    def test_expected_precondition_has_one_canonical_wire_shape(self):
+        from uuid import uuid4
+        for expected in ({'kind':'absent','version':None},{'kind':'match','version':True},{'kind':'match','version':1.5},{'kind':'match','version':0}):
+            body={'command':{'key':str(uuid4()),'expected':expected,'reason':'Strict precondition'},'body':{}}
+            self.assertEqual(self.request('POST','/runs',body)[0],400)
+
+    def test_malformed_absolute_uri_is_a_controlled_error(self):
+        import socket
+        with socket.create_connection(self.server.server_address,timeout=5) as sock:
+            sock.sendall(('GET http://[/api/production-inversion/health HTTP/1.0\r\nHost: 127.0.0.1:'+str(self.server.server_port)+'\r\nAuthorization: Bearer '+self.token+'\r\n\r\n').encode())
+            response=http.client.HTTPResponse(sock)
+            response.begin(); response.read()
+            self.assertEqual(response.status,400)
+
+    def test_points_can_page_every_bounded_result_block(self):
+        from backend.inversion.routes import query
+        self.assertEqual(query('offset=131071&limit=1','results.points'),{'offset':131071,'limit':1})
+        from types import SimpleNamespace
+        from backend.inversion.queries import point_page
+        page=point_page(SimpleNamespace(id='result',content_sha256='a'*64,chunks=[]),0,1)
+        self.assertEqual((page['result_id'],page['content_sha256']),('result','a'*64))
+
+    def test_recovery_route_requires_exact_public_action(self):
+        from backend.inversion.routes import route,query
+        from uuid import uuid4
+        self.assertEqual(route('GET',PREFIX+'/requests/'+str(uuid4()))[0],'requests.get')
+        self.assertEqual(query('action=runs.create','requests.get'),{'action':'runs.create'})
+
+    def test_audit_filter_does_not_collide_with_dispatch_argument(self):
+        from backend.inversion.queries import InversionQueries
+        from unittest.mock import MagicMock
+        conn=MagicMock(); conn.__enter__.return_value=conn
+        conn.execute.return_value.fetchall.return_value=[]
+        result=InversionQueries(lambda:conn).fetch('audit',action='runs.create')
+        self.assertEqual(result['items'],[])
+
+    def test_recovery_refuses_ambiguous_or_wrong_subject_audit(self):
+        from backend.inversion.queries import InversionQueries
+        from backend.inversion.transactions import InversionError
+        from backend.waveforms.commands import Actor
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+        subject=uuid4(); conn=MagicMock(); conn.__enter__.return_value=conn
+        conn.execute.return_value.fetchone.return_value=(subject,1,'a'*64)
+        actor=Actor('platform-local','1','operator','administrator')
+        for rows in ([],[('runs.create',uuid4())],[('runs.create',subject)]*2):
+            conn.execute.return_value.fetchall.return_value=rows
+            with self.assertRaises(InversionError) as error:
+                InversionQueries(lambda:conn).recover(uuid4(),'runs.create',actor)
+            self.assertEqual(error.exception.code,'inversion.request_binding_conflict')
+
+    def test_export_recovery_checks_intent_capability_before_lookup(self):
+        from backend.inversion.runtime import InversionRuntime
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+        queries=MagicMock(); queries.recover.return_value={'state':'unknown'}
+        runtime=InversionRuntime('ready',queries=queries)
+        runtime.allowed_origins=self.server.inversion_runtime.allowed_origins
+        self.server.inversion_runtime=runtime
+        with self.server.database.transaction(None,'test.revoke','role',None) as conn:
+            conn.execute("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='administrator') AND permission_id=(SELECT id FROM permissions WHERE code='inversion.audit.read')")
+        suffix='/requests/'+str(uuid4())+'?action=exports.create'
+        self.assertEqual(self.request('GET',suffix+'&intent=evidence')[0],403)
+        queries.recover.assert_not_called()
+        queries.recover.return_value={'state':'committed','subject_id':str(uuid4()),'version':1,'content_sha256':'a'*64}
+        status,recovered,_=self.request('GET',suffix+'&intent=quantitative')
+        self.assertEqual(status,200); self.assertEqual(recovered['data']['state'],'committed')
+        self.assertEqual(self.request('GET',suffix)[0],400)
+        self.assertEqual(self.request('GET',suffix.replace('exports.create','runs.create')+'&intent=evidence')[0],400)
+
+
+from tests.inversion_worker import RunCase
+
+
+class LiveApiTests(RunCase):
+    """Pinned PostgreSQL fixture plus genuine SQLite session at HTTP and worker."""
+    def setUp(self):
+        super().setUp()
+        import os,tomllib
+        from backend.inversion.runtime import build_inversion_runtime
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        with patch('backend.http_server.seed_database',bootstrap_local_auth):
+            self.server=create_server('127.0.0.1',0,Path(self.tmp.name)/'auth.db')
+        self.addCleanup(self.server.server_close)
+        from tests.test_waveform_config import config_sections, toml_text
+        wp_sections=config_sections()
+        wp_sections.update(self.raw_config)
+        wp_sections['management']={'shared_accounting_bucket':'GW'}
+        wp_path=Path(self.tmp.name)/'waveforms.toml'
+        wp_path.write_text(toml_text(wp_sections),encoding='utf-8')
+        raw=tomllib.loads(Path(os.environ['OILWELL_INVERSION_TEST_CONFIG']).read_text(encoding='utf-8'))
+        general=dict(enabled=True,identity_db_path=str(self.server.database.path),waveform_config_path=str(wp_path),temp_root=self.tmp.name,total_storage_bytes=2147483648)
+        config={'inversion':general,**{k:v for k,v in raw.items() if k in ('postgres_reader','postgres_operator')}}
+        self.runtime_path=Path(self.tmp.name)/'runtime.toml'
+        self.runtime_path.write_text('\n'.join('['+section+']\n'+'\n'.join(key+' = '+json.dumps(value) for key,value in values.items()) for section,values in config.items()),encoding='utf-8')
+        runtime=build_inversion_runtime(self.runtime_path,auth=self.server.auth)
+        if runtime.status!='ready':
+            from backend.inversion.config import load_inversion_config
+            from backend.inversion.runtime import verify_configuration
+            verify_configuration(load_inversion_config(self.runtime_path),self.server.auth)
+        self.assertEqual((runtime.status,runtime.code),('ready',None))
+        runtime.allowed_origins=self.server.inversion_runtime.allowed_origins
+        self.server.inversion_runtime=runtime
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
+        self.addCleanup(self.close_server)
+        self.session=self.server.auth.login('administrator','Admin@2026')
+
+    def close_server(self): self.server.shutdown(); self.thread.join(5)
+
+    def http(self,method,suffix,body=None,token=None):
+        conn=http.client.HTTPConnection(*self.server.server_address,timeout=15)
+        headers={'Authorization':'Bearer '+(token or self.session.token)}
+        if body is not None: body=json.dumps(body); headers['Content-Type']='application/json'
+        conn.request(method,PREFIX+suffix,body,headers)
+        response=conn.getresponse(); raw=response.read(); conn.close()
+        return response.status,json.loads(raw) if raw else None
+
+    def envelope(self,body=None,version=None,key=None):
+        from uuid import uuid4
+        result={'command':{'key':str(key or uuid4()),'expected':{'kind':'absent'} if version is None else {'kind':'match','version':version},'reason':'Explicit isolated HTTP validation'}}
+        if body is not None: result['body']=body
+        return result
+
+    def test_preflight_is_not_calculation(self):
+        before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
+        status,payload=self.http('POST','/runs/preflight',{'body':self.case['request']})
+        self.assertEqual(status,200,payload); self.assertEqual(payload['data']['missing'],[])
+        self.assertEqual((self.scalar('SELECT count(*) FROM inversion.run_requests'),self.scalar('SELECT count(*) FROM waveforms.audit_metadata')-before,self.scalar('SELECT running FROM inversion.capacity')),(0,0,0))
+        for path in ('/assemblies','/parameters','/models','/runs','/audit'):
+            status,payload=self.http('GET',path); self.assertEqual(status,200,payload)
+        self.assertEqual(self.http('GET','/runs?limit=101')[0],400)
+        self.assertEqual(self.http('GET','/results/'+str(self.request.parameter_id)+'/points?limit=1001')[0],400)
+        from backend.inversion.runtime import verify_configuration, connections
+        from backend.inversion.config import ConfigurationError
+        factories=connections(self.server.inversion_runtime.config)
+        class OtherDatabaseIdentity:
+            def __init__(self): self.conn=factories[3]()
+            def __enter__(self): self.conn.__enter__(); return self
+            def __exit__(self,*args): return self.conn.__exit__(*args)
+            def __getattr__(self,key): return getattr(self.conn,key)
+            def execute(self,statement,*args):
+                result=self.conn.execute(statement,*args)
+                if isinstance(statement,str) and statement.startswith('SELECT current_user,current_database()'):
+                    row=result.fetchone()
+                    class Altered:
+                        def fetchone(self): return (*row[:2],row[2]+1,*row[3:])
+                    return Altered()
+                return result
+        with patch('backend.inversion.runtime.connections',return_value=(*factories[:3],OtherDatabaseIdentity)):
+            with self.assertRaises(ConfigurationError): verify_configuration(self.server.inversion_runtime.config,self.server.auth)
+
+    def test_recovery_is_actor_scoped_current_authorized_and_read_only(self):
+        from uuid import uuid4
+        from backend.inversion.queries import InversionQueries
+        envelope=self.envelope(self.case['request']); key=envelope['command']['key']
+        suffix='/requests/'+key+'?action=runs.create'
+        status,unknown=self.http('GET',suffix)
+        self.assertEqual(status,200,unknown); self.assertEqual(unknown['data'],{'state':'unknown'})
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.run_requests'),0)
+        status,created=self.http('POST','/runs',envelope)
+        self.assertEqual(status,202,created)
+        status,recovered=self.http('GET',suffix)
+        self.assertEqual(status,200,recovered)
+        self.assertEqual(recovered['data']['subject_id'],created['data']['run_id'])
+        self.assertEqual(recovered['data']['state'],'committed')
+        self.assertEqual(recovered['data']['run']['run_id'],created['data']['run_id'])
+        self.assertNotIn('body_matches',recovered['data']); self.assertNotIn('authority',json.dumps(recovered))
+        other=self.server.auth.login('algorithm_engineer','Algorithm@2026')
+        self.assertEqual(self.http('GET',suffix,token=other.token)[1]['data'],{'state':'unknown'})
+        self.assertEqual(self.http('GET','/requests/'+key+'?action=parameters.create')[0],409)
+        self.assertEqual(self.http('GET','/requests/'+key+'?action=runs.claim')[0],400)
+        changed=json.loads(json.dumps(envelope)); changed['command']['reason']='Different original command'
+        self.assertEqual(self.http('POST','/runs',changed)[0],409)
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.run_requests'),1)
+        self.assertEqual(self.http('GET','/audit?action=runs.create')[0],200)
+        with self.server.database.transaction(None,'test.revoke','role',None) as conn:
+            conn.execute("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='administrator') AND permission_id=(SELECT id FROM permissions WHERE code='waveform.raw.read')")
+        with patch.object(InversionQueries,'recover',side_effect=AssertionError('Lookup must not precede auth')) as lookup:
+            self.assertEqual(self.http('GET',suffix)[0],403); lookup.assert_not_called()
+
+    def test_authority_fresh_replay_claim_and_no_bearer_in_durable_request(self):
+        from backend.inversion.runtime import worker_services
+        from backend.inversion.contracts import canonical_bytes
+        from uuid import UUID,uuid4
+        envelope=self.envelope(self.case['request'])
+        status,created=self.http('POST','/runs',envelope)
+        self.assertEqual(status,202,created)
+        id=created['data']['run_id']
+        self.assertNotIn('authority',created['data']); self.assertNotIn('actor',created['data'])
+        self.assertEqual(self.http('POST','/runs',envelope)[1]['data']['run_id'],id)
+        stored=self.scalar('SELECT body::text FROM inversion.run_requests WHERE id=%s',(UUID(id),))
+        self.assertNotIn(self.session.token,stored); self.assertNotIn('token',stored)
+        worker=worker_services(canonical_bytes({'config_path':str(self.runtime_path)}))
+        self.server.auth.logout(self.session.token)
+        self.assertEqual(self.http('POST','/runs',envelope)[0],401)
+        self.assertIsNone(worker.runs.claim(uuid4()))
+        self.assertEqual(worker.runs.get(UUID(id)).state,'blocked')
+
+    def test_publication_and_download_recheck_real_session(self):
+        from backend.inversion.runtime import worker_services
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.result_codec import encode
+        from backend.inversion.comparison import compare
+        from tests.test_inversion_comparison import prediction
+        from backend.inversion.transactions import InversionError
+        from uuid import UUID,uuid4
+        runtime=self.server.inversion_runtime
+        status,created=self.http('POST','/runs',self.envelope(self.case['request']))
+        self.assertEqual(status,202,created)
+        worker=worker_services(canonical_bytes({'config_path':str(self.runtime_path)}))
+        attempt=worker.runs.claim(uuid4()); run=worker.runs.get(attempt.run_id)
+        authority=worker.runs._authority(run.authority,run.actor)
+        prepared=worker.acquisition.prepare_input(run.request,run.actor,check=lambda:None)
+        series=prediction(); result=encode(series,compare(series,prepared.reference_inputs,prepared.policy),prepared.snapshot)
+        published=worker.runs.publish(attempt,result,authority)
+        self.assertIsNotNone(published)
+        status,view=self.http('GET','/results/'+str(published.id)); self.assertEqual(status,200,view)
+        self.assertNotIn('session',json.dumps(view)); self.assertNotIn('authority',json.dumps(view))
+        status,points=self.http('GET','/results/'+str(published.id)+'/points?offset=0&limit=2')
+        self.assertEqual(status,200,points); self.assertEqual(len(points['data']['rows']),2)
+        self.assertEqual((points['data']['result_id'],points['data']['content_sha256']),(view['data']['id'],view['data']['content_sha256']))
+        status,comparison=self.http('GET','/results/'+str(published.id)+'/comparison')
+        self.assertEqual(status,200,comparison)
+        self.assertEqual((comparison['data']['result_id'],comparison['data']['content_sha256']),(view['data']['id'],view['data']['content_sha256']))
+        self.assertEqual(self.http('POST','/results/'+str(published.id)+'/review',self.envelope({'decision':'approve'}))[0],409)
+        export_command=self.envelope({'result_id':str(published.id),'intent':'evidence','format':'json'})
+        status,export=self.http('POST','/exports',export_command)
+        self.assertEqual(status,201,export)
+        recovery='/requests/'+export_command['command']['key']+'?action=exports.create&intent='
+        self.assertEqual(self.http('GET',recovery+'quantitative')[0],409)
+        status,recovered=self.http('GET',recovery+'evidence')
+        self.assertEqual(status,200,recovered); self.assertEqual(recovered['data']['subject_id'],export['data']['id'])
+        id=export['data']['id']; status,payload=self.http('GET','/exports/'+id)
+        self.assertEqual(status,200,payload)
+        self.assertNotIn(self.session.token,json.dumps(payload))
+        # A previously valid claim snapshot is not publication authorization.
+        status,second=self.http('POST','/runs',self.envelope(self.case['request']))
+        self.assertEqual(status,202,second)
+        second_attempt=worker.runs.claim(uuid4())
+        from backend.inversion.exports import ResultExporter
+        original_open=ResultExporter.open
+        def revoke_at_byte_start(exporter,*args,**kwargs):
+            context=original_open(exporter,*args,**kwargs)
+            self.server.auth.logout(self.session.token)
+            return context
+        with patch.object(ResultExporter,'open',revoke_at_byte_start):
+            self.assertEqual(self.http('GET','/exports/'+id)[0],401)
+        self.assertEqual(self.http('GET','/exports/'+id)[0],401)
+        with self.assertRaises(InversionError): worker.runs.publish(second_attempt,result,authority)
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.results'),1)
+
+    def test_cancel_after_raw_permission_removed_and_other_actor_refused(self):
+        status,created=self.http('POST','/runs',self.envelope(self.case['request']))
+        self.assertEqual(status,202,created)
+        id=created['data']['run_id']
+        other=self.server.auth.login('production_engineer','Production@2026')
+        self.assertEqual(self.http('POST','/runs/'+id+'/cancel',self.envelope(version=1),token=other.token)[0],403)
+        with self.server.database.transaction(None,'test.promote','user',None) as conn:
+            conn.execute("UPDATE users SET role_id=(SELECT id FROM roles WHERE code='administrator'),version=version+1 WHERE id=?",(other.user_id,))
+        runtime=self.server.inversion_runtime; original_services=runtime.services_for
+        def demote_before_cancel(ref):
+            services=original_services(ref)
+            with self.server.database.transaction(None,'test.demote','user',None) as conn:
+                conn.execute("UPDATE users SET role_id=(SELECT id FROM roles WHERE code='production_engineer'),version=version+1 WHERE id=?",(other.user_id,))
+            return services
+        with patch.object(runtime,'services_for',demote_before_cancel):
+            self.assertEqual(self.http('POST','/runs/'+id+'/cancel',self.envelope(version=1),token=other.token)[0],403)
+        with self.server.database.transaction(None,'test.revoke','role',None) as conn:
+            conn.execute("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='administrator') AND permission_id=(SELECT id FROM permissions WHERE code='waveform.raw.read')")
+        status,cancelled=self.http('POST','/runs/'+id+'/cancel',self.envelope(version=1))
+        self.assertEqual(status,200,cancelled)
+        self.assertEqual(cancelled['data']['state'],'cancelled')

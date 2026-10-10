@@ -4,6 +4,15 @@ from tests.inversion_support import InversionDatabaseCase, TEST_DATABASE
 
 
 class SchemaTests(InversionDatabaseCase):
+    def test_recovery_lookup_index_is_migrated_and_structure_checked(self):
+        from backend.inversion.migrate import migrate,check_schema
+        self.assertIsNotNone(self.scalar("SELECT to_regclass('inversion.audit_actor_request')"))
+        self.assertEqual(migrate(self.settings['owner'],expected_database=TEST_DATABASE,limits=self.limits)['version'],'5')
+        with self.connect('owner') as conn:
+            conn.execute('DROP INDEX inversion.audit_actor_request')
+            with self.assertRaises(RuntimeError): check_schema(conn,expected_database=TEST_DATABASE,limits=self.limits)
+            conn.rollback()
+
     def test_mechanical_effective_end_is_constrained_append_only(self):
         from psycopg.types.json import Jsonb
         assembly=self.assembly(); version=uuid4()

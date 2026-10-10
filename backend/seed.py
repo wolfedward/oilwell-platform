@@ -12,6 +12,7 @@ from backend.algorithms.dynagraph_profiles import build_profile_card, profile_co
 from backend.registry.permissions import REGISTRY_ROLE_PERMISSIONS
 from backend.ingest_reliability.permissions import INGEST_ROLE_PERMISSIONS
 from backend.waveforms.permissions import WAVEFORM_ROLE_PERMISSIONS
+from backend.inversion.permissions import ROLE_PERMISSIONS as INVERSION_ROLE_PERMISSIONS
 
 
 SIMULATOR = "simulator"
@@ -77,7 +78,9 @@ ROLE_PERMISSIONS["administrator"] = tuple(sorted(
     | {"users.read", "users.manage", "roles.read", "roles.manage", "strategy.approve", "audit.read"}
     | set(WAVEFORM_ROLE_PERMISSIONS['administrator'])
 ))
-AUTH_BOOTSTRAP_VERSION = 10
+for _role_code in ROLE_PERMISSIONS:
+    ROLE_PERMISSIONS[_role_code] += INVERSION_ROLE_PERMISSIONS[_role_code]
+AUTH_BOOTSTRAP_VERSION = 11
 
 
 class SeedDataIntegrityError(RuntimeError):
@@ -621,7 +624,7 @@ def bootstrap_local_auth(db: Database) -> None:
     current_permissions = set(db.column("SELECT code FROM permissions"))
     marker = db.query_one("SELECT bootstrap_version FROM auth_bootstrap_state WHERE id = 1")
     administrator = db.query_one("SELECT id FROM roles WHERE code = 'administrator'")
-    missing_administrator_permissions = set(ROLE_PERMISSIONS["administrator"])
+    missing_administrator_permissions = {p for p in ROLE_PERMISSIONS["administrator"] if not p.startswith('inversion.')}
     if administrator is not None:
         missing_administrator_permissions -= set(db.column(
             """SELECT p.code
@@ -653,6 +656,7 @@ def bootstrap_local_auth(db: Database) -> None:
         ).fetchone()
         if administrator is not None:
             for permission in ROLE_PERMISSIONS["administrator"]:
+                if permission.startswith('inversion.'): continue
                 connection.execute(
                     """INSERT OR IGNORE INTO role_permissions(role_id, permission_id, source_type)
                        SELECT ?, id, 'system' FROM permissions WHERE code = ?""",
@@ -701,6 +705,7 @@ def bootstrap_local_auth(db: Database) -> None:
                 if role is None:
                     continue
                 for permission in set(permissions) & new_permission_codes:
+                    if permission.startswith('inversion.'): continue
                     connection.execute(
                         "INSERT OR IGNORE INTO role_permissions(role_id, permission_id, source_type) "
                         "SELECT ?, id, 'system' FROM permissions WHERE code=?",
@@ -762,6 +767,14 @@ def bootstrap_local_auth(db: Database) -> None:
                         )
             if marker["bootstrap_version"] < 10:
                 for role_code, permissions in WAVEFORM_ROLE_PERMISSIONS.items():
+                    for permission in permissions:
+                        connection.execute(
+                            "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,source_type) "
+                            "SELECT r.id,p.id,'system' FROM roles r CROSS JOIN permissions p "
+                            "WHERE r.code=? AND p.code=?", (role_code, permission),
+                        )
+            if marker["bootstrap_version"] < 11:
+                for role_code, permissions in INVERSION_ROLE_PERMISSIONS.items():
                     for permission in permissions:
                         connection.execute(
                             "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,source_type) "

@@ -1,0 +1,26 @@
+# Copy to a deployment-private file; enabling production requires separate approval.
+# Startup probes only: explicit reviewed migrations/grants must already be installed.
+[inversion]
+enabled = false
+identity_db_path = "../private/platform.db"
+waveform_config_path = "../private/waveforms.toml"
+temp_root = "../private/inversion-staging"
+# Logical run_input_and_results plus reservations; excludes audit/governance, indexes, WAL.
+# Deployments must independently monitor physical disk usage and headroom.
+total_storage_bytes = 2147483648
+
+[postgres_reader]
+host = "127.0.0.1"
+port = 5432
+database = "production"
+user = "inversion_reader"
+password_env = "INVERSION_READER_PASSWORD"
+sslmode = "disable"
+
+[postgres_operator]
+host = "127.0.0.1"
+port = 5432
+database = "production"
+user = "inversion_operator"
+password_env = "INVERSION_OPERATOR_PASSWORD"
+sslmode = "disable"

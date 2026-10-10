@@ -238,7 +238,9 @@ class RunService:
             self._event(cur,run,'running',run.reason_code)
 
     def cancel(self,identifier,command):
-        self._authorize(command.actor)
+        # Cancellation consumes no waveform bytes. A current run-capable owner
+        # can stop work even after raw-data access was removed.
+        self.authorize(command.actor,'inversion.run')
         def apply(cur,cmd):
             run=self._read(cur,identifier,for_update=True)
             if cmd.expected!=VersionPrecondition('match',run.version): raise InversionError('version_conflict',status=409)
