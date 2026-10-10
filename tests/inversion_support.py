@@ -12,7 +12,7 @@ from tools.provision_inversion_test import (SIDECAR, ROLES, TEST_DATABASE, TEST_
     load_sidecar, config_sections, verify_live, check_roles)
 
 RESET_TABLES = 'result_chunks results attempt_events attempts run_events run_state run_requests restrictions result_reviews selections reviews parameter_versions assignment_events assignment_state assignments assembly_versions assemblies model_reviews model_versions audit receipts reservations'.split()
-RESET_TABLES = ['mechanical_events', 'mechanical_state', *RESET_TABLES]
+RESET_TABLES = ['result_exports', 'mechanical_events', 'mechanical_state', *RESET_TABLES]
 
 
 class InversionDatabaseCase(unittest.TestCase):

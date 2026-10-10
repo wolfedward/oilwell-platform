@@ -3,7 +3,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA inversion FROM PUBLIC,{reader},{operator};
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA inversion FROM PUBLIC,{reader},{operator};
 GRANT USAGE ON SCHEMA inversion TO {reader},{operator};
 GRANT SELECT ON ALL TABLES IN SCHEMA inversion TO {reader},{operator};
-GRANT INSERT ON inversion.mechanical_events TO {operator};
+GRANT INSERT ON inversion.mechanical_events,inversion.result_exports TO {operator};
 GRANT INSERT ON inversion.assemblies,inversion.assembly_versions,inversion.assignments,inversion.assignment_events,inversion.parameter_versions,inversion.reviews,
  inversion.model_versions,inversion.model_reviews,inversion.selections,inversion.run_requests,inversion.run_state,inversion.run_events,
  inversion.attempts,inversion.attempt_events,inversion.results,inversion.result_chunks,inversion.result_reviews,
