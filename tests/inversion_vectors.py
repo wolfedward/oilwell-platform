@@ -131,7 +131,7 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
                   later_producer=None,changed_calibration=False,shared_selected=False,
                   mapping_offset=0,mapping_ppm='0',later_utc='2026-09-29T00:01:00.000000Z',
                   parameter_end=None,condition_end=None,reference_end='2000000001',
-                  two=False,utc_uncertainties=(0,0),alignment_limit=0):
+                  two=False,utc_uncertainties=(0,0),alignment_limit=0,native=None,file_first=False):
     """Genuine WP04 intake/evidence/pair/freeze and independently approved governance."""
     from copy import deepcopy
     from dataclasses import replace
@@ -149,7 +149,7 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
     from tests.waveform_support import LIMITS
     from tests.inversion_governance_support import command,AUTHOR,REVIEWER as INV_REVIEWER
     archive=seed_pair(case,count=count,inversion=True,producer=producer,shared_selected=shared_selected,
-                      two=two,utc_uncertainties=utc_uncertainties)
+                      two=two,utc_uncertainties=utc_uncertainties,native=native,file_first=file_first)
     reuse=archive['channel_evidence']
     if changed_calibration:
         reuse=dict(reuse)
@@ -178,6 +178,14 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
     body=dict(target_id=str(draft.id)); frozen=service.freeze(body,case.command('freeze',draft.id,draft.revision,REVIEWER,body=body))
     assembly=case.create_assembly()[0].subject_id
     parameters=case.body(assembly)
+    if native is not None:
+        from tests.inversion_success_vector import parameters_for_vector
+        from backend.inversion.contracts import strict_json
+        template=strict_json(parameters_for_vector().raw)
+        for group in ('geometry','phase','bodies','drive','domain','uncertainty','policy'):
+            parameters[group]=template[group]
+            if group!='policy': parameters[group]['evidence_refs']=[case.pin(group)]
+        parameters['drive']['loss_grid']['evidence_refs']=[case.pin('loss_grid')]
     parameters['provenance']['operating_conditions'][0].update(
         valid_from='2025-01-01T00:00:00.000000Z',valid_to='2028-01-01T00:00:00.000000Z')
     if parameter_end: parameters['valid_to']=parameter_end
@@ -196,15 +204,16 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
         if producer: binding['channel_pin']['producer_endpoint']=dict(gateway_id='GW',device_id=producer)
     parameters['phase']['channel_pin']=deepcopy(parameters['provenance']['channel_bindings'][1]['channel_pin'])
     parameters['phase']['unwrap_kind']='unwrapped'
-    for key,lo,hi in (('power_W','-100','100'),('speed_rad_s','0.1','10'),('acceleration_rad_s2','-10','10'),
-                      ('bandwidth_Hz','1','1000'),('window_ns','1','10000000'),('load_N','0','100000')):
+    for key,lo,hi in (() if native is not None else (('power_W','-100','100'),('speed_rad_s','0.1','10'),('acceleration_rad_s2','-10','10'),
+                      ('bandwidth_Hz','1','1000'),('window_ns','1','10000000'),('load_N','0','100000'))):
         parameters['domain'][key]=dict(min=lo,max=hi)
-    parameters['drive']['loss_grid'].update(power_W=['-100','100'],motor_speed_rad_s=['1','100'])
+    if native is None: parameters['drive']['loss_grid'].update(power_W=['-100','100'],motor_speed_rad_s=['1','100'])
     policy=parameters['policy']['body']; policy['motion_max_time_span_ns']='1000000000'; policy['motion_max_angle_span_rad']='0.5'
     parameters['policy']['content_sha256']=sha256(canonical_bytes(policy)).hexdigest()
     coverage=parameters['provenance']['coverage']; coverage['policy_sha256']=parameters['policy']['content_sha256']
     coverage['max_time_alignment_error_ns']=str(alignment_limit)
     coverage['domain_sha256']=sha256(canonical_bytes(parameters['domain'])).hexdigest()
+    coverage['uncertainty_sha256']=sha256(canonical_bytes(parameters['uncertainty'])).hexdigest()
     frame=archive['frames'][-1]; declaration=frame.body['cycle']
     stream=next(s for s in frame.streams if s.stream_id=='sensor')
     identities=[dict(source=dict(stream.source),stream_id='sensor',channel_id='displacement',index=e['sample_index']) for e in declaration['reference_events']]

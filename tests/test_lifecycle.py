@@ -164,6 +164,7 @@ class LifecycleTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows batch behavior")
     def test_batch_launch_and_stop_work_from_an_unrelated_working_directory(self):
+        from server import STOP_COMPLETION_TIMEOUT_SECONDS
         with tempfile.TemporaryDirectory() as other_cwd:
             for _ in range(2):
                 started = subprocess.run(
@@ -175,7 +176,9 @@ class LifecycleTests(unittest.TestCase):
                 self.assertTrue(healthy(runtime))
                 stopped = subprocess.run(
                     ["cmd", "/c", str(PROJECT_ROOT / "stop-platform.cmd")], cwd=other_cwd, env=self.environment,
-                    capture_output=True, text=True, timeout=15, check=False,
+                    # Functional completion follows the existing server budget,
+                    # plus bounded CLI startup margin; this is not a 15s SLA.
+                    capture_output=True, text=True, timeout=STOP_COMPLETION_TIMEOUT_SECONDS + 5, check=False,
                 )
                 self.assertEqual(stopped.returncode, 0, stopped.stderr)
                 self.assertFalse((self.log_path / "runtime.json").exists())

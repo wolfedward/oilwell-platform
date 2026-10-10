@@ -100,7 +100,7 @@ class ExportTests(ResultCase):
         for role in ('reader','operator'):
             probe_role(lambda:self.inversion_fixture.connect(role),role)
         with self.inversion_fixture.connect('owner') as conn:
-            self.assertEqual(check_schema(conn,expected_database='oilwell_waveforms_test')['version'],'4')
+            self.assertEqual(check_schema(conn,expected_database='oilwell_waveforms_test')['version'],'5')
             for statement in ('UPDATE inversion.result_exports SET intent=\'quantitative\' WHERE id=%s',
                               'DELETE FROM inversion.result_exports WHERE id=%s'):
                 with self.assertRaises(psycopg.Error),conn.transaction(): conn.execute(statement,(export.id,))

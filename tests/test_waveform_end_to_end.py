@@ -3,6 +3,7 @@ import importlib.util
 import unittest
 from tests.waveform_support import WaveformDatabaseCase
 from tests.waveform_dataset_support import DatasetCase
+from tests.inversion_e2e_support import EndToEndCase
 from tests.waveform_stack import Stack
 import tempfile
 from pathlib import Path
@@ -18,31 +19,39 @@ class RecoveryInventoryTests(WaveformDatabaseCase):
             conn.execute('CREATE SEQUENCE waveforms.task17_acl_sequence')
             conn.execute('CREATE INDEX task17_acl_index ON waveforms.task17_acl_probe(value)')
             def row(name): return next(r for r in security_inventory(conn)['relations'] if r[1]==name)
+            def fresh(): return security_inventory(conn,profile='wp05a')
             original=row('task17_acl_probe'); sequence=row('task17_acl_sequence')
+            original_fresh=fresh()
             self.assertTrue(conn.execute("SELECT relacl IS NULL FROM pg_class WHERE oid='waveforms.task17_acl_probe'::regclass").fetchone()[0])
             conn.execute('GRANT ALL ON TABLE waveforms.task17_acl_probe TO CURRENT_USER')
             conn.execute('GRANT ALL ON SEQUENCE waveforms.task17_acl_sequence TO CURRENT_USER')
             self.assertFalse(conn.execute("SELECT relacl IS NULL FROM pg_class WHERE oid='waveforms.task17_acl_probe'::regclass").fetchone()[0])
             self.assertEqual(row('task17_acl_probe'),original)
             self.assertEqual(row('task17_acl_sequence'),sequence)
+            self.assertEqual(fresh(),original_fresh,'Default owner ACL and explicit owner-all are effectively identical')
             self.assertEqual({grant[2] for grant in sequence[4]},{'SELECT','UPDATE','USAGE'})
             self.assertEqual(row('task17_acl_index')[4],[],'Index is not a table ACL object')
             conn.execute('SAVEPOINT grants')
             conn.execute('REVOKE ALL ON TABLE waveforms.task17_acl_probe FROM CURRENT_USER')
             self.assertEqual(row('task17_acl_probe')[4],[]); self.assertNotEqual(row('task17_acl_probe'),original)
+            self.assertNotEqual(fresh(),original_fresh,'Explicit empty ACL is not the owner default')
             conn.execute('ROLLBACK TO SAVEPOINT grants')
             conn.execute('GRANT SELECT ON waveforms.task17_acl_probe TO PUBLIC')
             public=row('task17_acl_probe'); self.assertNotEqual(public,original)
+            self.assertNotEqual(fresh(),original_fresh)
             self.assertIn(['PUBLIC','SELECT',False],[grant[1:] for grant in public[4]])
             conn.execute('ROLLBACK TO SAVEPOINT grants')
             receiver=sql.Identifier(self.manifest['roles']['receiver'])
             conn.execute(sql.SQL('GRANT SELECT ON waveforms.task17_acl_probe TO {}').format(receiver))
             runtime=row('task17_acl_probe'); self.assertNotEqual(runtime,original)
+            runtime_fresh=fresh(); self.assertNotEqual(runtime_fresh,original_fresh)
             conn.execute(sql.SQL('GRANT SELECT ON waveforms.task17_acl_probe TO {} WITH GRANT OPTION').format(receiver))
             self.assertNotEqual(row('task17_acl_probe'),runtime)
+            self.assertNotEqual(fresh(),runtime_fresh)
             conn.execute('ROLLBACK TO SAVEPOINT grants')
             conn.execute(sql.SQL('ALTER TABLE waveforms.task17_acl_probe OWNER TO {}').format(receiver))
             self.assertNotEqual(row('task17_acl_probe'),original)
+            self.assertNotEqual(fresh(),original_fresh)
         finally: conn.rollback()
 
     def test_native_check_roundtrip_keeps_operand_boolean_and_constraint_flags_distinct(self):
@@ -286,6 +295,7 @@ class WaveformEndToEndTests(WaveformDatabaseCase):
                 self.assertTrue(security_inventory(connection)['extension'])
             fixture=self
             class SourceOnlyProbe:
+                profile='wp04'
                 def connect(self,role): return fixture.admin() if role=='admin' else fixture.connect(role)
             value=result['result']; record=dict(version_id=value['version_id'],export_id=value['export_id'],actor=asdict(REVIEWER))
             compared=verify_export_deltas(SourceOnlyProbe(),before,[record],root/'reexport',limits=LIMITS,
@@ -427,7 +437,14 @@ class RecoveryPreparationVolumeTests(unittest.TestCase):
                 prepare_recovery(object(),Path('unused'),volumes=volumes)
 
 
-class RecoveryPreparationTests(DatasetCase):
+class RecoveryPreparationTests(EndToEndCase):
+    def setUp(self):
+        if self._testMethodName=='test_small_restore_uses_supervised_target_exports_and_exact_audit_deltas':
+            from tests.inversion_governance_support import GovernanceCase
+            GovernanceCase.setUp(self)
+        else:
+            DatasetCase.setUp(self)
+
     def test_small_restore_uses_supervised_target_exports_and_exact_audit_deltas(self):
         import json,os,time,sys
         from datetime import datetime,timezone
@@ -454,7 +471,23 @@ class RecoveryPreparationTests(DatasetCase):
           with self.capacity_fixture(LIMITS):
             prepared=prepare_recovery(self,root,volumes=(1,),deadline=deadline,run_id=run_id,source_sha256=digest)
             save_result(root,'recovery-source',prepared)
-            target,recovery=backup_restore(self,self.config_path,root,run_id)
+            # The capacity context reset removed the setup attachment. Build the
+            # genuine inversion source only after waveform recovery preparation.
+            from hashlib import sha256
+            payload=b'%PDF-1.7 Synthetic engineering report with explicitly known bounds'
+            attachment=dict(media_type='application/pdf',payload_bytes=len(payload),payload_sha256=sha256(payload).hexdigest())
+            self.attachment=self.evidence.upload_attachment(payload,media_type='application/pdf',command=self.wave_command('upload',attachment=attachment))
+            self.start_http(); self.reviewer=self.server.auth.login('reviewer','Review@2026')
+            self.prepare_native_input(); sentinel=self.completed_result()
+            self.server.inversion_runtime.close(); self.close_server(); self.server.server_close()
+            for connection in self.connections:
+                if connection is not self.guard: connection.close()
+            self.inversion_fixture.guard.close()
+            result['inversion_sentinel']={key:sentinel[key] for key in ('id','content_sha256')}
+            target,recovery=backup_restore(self,self.config_path,root,run_id,profile='wp05a')
+            self.assertTrue(recovery['inversion_schema']); self.assertTrue(recovery['inversion_runtime_probes'])
+            with target.connect('inversion_reader') as conn:
+                self.assertEqual(conn.execute('SELECT content_sha256 FROM inversion.results WHERE id=%s',(sentinel['id'],)).fetchone(),(sentinel['content_sha256'],))
             baseline=json.loads((root/'source-fingerprint.json').read_text(encoding='utf-8'))['content']
             def execute(_connect,records,destination,*,limits,reference):
                 self.assertEqual(Path(destination),root/'restored-exports')
@@ -468,6 +501,8 @@ class RecoveryPreparationTests(DatasetCase):
             self.assertEqual(denied.exception.code,restriction['code'])
             self.assertEqual(exporter.describe(UUID(restriction['version_id']),purpose='evidence',actor=actor).restriction_state,'restricted')
             self.assertEqual(delta['business_audits'],5); self.assertTrue(delta['unchanged_other_tables'])
+            self.assertEqual(delta['profile'],'wp05a'); self.assertTrue(delta['inversion_unchanged']); self.assertTrue(delta['security_unchanged'])
+            result['inventory_sensitivity']=self.check_restore_inventory(target)
             self.assertTrue(result['supervision']['owned_cleanup']['complete']); self.assertTrue(result['supervision']['watchdog_closed'])
             deadline.check(root,'small-restore-complete')
             recovery.update(exports=True,restrictions=True)

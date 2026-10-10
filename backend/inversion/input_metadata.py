@@ -143,7 +143,10 @@ def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, 
                 for row in observation['relative_timing_terms']['capture_utc_bounds']}
             if actual != captures: refuse()
         registry = mapping(applicability.get('registry', {}))
-        well = mapping(registry.get('well', {}))
+        # A synthetic test:<name> assignment legitimately has no physical well.
+        # Only null is absent; malformed non-null containers still fail closed.
+        historical_well = registry.get('well')
+        well = {} if historical_well is None else mapping(historical_well)
         result = dict(result_id=result_id,content_sha256=content_sha256,snapshot_sha256=snapshot_sha256,
             hash_scope='original_full_artifacts', request=request, observation=observation,
             channel_pins=channels, applicability=dict(

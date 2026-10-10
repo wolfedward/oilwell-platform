@@ -182,10 +182,12 @@ def create_run_root(path):
     return path,run_id
 
 
-def load_source_authority(config_path,*,resolve=False):
+def load_source_authority(config_path,*,resolve=False,profile='wp04'):
     """Pure complete disk validation precedes optional credential resolution."""
     from tools.provision_waveform_test import PINNED_IDENTITY,load_identity,config_sections
     from tools.provision_waveform_registry_test import sidecar_identity,_config
+    from tools.inversion_restore_profile import schemas,add_authority
+    schemas(profile)
     path=Path(config_path)
     if not path.is_absolute() or path.resolve()!=(PINNED/'waveform-test.local.toml').resolve():
         raise ValueError('Unpinned source config')
@@ -206,6 +208,7 @@ def load_source_authority(config_path,*,resolve=False):
     if tomllib.loads((sidepath/'registry-test.local.toml').read_text(encoding='utf-8'))!=_config(sidecar):
         raise ValueError('Registry config mismatch')
     result={'cluster':cluster,'parent':parent,'sidecar':sidecar,'settings':{},'raw_config':raw}
+    if profile=='wp05a': add_authority(result,resolve=resolve)
     if resolve:
         from backend.secret_store import read_windows_credential
         references={role:(parent['roles'][role],parent['credential_targets'][role]) for role in ROLES}
@@ -232,6 +235,11 @@ def connect_source(authority,role='admin',*,_created=None):
             expected=(authority['parent']['roles']['migration_owner'],'oilwell-waveform-test:'+authority['parent']['fixture_id'])
             actual=connection.execute("SELECT pg_get_userbyid(datdba),shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()").fetchone()
             if actual!=expected: raise ValueError('Source ownership mismatch')
+            if 'inversion' in authority:
+                from tools.provision_inversion_test import verify_live,check_roles
+                from tools.inversion_restore_profile import EXPECTED_SYSTEM_IDENTIFIER
+                verify_live(connection,authority['cluster'],authority['parent'],expected_system_identifier=EXPECTED_SYSTEM_IDENTIFIER)
+                check_roles(connection,authority['inversion'])
         connection.rollback(); return connection
     except BaseException as error:
         try: connection.close()
@@ -246,10 +254,22 @@ class RecoveryTarget:
         self.run_id=identity['run_id']
         self.connections=None
         validate_target_identity(identity,identity['run_id'],authority['parent'],authority['sidecar']['role'])
+        self.profile='wp05a' if 'inversion' in authority else 'wp04'
+        self._profile_proof()
+
+    def _profile_proof(self):
+        if self.profile=='wp05a':
+            from tools.inversion_restore_profile import read_target_proof
+            return read_target_proof(self.root,self.authority,self.run_id)
+        if (self.root/'recovery-profile.json').exists(): raise ValueError('Fresh target cannot downgrade to legacy')
+        fingerprint=self.root/'source-fingerprint.json'
+        if fingerprint.exists() and 'profile' in json.loads(fingerprint.read_text(encoding='utf-8')):
+            raise ValueError('Fresh target profile binding missing')
 
     def connect(self,role='reader'):
         import psycopg
         validate_target_identity(self.identity,self.run_id,self.authority['parent'],self.authority['sidecar']['role'])
+        self._profile_proof()
         config=dict(self.authority['settings'][role],dbname=self.identity['database'])
         connection=psycopg.connect(**config)
         if self.connections is not None: self.connections.append(connection)
@@ -260,6 +280,10 @@ class RecoveryTarget:
             if owner!=(self.identity['owner'],self.identity['marker']): raise ValueError('Restore marker mismatch')
             if role=='admin':
                 from tools.provision_ingest_test import _verify_live
+                if self.profile=='wp05a':
+                    from tools.inversion_restore_profile import EXPECTED_SYSTEM_IDENTIFIER
+                    if connection.execute('SELECT system_identifier::text FROM pg_control_system()').fetchone()!=(EXPECTED_SYSTEM_IDENTIFIER,):
+                        raise ValueError('Restore cluster identifier differs')
                 _verify_live(connection,self.authority['cluster'],database=self.identity['database'])
             connection.rollback(); return connection
         except BaseException as error:
@@ -371,10 +395,14 @@ def _hash_rows(rows):
     return dict(rows=count,sha256=digest.hexdigest())
 
 
-def content_inventory(connection):
+def content_inventory(connection,*,profile='wp04'):
     """Caller owns one RR snapshot. Stream stable rows including exact BYTEA JSON."""
     from psycopg import sql
-    tables=connection.execute("SELECT n.nspname,c.relname,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('waveforms','device_registry') AND c.relkind IN ('r','p','S') ORDER BY 1,2").fetchall()
+    from tools.inversion_restore_profile import schemas
+    schemas(profile)
+    query="SELECT n.nspname,c.relname,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('waveforms','device_registry') AND c.relkind IN ('r','p','S') ORDER BY 1,2"
+    if profile=='wp05a': query=query.replace("'waveforms','device_registry'", "'waveforms','device_registry','inversion'")
+    tables=connection.execute(query).fetchall()
     result={}
     for schema,name,kind in tables:
         key=schema+'.'+name
@@ -390,7 +418,9 @@ def content_inventory(connection):
     return result
 
 
-def security_inventory(connection):
+def security_inventory(connection,*,profile='wp04'):
+    from tools.inversion_restore_profile import schemas
+    schemas(profile)
     queries={
       'schemas':"SELECT nspname,pg_get_userbyid(nspowner),nspacl::text FROM pg_namespace WHERE nspname IN ('waveforms','device_registry','public') ORDER BY 1",
       'relations':"""SELECT n.nspname,c.relname,c.relkind,pg_get_userbyid(c.relowner),
@@ -410,6 +440,9 @@ def security_inventory(connection):
       'extension':"SELECT e.extname,e.extversion,n.nspname,pg_get_userbyid(e.extowner) FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='btree_gist'",
       'database_acl':"SELECT pg_get_userbyid(x.grantor),CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END,x.privilege_type,x.is_grantable FROM pg_database d CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) x WHERE d.datname=current_database() ORDER BY 1,2,3",
     }
+    if profile=='wp05a':
+        queries={name:query.replace("'waveforms','device_registry'", "'waveforms','device_registry','inversion'") for name,query in queries.items()}
+        queries['relation_properties']="SELECT n.nspname,c.relname,c.relpersistence,c.relrowsecurity,c.relforcerowsecurity,c.relreplident FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('waveforms','device_registry','inversion','public') ORDER BY 1,2"
     return {name:connection.execute(query).fetchall() for name,query in queries.items()}
 
 
@@ -458,13 +491,18 @@ def _tool(executable,args,authority,root,label,timeout=120):
     return record
 
 
-def _restore_archive(authority,root,run_id,*,archive,fingerprint,guard,records=None,connections=None):
+def _restore_archive(authority,root,run_id,*,archive,fingerprint,guard,records=None,connections=None,profile='wp04'):
     """Shared fresh-target tail: never adopts a target or dumps the source."""
     from psycopg import sql
     from backend.waveforms.migrate import check_schema
     from backend.waveforms.privileges import probe_role
     from backend.waveforms.registry_dependency import check_history_views
+    from tools.inversion_restore_profile import validate_fingerprint
     root=Path(root); tools=Path('C:/Program Files/PostgreSQL/18/bin')
+    validate_fingerprint(fingerprint,authority,run_id,digest_file(archive),profile)
+    if profile=='wp05a':
+        from tools.inversion_restore_profile import write_target_proof
+        write_target_proof(root,authority,run_id,fingerprint)
     identity=target_identity(run_id,authority['parent'],authority['sidecar']['role'])
     target=RecoveryTarget(authority,identity,root); target.connections=connections
     records=[] if records is None else records
@@ -476,12 +514,11 @@ def _restore_archive(authority,root,run_id,*,archive,fingerprint,guard,records=N
     with (root/'restore-identity.json').open('x',encoding='utf-8') as handle: json.dump(identity,handle,indent=2)
     guard()
     with source_admin() as admin:
+        verify_principals(admin,authority)
+        admin.rollback()
         admin.autocommit=True
         create_target(admin,identity,dict(zip(('encoding','collate','ctype','provider'),properties)),guard=guard)
-        allowed=set(identity['roles'].values())|{identity['registry_owner'],authority['settings']['admin']['user'],'PUBLIC'}
         for grantor,grantee,privilege,grantable in source_security['database_acl']:
-            if grantee not in allowed or grantor not in allowed or privilege not in ('CONNECT','CREATE','TEMPORARY'):
-                raise ValueError('Unknown database ACL principal or privilege')
             if grantee==identity['owner']: continue
             grantee_sql=sql.SQL('PUBLIC') if grantee=='PUBLIC' else sql.Identifier(grantee)
             guard()
@@ -511,15 +548,27 @@ def _restore_archive(authority,root,run_id,*,archive,fingerprint,guard,records=N
     guard()
     with target.connect('admin') as conn:
         guard(); conn.execute('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        restored_content=content_inventory(conn); restored_security=security_inventory(conn)
+        restored_content=content_inventory(conn,profile=profile); restored_security=security_inventory(conn,profile=profile)
         check_schema(conn,expected_database=identity['database']); check_history_views(conn)
         if restored_content!=source_content: raise AssertionError('Restored application bytes/history differ')
         if catalog_value(restored_security)!=catalog_value(source_security): raise AssertionError('Restored owners/ACL/native definitions differ')
+        if profile=='wp05a':
+            from tools.inversion_restore_profile import catalog_boundary
+            from tools.provision_inversion_test import check_roles
+            from backend.inversion.migrate import check_schema as check_inversion
+            if catalog_value(catalog_boundary(conn,profile))!=catalog_value(fingerprint['boundary']):
+                raise AssertionError('Restored application boundary differs')
+            check_roles(conn,authority['inversion']); check_inversion(conn,expected_database=identity['database'])
     for role in ROLES[1:]: probe_role(lambda role=role:target.connect(role),role)
+    if profile=='wp05a':
+        from backend.inversion.privileges import probe_role as probe_inversion
+        for role in ('reader','operator'): probe_inversion(lambda role=role:target.connect('inversion_'+role),role)
     with (root/'restore-fingerprint.json').open('x',encoding='utf-8') as handle:
         json.dump(dict(content=restored_content,security=restored_security),handle,default=str,indent=2)
-    return target,dict(snapshot=True,content=True,schema=True,acl=True,extension=True,exports=False,restrictions=False,
+    receipt=dict(snapshot=True,content=True,schema=True,acl=True,extension=True,exports=False,restrictions=False,
         target=identity['database'],tools=records,archive_sha256=digest_file(archive),retained=True)
+    if profile=='wp05a': receipt.update(profile=profile,inversion_schema=True,inversion_runtime_probes=True,inversion_content=True)
+    return target,receipt
 
 
 
@@ -543,7 +592,7 @@ def _unlock_backup_guard(fixture,primary):
         primary.add_note('Backup source guard unlock cleanup: '+type(failure).__name__)
 
 
-def backup_restore(fixture,config_path,root,run_id):
+def backup_restore(fixture,config_path,root,run_id,*,profile='wp04'):
     """Caller has quiesced its writers and still owns the source reset guard.
 
     Neither fixture teardown nor target export is performed here. Target records
@@ -553,7 +602,8 @@ def backup_restore(fixture,config_path,root,run_id):
     from backend.waveforms.migrate import check_schema
     from backend.waveforms.privileges import probe_role
     from backend.waveforms.registry_dependency import check_history_views
-    authority=load_source_authority(config_path,resolve=True)
+    from tools.inversion_restore_profile import source_preflight,validate_database_acl,binding
+    authority=load_source_authority(config_path,resolve=True,profile=profile)
     identity=target_identity(run_id,authority['parent'],authority['sidecar']['role'])
     root=Path(root)
     def guard_alive():
@@ -574,8 +624,16 @@ def backup_restore(fixture,config_path,root,run_id):
             if unknown: raise ValueError('Source writers are not quiescent')
             admin.rollback()
             admin.execute('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            boundary=source_preflight(admin,authority,profile)
+            if profile=='wp05a':
+                from backend.inversion.privileges import probe_role as probe_inversion
+                for role in ROLES[1:]:
+                    probe_role(lambda role=role:connect_source(authority,role,_created=fixture.connections.append),role)
+                for role in ('reader','operator'):
+                    probe_inversion(lambda role=role:connect_source(authority,'inversion_'+role,_created=fixture.connections.append),role)
             snapshot=admin.execute('SELECT pg_export_snapshot()').fetchone()[0]
-            source_content=content_inventory(admin); source_security=security_inventory(admin)
+            source_content=content_inventory(admin,profile=profile); source_security=security_inventory(admin,profile=profile)
+            validate_database_acl(source_security['database_acl'],authority,profile)
             if not source_content.get('waveforms.facts',{}).get('rows'): raise ValueError('Populated recovery facts required')
             if admin.info.server_version//10000!=18: raise ValueError('PG18 source required')
             for name in ('pg_dump.exe','pg_restore.exe'):
@@ -588,9 +646,11 @@ def backup_restore(fixture,config_path,root,run_id):
             records.append(_tool(tools/'pg_dump.exe',dump_args,authority,root,'dump'))
             source_fingerprint=dict(content=source_content,security=source_security,snapshot=snapshot,
                 archive_sha256=digest_file(archive),properties=properties)
+            if profile=='wp05a': source_fingerprint.update(profile=binding(authority,run_id,digest_file(archive)),boundary=boundary)
             with (root/'source-fingerprint.json').open('x',encoding='utf-8') as handle: json.dump(source_fingerprint,handle,default=str,indent=2)
             admin.rollback()
-        return _restore_archive(authority,root,run_id,archive=archive,fingerprint=source_fingerprint,guard=guard_alive,records=records)
+        return _restore_archive(authority,root,run_id,archive=archive,fingerprint=source_fingerprint,guard=guard_alive,records=records,
+            connections=fixture.connections if profile=='wp05a' else None,profile=profile)
     finally:
         import sys
         _unlock_backup_guard(fixture,sys.exc_info()[1])
@@ -699,6 +759,7 @@ def target_export_request(root,run_id,source_sha256,records,references):
     refs={p['version_id']:dict(relative_path=Path(references[p['version_id']]).relative_to(root).as_posix(),
         files=[{k:f[k] for k in ('name','size','sha256')} for f in p['expected']]) for p in prepared}
     request=dict(kind='target_exports',run_root=str(root),run_id=run_id,source_sha256=source_sha256,records=records,references=refs)
+    if (root/'recovery-profile.json').exists(): request['recovery_profile_sha256']=digest_file(root/'recovery-profile.json')
     _target_export_inputs(request)
     return request
 
@@ -708,7 +769,7 @@ def _target_export_inputs(request):
     from uuid import UUID
     import math
     try:
-        if type(request) is not dict or set(request)-{'kind','run_root','run_id','source_sha256','records','references','preparation_deadline'}: raise ValueError()
+        if type(request) is not dict or set(request)-{'kind','run_root','run_id','source_sha256','records','references','preparation_deadline','recovery_profile_sha256'}: raise ValueError()
         if 'preparation_deadline' in request and (type(request['preparation_deadline']) not in (int,float) or not math.isfinite(request['preparation_deadline'])): raise ValueError()
         root=validate_run_root(request['run_root'],existing=True)
         if request['kind']!='target_exports' or request['run_id']!=root.name[-32:]: raise ValueError()
@@ -754,7 +815,19 @@ def _target_export_inputs(request):
             if journal.exists() and (not journal.is_file() or journal.resolve()!=journal): raise ValueError()
             references[version]=directory
         if set(refs)!=set(versions) or set(prepared)!=set(versions): raise ValueError()
-        authority=load_source_authority(PINNED/'waveform-test.local.toml',resolve=False)
+        profile_path=root/'recovery-profile.json'
+        fresh='recovery_profile_sha256' in request
+        if fresh:
+            if retained or request['recovery_profile_sha256']!=digest_file(profile_path): raise ValueError('Fresh target profile differs')
+            authority=load_source_authority(PINNED/'waveform-test.local.toml',resolve=False,profile='wp05a')
+            from tools.inversion_restore_profile import read_target_proof
+            read_target_proof(root,authority,request['run_id'])
+        else:
+            if profile_path.exists(): raise ValueError('Fresh target request cannot downgrade')
+            fingerprint=root/'source-fingerprint.json'
+            if fingerprint.exists() and 'profile' in json.loads(fingerprint.read_text(encoding='utf-8')):
+                raise ValueError('Fresh target profile binding missing')
+            authority=load_source_authority(PINNED/'waveform-test.local.toml',resolve=False)
         identity=json.loads((root/'restore-identity.json').read_text(encoding='utf-8'))
         validate_target_identity(identity,request['run_id'],authority['parent'],authority['sidecar']['role'])
         return authority,identity,references,expected
@@ -768,6 +841,9 @@ def _verify_target_exports(request,result,*,operations=None):
     root=Path(request['run_root'])/'restored-exports'; files={}; names=['identity','export_setup']
     if (type(result) is not dict or result.get('run_id')!=request['run_id'] or result.get('source_sha256')!=request['source_sha256'] or
         result.get('target')!=identity['database'] or len(result.get('exports',[]))!=len(request['records'])): raise ValueError('Unbound target export output')
+    if 'recovery_profile_sha256' in request and (result.get('recovery_profile_sha256')!=request['recovery_profile_sha256'] or
+        result.get('profile')!='wp05a' or result.get('connections_closed') is not True):
+        raise ValueError('Fresh target export proof incomplete')
     for record,output in zip(request['records'],result['exports']):
         version=record['version_id']
         if output['version_id']!=version or output['export_id']!=record['export_id']: raise ValueError('Target export identity differs')
@@ -805,11 +881,24 @@ def run_target_exports(request,emit):
     from tests.waveform_support import LIMITS
     clock=_ExportClock(until=request['preparation_deadline'],emit=emit)
     with clock.operation('identity'):
-        _,identity,references,_=_target_export_inputs(request)
-        authority=load_source_authority(PINNED/'waveform-test.local.toml',resolve=True)
+        unresolved,identity,references,_=_target_export_inputs(request)
+        authority=load_source_authority(PINNED/'waveform-test.local.toml',resolve=True,profile='wp05a') if 'inversion' in unresolved else load_source_authority(PINNED/'waveform-test.local.toml',resolve=True)
         target=RecoveryTarget(authority,identity,Path(request['run_root']))
-    exports=export_existing(target.connect,request['records'],Path(request['run_root'])/'restored-exports',limits=LIMITS,reference=references,_clock=clock)
+    if target.profile=='wp05a': target.connections=[]
+    try:
+        exports=export_existing(target.connect,request['records'],Path(request['run_root'])/'restored-exports',limits=LIMITS,reference=references,_clock=clock)
+    finally:
+        if target.connections is not None:
+            import sys
+            active=sys.exc_info()[1]; first=active
+            for connection in target.connections:
+                try: connection.close()
+                except BaseException as error:
+                    if first is None: first=error
+                    else: first.add_note('Target connection cleanup failure: '+type(error).__name__)
+            if active is None and first is not None: raise first
     result=dict(run_id=request['run_id'],source_sha256=request['source_sha256'],target=identity['database'],exports=exports)
+    if target.profile=='wp05a': result.update(profile='wp05a',recovery_profile_sha256=request['recovery_profile_sha256'],connections_closed=all(c.closed for c in target.connections))
     with clock.operation('finalization'): _verify_target_exports(request,result)
     return result
 
@@ -821,6 +910,10 @@ def verify_export_deltas(target,before,records,root,*,limits,references,_execute
     from backend.waveforms.commands import Actor
     from backend.waveforms.export import DatasetExporter
     from backend.waveforms.errors import WaveformError
+    from tools.inversion_restore_profile import content_changes
+    profile=target.profile
+    proof=target._profile_proof() if profile=='wp05a' else None
+    if proof is not None and before!=proof['content']: raise ValueError('Unbound pre-export inventory')
     with target.connect('admin') as connection:
         capacity={row['bucket']:row for (row,) in connection.execute('SELECT row_to_json(c) FROM waveforms.capacity c').fetchall()}
         audit_ids={r[0] for r in connection.execute('SELECT audit_id FROM waveforms.audit').fetchall()}
@@ -835,8 +928,10 @@ def verify_export_deltas(target,before,records,root,*,limits,references,_execute
     for fact,count in expected.items(): charges[gateways[fact]]+=count
     with target.connect('admin') as connection:
         connection.execute('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        after=content_inventory(connection)
-        changed={name for name in before if before[name]!=after[name]}
+        after=content_inventory(connection,profile=profile)
+        changed=content_changes(before,after,profile)
+        if proof is not None and catalog_value(security_inventory(connection,profile=profile))!=proof['security']:
+            raise AssertionError('Post-export target security changed')
         if changed!={'waveforms.audit','waveforms.business_audit','waveforms.capacity'}: raise AssertionError('Unexpected post-export table changes')
         actual=Counter(r[1] for r in connection.execute('SELECT audit_id,fact_id,action FROM waveforms.audit').fetchall() if r[0] not in audit_ids and r[2]=='raw.read')
         if actual!=expected or after['waveforms.audit']['rows']-before['waveforms.audit']['rows']!=sum(expected.values()): raise AssertionError('Post-export raw audit delta')
@@ -845,4 +940,6 @@ def verify_export_deltas(target,before,records,root,*,limits,references,_execute
         for (row,) in connection.execute('SELECT row_to_json(c) FROM waveforms.capacity c').fetchall():
             original=dict(capacity[row['bucket']]); original['used_metadata_rows']+=charges[row['bucket']]
             if original!=row: raise AssertionError('Post-export exact metadata charge delta')
-    return dict(exports=output,raw_audits=sum(expected.values()),business_audits=expected_business,metadata_charges=dict(charges),unchanged_other_tables=True)
+    result=dict(exports=output,raw_audits=sum(expected.values()),business_audits=expected_business,metadata_charges=dict(charges),unchanged_other_tables=True)
+    if profile=='wp05a': result.update(profile=profile,inversion_unchanged=True,security_unchanged=True)
+    return result

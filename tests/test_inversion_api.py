@@ -210,54 +210,14 @@ class ApiTests(unittest.TestCase):
 from tests.inversion_worker import RunCase
 
 
-class LiveApiTests(RunCase):
+from tests.inversion_http_support import HttpRuntimeMixin
+
+
+class LiveApiTests(HttpRuntimeMixin, RunCase):
     """Pinned PostgreSQL fixture plus genuine SQLite session at HTTP and worker."""
     def setUp(self):
         super().setUp()
-        import os,tomllib
-        from backend.inversion.runtime import build_inversion_runtime
-        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        with patch('backend.http_server.seed_database',bootstrap_local_auth):
-            self.server=create_server('127.0.0.1',0,Path(self.tmp.name)/'auth.db')
-        self.addCleanup(self.server.server_close)
-        from tests.test_waveform_config import config_sections, toml_text
-        wp_sections=config_sections()
-        wp_sections.update(self.raw_config)
-        wp_sections['management']={'shared_accounting_bucket':'GW'}
-        wp_path=Path(self.tmp.name)/'waveforms.toml'
-        wp_path.write_text(toml_text(wp_sections),encoding='utf-8')
-        raw=tomllib.loads(Path(os.environ['OILWELL_INVERSION_TEST_CONFIG']).read_text(encoding='utf-8'))
-        general=dict(enabled=True,identity_db_path=str(self.server.database.path),waveform_config_path=str(wp_path),temp_root=self.tmp.name,total_storage_bytes=2147483648)
-        config={'inversion':general,**{k:v for k,v in raw.items() if k in ('postgres_reader','postgres_operator')}}
-        self.runtime_path=Path(self.tmp.name)/'runtime.toml'
-        self.runtime_path.write_text('\n'.join('['+section+']\n'+'\n'.join(key+' = '+json.dumps(value) for key,value in values.items()) for section,values in config.items()),encoding='utf-8')
-        runtime=build_inversion_runtime(self.runtime_path,auth=self.server.auth)
-        if runtime.status!='ready':
-            from backend.inversion.config import load_inversion_config
-            from backend.inversion.runtime import verify_configuration
-            verify_configuration(load_inversion_config(self.runtime_path),self.server.auth)
-        self.assertEqual((runtime.status,runtime.code),('ready',None))
-        runtime.allowed_origins=self.server.inversion_runtime.allowed_origins
-        self.server.inversion_runtime=runtime
-        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
-        self.addCleanup(self.close_server)
-        self.session=self.server.auth.login('administrator','Admin@2026')
-
-    def close_server(self): self.server.shutdown(); self.thread.join(5)
-
-    def http(self,method,suffix,body=None,token=None):
-        conn=http.client.HTTPConnection(*self.server.server_address,timeout=15)
-        headers={'Authorization':'Bearer '+(token or self.session.token)}
-        if body is not None: body=json.dumps(body); headers['Content-Type']='application/json'
-        conn.request(method,PREFIX+suffix,body,headers)
-        response=conn.getresponse(); raw=response.read(); conn.close()
-        return response.status,json.loads(raw) if raw else None
-
-    def envelope(self,body=None,version=None,key=None):
-        from uuid import uuid4
-        result={'command':{'key':str(key or uuid4()),'expected':{'kind':'absent'} if version is None else {'kind':'match','version':version},'reason':'Explicit isolated HTTP validation'}}
-        if body is not None: result['body']=body
-        return result
+        self.start_http()
 
     def test_filtered_parameters_latest_lineage_and_assembly_isolation(self):
         from backend.inversion.contracts import canonical_bytes, strict_json

@@ -69,7 +69,7 @@ class InputMetadataShapeTests(unittest.TestCase):
             ('observation',),('observation','relative_timing_terms'),('observation','relative_timing_terms','capture_utc_bounds'),
             ('observation','relative_timing_terms','capture_utc_bounds',0),('observation','relative_timing_terms','capture_utc_bounds',0,'capture'),
             ('observation','absolute_timing_terms'),('observation','absolute_timing_terms',0)]
-        nullable={'producer_endpoint','calibration_pin','relative_timing_terms','absolute_timing_terms'}
+        nullable={'producer_endpoint','calibration_pin','relative_timing_terms','absolute_timing_terms','well'}
         for path in paths:
             for malformed in (None,[],1,'bad'):
                 if path and path[-1] in nullable and malformed is None:continue
@@ -82,6 +82,16 @@ class InputMetadataShapeTests(unittest.TestCase):
                         target[path[-1]]=malformed
                     with self.assertRaises(InversionError) as error:self.project(body)
                     self.assertEqual((error.exception.code,error.exception.status),('inversion.input_metadata_invalid',409))
+
+    def test_synthetic_assignment_preserves_test_identity_with_null_registry_well(self):
+        body=self.valid_body()
+        body['applicability']['registry']['well']=None
+        body['applicability']['assignment']['well_id']='test:synthetic-inversion'
+        before=canonical_bytes(body)
+        metadata=self.project(body)
+        self.assertIsNone(metadata['applicability']['well_id'])
+        self.assertEqual(metadata['applicability']['assignment']['well_id'],'test:synthetic-inversion')
+        self.assertEqual(canonical_bytes(body),before)
 
 
 class InputMetadataTests(ResultCase):

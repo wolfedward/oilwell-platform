@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 Python 3.13、标准库数值计算、PostgreSQL 18、psycopg[binary]==3.3.5、SQLite 身份服务、标准库 HTTP、原生 JavaScript/CSS、unittest、现有 Node/Edge 浏览器测试。首版不新增科学计算库、Web 框架、Redis/Celery 或云服务。
 
-**Spec:** [已确认设计](../specs/2026-10-09-production-dynagraph-inversion-design.md)，批准日期 2026-10-09，设计提交 `ee8d4c4bb87d704040f1b13906cddc932d496851`。本计划待用户审核和选择执行方式，尚未实施。
+**Spec:** [已确认设计](../specs/2026-10-09-production-dynagraph-inversion-design.md)，批准日期 2026-10-09，设计提交 `ee8d4c4bb87d704040f1b13906cddc932d496851`。用户已批准逐项实施与独立审查；Tasks1—13 已实现并审查，Task14 提供最终集成与交付验证。实际验收状态以本次源码绑定报告和协调任务审查记录为准；整体分支审查、环境恢复与生产启用分别处理，不表示年度平台整体完成。
 
 ## Global Constraints
 

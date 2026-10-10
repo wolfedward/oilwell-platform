@@ -121,7 +121,7 @@ def three_phase_case(*,signal='instantaneous',missing_phase=False,wiring=True):
 def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=False,
               inversion=False,reuse_evidence=None,utc_start='2026-09-29T00:00:00.000000Z',
               producer=None,shared_selected=False,mapping_offset=0,mapping_ppm='0',reference_end='2000000001',
-              utc_uncertainties=(0,0)):
+              utc_uncertainties=(0,0), native=None, file_first=False):
     """Actual intake, assembly and independent evidence approval; synthetic only."""
     import base64
     from backend.waveforms.evidence import EvidenceService
@@ -147,6 +147,17 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
         profile_data['required_quantities'].append(dict(role='crank_angle',quantity='crank_angle',unit='rad',signal_kind='instantaneous',measurement_source='synthetic'))
         profile_data['min_rates'].append(dict(role='crank_angle',rate=dict(num=1,den=1)))
         profile_data['ranges'].append(dict(role='crank_angle',range=dict(min='-10',max='10',unit='rad')))
+    envelopes = dict(active_power=('-20000','20000','-199','201','0.01','1'),
+        crank_angle=('-100000','7000000','-0.1','7','0.000001','0'),
+        load=('-1000','1000','-1','1','0.001','0'),
+        displacement=('-100000','1200000','-0.1','1.2','0.000001','0'))
+    if native is not None:
+        assert inversion and count == 129 and native['source_kind'] == 'synthetic'
+        profile_data['max_sync_error_ns']='4'
+        for item in profile_data['ranges']:
+            bounds=envelopes[item['role']]
+            item['range'].update(min=bounds[2],max=bounds[3])
+        for item in profile_data['min_rates']: item['rate']['num']=64
     profile=approved('profile',profile_data); selected=[]; captures=[]; frames=[]; raws=[]; wire_captures=[]; endpoints=[]; cycle_ref=None; channel_evidence={}
     repo=WaveformRepository(case.connect,limits=LIMITS,prefix='oil',ingress_gateway_id='GW')
     layouts=((('electrical',(('power','total_active_power','W'),)),('sensor',(('load','load','kN'),('displacement','displacement','m')))),)
@@ -171,6 +182,8 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
                             wiring=dict(connection='motor_terminal_three_phase',voltage_reference='line_to_line',phase='total',phase_sequence='ABC',current_direction='positive_into_motor'),
                             window=dict(definition='centered arithmetic mean',averaging_window_ns='1000000',timestamp_convention='center'))
                         config_data['power'].update(averaging_window_ns='1000000',timestamp_convention='center',bandwidth_hz='100')
+                if native is not None:
+                    config_data['input_range'].update(min=envelopes[role][0],max=envelopes[role][1])
                 if reuse_evidence:
                     config,calibration=reuse_evidence[role]
                 else:
@@ -180,6 +193,11 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
                         calibration_data.update(valid_from='2026-01-01T00:00:00.000000Z',time_correction_ns='17')
                         if role=='crank_angle': calibration_data['scale']='0.000001'
                         if role=='active_power': calibration_data.update(scale='2',offset='1')
+                    if native is not None:
+                        bounds=envelopes[role]
+                        calibration_data.update(scale=bounds[4],offset=bounds[5])
+                        calibration_data['residual_ns']='1'
+                        calibration_data['calibrated_range'].update(min=bounds[2],max=bounds[3])
                     calibration=approved('calibration',calibration_data)
                 channel_evidence[role]=(config,calibration)
                 channels.append(dict(channel_id=quantity,quantity=quantity,unit=unit,encoding='i32le',measurement_source='synthetic',
@@ -192,6 +210,7 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
                 for role,quantity,unit in quantities:
                     flag=quality if role=='load' and i==bad_index else 0
                     value=(-3+i*6//(count-1)) if role in ('power','active_power') else (round(i*6283185/(count-1)) if role=='crank_angle' else 10 if role=='load' else min(i,count-1-i)*4//max(1,(count-1)//2))
+                    if native is not None: value=native[role+'_raw'][i]
                     raw.extend(struct.pack('<iB',0 if flag==1 else value,flag))
             data=bytes(raw); chunk_frames=min(count,32 if inversion else 4096)
             streams.append(dict(stream_id=name,source=source,clock_domain_id='clock',rate_num=rate,rate_den=1,first_sample_index='0',offset_ns='0',
@@ -204,22 +223,45 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
         body=dict(key,schema='OWP-WAVE/1.0',kind='manifest',boot_id=str(boot),capture_kind='cycle' if cycle else 'event',source_kind='synthetic',
             producer=dict(manufacturer='Synthetic fixture',recorder_version='1'),source_evidence=None,utc_start=utc_start,utc_uncertainty_ns=str(utc_uncertainties[n]),
             clock_domain_id='clock',sync_evidence_id=None,window_ns='2000000000',cycle=cycle,streams=streams)
-        manifest=encoded(body); observed=observation(manifest,topic=f'oil/v2/GW/{device}/waveform'); stored=repo.ingest(observed)
+        manifest=encoded(body); observed=observation(manifest,topic=f'oil/v2/GW/{device}/waveform')
+        if not file_first: stored=repo.ingest(observed)
         wire=[manifest]
-        case.assertEqual(stored.status,'stored')
+        if not file_first: case.assertEqual(stored.status,'stored')
         for stream,data in zip(streams,payloads):
             for i in range(stream['chunk_count']):
                 start=i*stream['chunk_frames']; size=min(stream['chunk_frames'],count-start); piece=data[start*stream['frame_bytes']:(start+size)*stream['frame_bytes']]
                 chunk=encoded(dict(key,schema='OWP-WAVE/1.0',kind='chunk',manifest_sha256=sha256(manifest).hexdigest(),stream_id=stream['stream_id'],
                     chunk_index=i,sample_start=start,sample_count=size,data_sha256=sha256(piece).hexdigest(),data_base64=base64.b64encode(piece).decode()))
-                case.assertEqual(repo.ingest(observation(chunk,topic=f'oil/v2/GW/{device}/waveform')).status,'stored')
+                if not file_first:
+                    case.assertEqual(repo.ingest(observation(chunk,topic=f'oil/v2/GW/{device}/waveform')).status,'stored')
                 wire.append(chunk)
-        assembler=Assembler(lambda:case.connect('assembler'),clock=lambda:FIXED_TIME,limits=LIMITS)
+        if file_first:
+            from backend.waveforms.imports import ImportService
+            from backend.waveforms.commands import import_request_hash
+            imports=ImportService(case.connect,limits=LIMITS,prefix='oil')
+            def ic(op,target=None,version=0,**values):
+                cmd=Command(CREATOR,uuid4(),version,'Synthetic file-first import','0'*64)
+                return replace(cmd,request_hash=import_request_hash(op,target,cmd,**values))
+            original=b'\n'.join(wire)
+            metadata=dict(key,file_sha256=sha256(original).hexdigest(),bytes=len(original),line_count=len(wire),final_lf=False)
+            session=imports.create(metadata,ic('create',metadata=metadata))
+            for i,payload in enumerate(wire):
+                session=imports.append(session.import_id,i,payload,ic('append',session.import_id,session.version,line=i,payload=payload))
+            imports.seal(session.import_id,ic('seal',session.import_id,session.version))
+        from datetime import datetime, timezone
+        assembler=Assembler(lambda:case.connect('assembler'),clock=(lambda:datetime.now(timezone.utc)) if file_first else (lambda:FIXED_TIME),limits=LIMITS)
         lease=assembler.claim(uuid4()); case.assertIsNotNone(lease); case.assertEqual(assembler.run(lease).status,'complete')
-        observation_id=case.scalar('SELECT observation_id FROM waveforms.provenance_metadata WHERE source_ref=%s',(observed.source_ref,))
-        origin=approved('origin',dict(COMMON,capture=key,source_identity=source,provenance=dict(transport='mqtt',source_ref=str(observed.source_ref),
-            observation_id=str(observation_id),outcome_id=str(stored.outcome_id),fact_id=str(stored.fact_id),manifest_sha256=sha256(manifest).hexdigest(),import_id=None),
-            verification_method='synthetic',verification_basis='synthetic',credential_attachment_ids=[],broker_config_ref='synthetic-ACL'))
+        if file_first:
+            with case.connect('reader') as conn:
+                observation_id,fact_id,outcome_id=conn.execute("SELECT observation_id,fact_id,outcome_id FROM waveforms.provenance_metadata WHERE source_ref=%s AND kind='manifest'",(session.import_id,)).fetchone()
+            provenance=dict(transport='file',source_ref=str(session.import_id),import_id=str(session.import_id),
+                observation_id=str(observation_id),fact_id=str(fact_id),outcome_id=str(outcome_id),manifest_sha256=sha256(manifest).hexdigest())
+        else:
+            observation_id=case.scalar('SELECT observation_id FROM waveforms.provenance_metadata WHERE source_ref=%s',(observed.source_ref,))
+            provenance=dict(transport='mqtt',source_ref=str(observed.source_ref),observation_id=str(observation_id),
+                outcome_id=str(stored.outcome_id),fact_id=str(stored.fact_id),manifest_sha256=sha256(manifest).hexdigest(),import_id=None)
+        origin=approved('origin',dict(COMMON,capture=key,source_identity=source,provenance=provenance,
+            verification_method='synthetic',verification_basis='synthetic',credential_attachment_ids=[],broker_config_ref=None if file_first else 'synthetic-ACL'))
         captures.append(dict(key=key,manifest_sha256=sha256(manifest).hexdigest(),origins=[ref(origin)]))
         frame=parse_frame(manifest); frames.append(frame); raws.append(manifest); wire_captures.append(tuple(wire))
         for stream in streams:
