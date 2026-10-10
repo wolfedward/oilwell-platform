@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import inspect
 import multiprocessing
+from multiprocessing.context import SpawnProcess
 import os
 from pathlib import Path
 import shutil
@@ -120,6 +121,28 @@ def launch_compute(input_path,output_path):
         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True,
         creationflags=subprocess.CREATE_NO_WINDOW)
 
+class _OwnedSpawnProcess(SpawnProcess):
+    """Windows/CPython adapter retaining native ownership during Popen init.
+
+    Popen creates its native handle before serializing, but BaseProcess normally
+    receives Popen only after serialization succeeds. Keep that same instance
+    reachable on failure; do not replace global spawn/native functions.
+    """
+    @staticmethod
+    def _Popen(process):
+        from multiprocessing.popen_spawn_win32 import Popen
+        launcher=Popen.__new__(Popen)
+        try:
+            Popen.__init__(launcher,process)
+        except BaseException:
+            if getattr(launcher,'_handle',None) is not None:
+                process._popen=launcher
+                process._sentinel=launcher.sentinel
+            elif getattr(launcher,'pid',None) is not None:
+                process._ownership_uncertain=True
+            raise
+        return launcher
+
 def _execute(factory,configuration,attempt,directory,control):
     # Nothing capable of preparation or child creation runs before attachment.
     if control.recv()!='contained': return
@@ -159,14 +182,15 @@ def run_once(runtime:WorkerRuntime)->bool:
     started=runtime.clock(); attempt=services.runs.claim(runtime.owner)
     if attempt is None: return False
     deadline=started+services.runs.limits.deadline_seconds
-    owned=None; job=None; process=None; parent=None; child_channel=None
+    owned=None; job=None; process=None; parent=None; child_channel=None; process_started=False
     stop_monitor=threading.Event(); cancelled=threading.Event(); monitor=None
     outcome=('failed','worker_interrupted'); reconciled=False
     try:
         owned=OwnedTemp(runtime.temp_root); job=OwnedJob()
         context=multiprocessing.get_context('spawn'); parent,child_channel=context.Pipe()
-        process=context.Process(target=_execute,args=(runtime.factory,runtime.configuration,attempt,owned.path,child_channel))
-        process.start(); child_channel.close(); child_channel=None
+        process=_OwnedSpawnProcess(target=_execute,args=(runtime.factory,runtime.configuration,attempt,owned.path,child_channel))
+        process.start(); process_started=True
+        child_channel.close(); child_channel=None
         job.attach(process); parent.send('contained')
         def watch_cancel():
             while not stop_monitor.wait(.1):
@@ -174,7 +198,10 @@ def run_once(runtime:WorkerRuntime)->bool:
                     current=services.runs.get(attempt.run_id)
                     if current.reason_code=='cancel_requested' or current.state=='cancelled':
                         cancelled.set(); return
-                except Exception: return # deadline supervision never waits on DB reads
+                except Exception:
+                    # Retry after the same bounded, stop-aware wait. The parent
+                    # deadline remains independent even if a reader is blocked.
+                    continue
         monitor=threading.Thread(target=watch_cancel,daemon=True); monitor.start()
         while process.is_alive():
             remaining=deadline-runtime.clock()
@@ -198,9 +225,12 @@ def run_once(runtime:WorkerRuntime)->bool:
         try:
             if job: job.stop()
             if process:
-                if process.is_alive(): process.terminate() # exact gated process if assignment failed
-                process.join(3)
-                if process.is_alive(): raise InversionError('owned_process_reap_failed')
+                if getattr(process,'_ownership_uncertain',False):
+                    raise InversionError('owned_process_reap_failed')
+                if process_started or process.pid is not None:
+                    if process.is_alive(): process.terminate() # exact gated process if assignment failed
+                    process.join(3)
+                    if process.is_alive(): raise InversionError('owned_process_reap_failed')
                 process.close()
         finally:
             if job: job.close()

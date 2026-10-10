@@ -7,6 +7,116 @@ from types import MappingProxyType
 from tests.inversion_worker import RunCase,worker_services,accelerated_clock
 
 class SupervisorTests(RunCase):
+    def check_start_failure(self,partially_started):
+        import tempfile
+        from pathlib import Path
+        from uuid import uuid4
+        from multiprocessing.process import BaseProcess
+        from unittest.mock import patch
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.runs import RunService
+        from backend.inversion.worker import WorkerRuntime,run_once,OwnedJob
+        events=[]; start=BaseProcess.start; join=BaseProcess.join; stop=OwnedJob.stop; finish=RunService.finish
+        def failing_start(process):
+            if partially_started: start(process)
+            raise OSError('injected process start failure')
+        def observed_stop(job):
+            stop(job); self.assertEqual(job.active(),0); events.append('job_empty')
+        def observed_join(process,*args,**kwargs):
+            self.assertTrue(partially_started,'must not join a never-started process')
+            value=join(process,*args,**kwargs); self.assertFalse(process.is_alive()); events.append('joined'); return value
+        def observed_finish(service,*args,**kwargs):
+            self.assertEqual(events,['job_empty','joined'] if partially_started else ['job_empty'])
+            return finish(service,*args,**kwargs)
+        run=self.create()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime=WorkerRuntime(worker_services,canonical_bytes(dict(operator=self.inversion_fixture.settings['operator'],reader=self.inversion_fixture.settings['reader'],mode='prepare_block',root=directory)),Path(directory),uuid4(),enabled=True)
+            with patch.object(BaseProcess,'start',failing_start),patch.object(BaseProcess,'join',observed_join),patch.object(OwnedJob,'stop',observed_stop),patch.object(RunService,'finish',observed_finish):
+                self.assertTrue(run_once(runtime))
+            self.assertEqual(list(Path(directory).iterdir()),[])
+        current=self.service.get(run.id)
+        self.assertEqual((current.state,current.reason_code),('failed','resource_failure'))
+        self.assertEqual(self.scalar('SELECT reserved_bytes FROM inversion.capacity'),0)
+        self.assertEqual(self.scalar('SELECT running FROM inversion.capacity'),0)
+
+    def test_process_start_failure_reconciles_owned_resources(self):
+        self.check_start_failure(False)
+
+    def test_partially_started_process_is_reaped_before_settlement(self):
+        self.check_start_failure(True)
+
+    def test_spawn_serialization_failure_reaps_unassigned_native_child(self):
+        import _winapi
+        from multiprocessing import reduction
+        from multiprocessing.context import get_spawning_popen
+        from multiprocessing.process import BaseProcess
+        from unittest.mock import patch
+        from backend.inversion.runs import RunService
+        dump=reduction.dump; handles=[]
+        finish=RunService.finish
+        def observed_finish(service,*args,**kwargs):
+            self.assertEqual(len(handles),1)
+            self.assertEqual(_winapi.WaitForSingleObject(handles[0],0),_winapi.WAIT_OBJECT_0)
+            return finish(service,*args,**kwargs)
+        def failing_dump(obj,*args,**kwargs):
+            if isinstance(obj,BaseProcess):
+                self.assertIsNone(obj._popen)
+                launcher=get_spawning_popen()
+                self.assertIsNotNone(launcher.pid)
+                current=_winapi.GetCurrentProcess()
+                handles.append(_winapi.DuplicateHandle(current,launcher._handle,current,0,False,_winapi.DUPLICATE_SAME_ACCESS))
+                raise OSError('injected post-create serialization failure')
+            return dump(obj,*args,**kwargs)
+        try:
+            with patch.object(reduction,'dump',failing_dump),patch.object(RunService,'finish',observed_finish):
+                self.check_start_failure(True)
+            self.assertEqual(len(handles),1)
+            self.assertEqual(_winapi.WaitForSingleObject(handles[0],0),_winapi.WAIT_OBJECT_0)
+        finally:
+            for handle in handles: _winapi.CloseHandle(handle)
+
+    def test_transient_cancel_read_failure_keeps_monitoring(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import tempfile,threading,time
+        from pathlib import Path
+        from uuid import uuid4
+        from multiprocessing.process import BaseProcess
+        from unittest.mock import patch
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.runs import RunService
+        from backend.inversion.worker import WorkerRuntime,run_once,OwnedJob
+        from tests.inversion_worker import command
+        failed_read=threading.Event(); events=[]; outcomes=[]
+        get=RunService.get; stop=OwnedJob.stop; join=BaseProcess.join; finish=RunService.finish
+        def flaky_get(service,*args,**kwargs):
+            if threading.current_thread().daemon and not failed_read.is_set():
+                failed_read.set(); raise OSError('injected transient cancellation read failure')
+            return get(service,*args,**kwargs)
+        def observed_stop(job):
+            stop(job); self.assertEqual(job.active(),0); events.append('job_empty')
+        def observed_join(process,*args,**kwargs):
+            value=join(process,*args,**kwargs); self.assertFalse(process.is_alive()); events.append('joined'); return value
+        def observed_finish(service,attempt,state,reason):
+            self.assertEqual(events,['job_empty','joined']); outcomes.append((state,reason))
+            return finish(service,attempt,state,reason)
+        run=self.create()
+        with tempfile.TemporaryDirectory() as directory:
+            # Ten real seconds of deadline budget; cancellation must finish well before it.
+            runtime=WorkerRuntime(worker_services,canonical_bytes(dict(operator=self.inversion_fixture.settings['operator'],reader=self.inversion_fixture.settings['reader'],mode='prepare_block',root=directory)),Path(directory),uuid4(),enabled=True,clock=lambda:time.monotonic()*18)
+            with patch.object(RunService,'get',flaky_get),patch.object(OwnedJob,'stop',observed_stop),patch.object(BaseProcess,'join',observed_join),patch.object(RunService,'finish',observed_finish):
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future=pool.submit(run_once,runtime)
+                    self.assertTrue(failed_read.wait(5))
+                    current=self.service.get(run.id); self.service.cancel(run.id,command(current.version))
+                    cancelled_at=time.monotonic()
+                    self.assertTrue(future.result(timeout=15))
+                    elapsed=time.monotonic()-cancelled_at
+            self.assertEqual(list(Path(directory).iterdir()),[])
+        self.assertEqual(outcomes,[('cancelled','user_cancelled')])
+        self.assertLess(elapsed,4)
+        self.assertEqual(self.service.get(run.id).state,'cancelled')
+        self.assertEqual(self.scalar('SELECT reserved_bytes FROM inversion.capacity'),0)
+
     def test_real_acquisition_compute_codec_and_durable_outcome(self):
         import tempfile
         from pathlib import Path
