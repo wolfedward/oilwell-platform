@@ -119,7 +119,8 @@ def three_phase_case(*,signal='instantaneous',missing_phase=False,wiring=True):
 
 
 def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=False,
-              inversion=False,reuse_evidence=None,utc_start='2026-09-29T00:00:00.000000Z'):
+              inversion=False,reuse_evidence=None,utc_start='2026-09-29T00:00:00.000000Z',
+              producer=None,shared_selected=False,mapping_offset=0,mapping_ppm='0',reference_end='2000000001'):
     """Actual intake, assembly and independent evidence approval; synthetic only."""
     import base64
     from backend.waveforms.evidence import EvidenceService
@@ -150,15 +151,17 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
     layouts=((('electrical',(('power','total_active_power','W'),)),('sensor',(('load','load','kN'),('displacement','displacement','m')))),)
     if inversion:
         layouts=((('electrical',(('active_power','total_active_power','W'),)),('sensor',(('load','load','kN'),('displacement','displacement','m'),('crank_angle','crank_angle','rad')))),)
+        if shared_selected:
+            layouts=((('unused',(('unused','load','kN'),)),('sensor',layouts[0][0][1]+layouts[0][1][1])),)
     if two: layouts=((layouts[0][0],),(layouts[0][1],))
     rate=max(1,(count-1)//2); shared_boot=uuid4()
     for n,layout in enumerate(layouts):
         capture_id=uuid4(); boot=shared_boot if same_source else uuid4(); device='D'+str(0 if same_source else n); key=dict(gateway_id='GW',device_id=device,capture_id=str(capture_id))
-        source=dict(gateway_id='GW',device_id=device,boot_id=str(boot)); streams=[]; payloads=[]
+        source=dict(gateway_id='GW',device_id=producer or device,boot_id=str(boot)); streams=[]; payloads=[]
         for name,quantities in layout:
             channels=[]
             for role,quantity,unit in quantities:
-                config_data=config_body(quantity,unit,stream=name,device=device,rate=rate)
+                config_data=config_body(quantity,unit,stream=name,device=source['device_id'],rate=rate)
                 if inversion:
                     config_data['valid_from']='2026-01-01T00:00:00.000000Z'
                     if role=='crank_angle': config_data['input_range']=dict(min='-10000000',max='10000000',unit=unit)
@@ -180,8 +183,9 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
                 channel_evidence[role]=(config,calibration)
                 channels.append(dict(channel_id=quantity,quantity=quantity,unit=unit,encoding='i32le',measurement_source='synthetic',
                     signal_kind=config.body['signal_kind'],config_id='vendor-label',calibration_id=str(calibration.id)))
-                selected.append(dict(role=role,capture=key,stream_id=name,channel_id=quantity,first_index='0',last_index=str(count-1),
-                    sampling_config=ref(config),calibration=ref(calibration)))
+                if role!='unused':
+                    selected.append(dict(role=role,capture=key,stream_id=name,channel_id=quantity,first_index='0',last_index=str(count-1),
+                        sampling_config=ref(config),calibration=ref(calibration)))
             raw=bytearray()
             for i in range(count):
                 for role,quantity,unit in quantities:
@@ -222,6 +226,9 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
             endpoints.append(dict(endpoint=ep,reference_sample_index='0',reference_event='documented synthetic edge',nominal_reference_ns='0',rate=dict(num=rate,den=1),
                 valid_start_ns='0',valid_end_ns='2000000001',offset_error_ns='0',frequency_error_ppm='0',residual_ns='0',clock_divisor=None))
         if cycle: cycle_ref=dict(capture=key,cycle_id=cycle['cycle_id'])
+    if shared_selected:
+        endpoints[1].update(offset_error_ns=str(mapping_offset),frequency_error_ppm=mapping_ppm)
+        endpoints[0]['valid_end_ns']=reference_end
     payload=b'%PDF-synthetic reviewed timing correspondence'
     metadata=dict(media_type='application/pdf',payload_bytes=len(payload),payload_sha256=sha256(payload).hexdigest())
     attachment=service.upload_attachment(payload,media_type='application/pdf',command=command('upload',attachment=metadata))

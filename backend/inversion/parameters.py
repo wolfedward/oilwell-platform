@@ -232,7 +232,7 @@ class ParameterService(GovernanceService):
         if saved[2]['source_kind']!=source: refuse('archive_sync_source')
         return saved[2]
 
-    def _validate(self, cur, record, *, start=None, end=None, uncertainty_ns=0):
+    def _validate(self, cur, record, *, start=None, end=None, uncertainty_ns=0,alignment_ns=None):
         parameter=parse_parameter_set(canonical_bytes(record.body))
         if parameter.source_kind=='unknown': refuse('source_ineligible')
         observation=start is not None or end is not None
@@ -263,7 +263,9 @@ class ParameterService(GovernanceService):
                 actual,domain=getattr(condition,field),getattr(parameter.domain,field)
                 if actual.min<domain.min or actual.max>domain.max: refuse('condition_domain')
         coverage=provenance.coverage
-        if int(coverage['max_time_alignment_error_ns'])<uncertainty_ns: refuse('timing_envelope')
+        alignment=uncertainty_ns if alignment_ns is None else alignment_ns
+        if type(alignment) not in (int,Fraction) or alignment<0: fail()
+        if int(coverage['max_time_alignment_error_ns'])<alignment: refuse('timing_envelope')
         for field in ('domain','uncertainty'):
             if coverage[field+'_sha256']!=sha256(canonical_bytes(record.body[field])).hexdigest(): refuse('coverage_mismatch')
         if coverage['policy_sha256']!=record.body['policy']['content_sha256']: refuse('coverage_mismatch')
@@ -272,7 +274,8 @@ class ParameterService(GovernanceService):
             self._attachments(cur,binding.installation_evidence_refs,'installation')
             pin=binding.channel_pin
             if pin.sync_pin is not None: self._sync_evidence(cur,pin.sync_pin,parameter.source_kind)
-            endpoint={key:getattr(pin,key) for key in ('gateway_id','device_id','stream_id','channel_id')}
+            endpoint=dict(gateway_id=pin.physical_endpoint.gateway_id,device_id=pin.physical_endpoint.device_id,
+                          stream_id=pin.stream_id,channel_id=pin.channel_id)
             sampling=self._evidence(cur,pin.sampling_pin,'sampling_config',endpoint,parameter.source_kind,start,end,observation,uncertainty_ns)
             calibration=self._evidence(cur,pin.calibration_pin,'calibration',endpoint,parameter.source_kind,start,end,observation,uncertainty_ns)
             if calibration['sampling_config_version_id']!=str(pin.sampling_pin.id) or calibration['sampling_config_sha256']!=pin.sampling_pin.content_sha256:

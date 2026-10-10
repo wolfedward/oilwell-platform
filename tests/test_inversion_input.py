@@ -44,6 +44,60 @@ class InputContractTests(unittest.TestCase):
 
 
 class AcquisitionTests(GovernanceCase,DatasetCase):
+    def test_distinct_recorder_producer_later_capture_is_supported(self):
+        case=acquired_case(self,later=True,producer='P')
+        prepared=self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertTrue(prepared.snapshot.body['applicability']['independent_comparison'])
+        pin=prepared.prediction_inputs.power.source
+        self.assertEqual(pin.device_id,'D0')
+        self.assertEqual(pin.producer_endpoint.device_id,'P')
+
+    def test_changed_physical_producer_refuses_later_capture(self):
+        from backend.inversion.transactions import InversionError
+        case=acquired_case(self,later=True,producer='P',later_producer='P2')
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.channel_installation_changed')
+
+    def test_changed_calibration_refuses_later_capture(self):
+        from backend.inversion.transactions import InversionError
+        case=acquired_case(self,later=True,producer='P',changed_calibration=True)
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.channel_installation_changed')
+
+    def test_shared_nonreference_absolute_bound_excludes_parameter_boundary(self):
+        from backend.inversion.transactions import InversionError
+        case=acquired_case(self,later=True,shared_selected=True,mapping_offset=100000000,mapping_ppm='100',
+                           parameter_end='2026-09-29T00:01:02.050000Z')
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.parameter_interval')
+
+    def test_shared_nonreference_absolute_bound_excludes_calibration_independence(self):
+        from fractions import Fraction
+        case=acquired_case(self,later=True,shared_selected=True,mapping_offset=100000000,mapping_ppm='100',
+                           later_utc='2026-09-29T00:00:02.050000Z')
+        prepared=self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(prepared.prediction_inputs.time_bound_ns,Fraction(0))
+        self.assertEqual(prepared.snapshot.body['observation']['uncertainty_ns'],'100200000')
+        self.assertIn('calibration_time_overlap',prepared.snapshot.body['applicability']['independence_reasons'])
+
+    def test_shared_nonreference_absolute_bound_excludes_condition_boundary(self):
+        from backend.inversion.transactions import InversionError
+        case=acquired_case(self,later=True,shared_selected=True,mapping_offset=100000000,mapping_ppm='100',
+                           condition_end='2026-09-29T00:01:02.050000Z')
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.operating_condition_interval')
+
+    def test_unused_absolute_reference_requires_range_proof(self):
+        from backend.inversion.transactions import InversionError
+        case=acquired_case(self,later=True,shared_selected=True,reference_end='1')
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.absolute_sync_interval')
+
     def acquirer(self,case):
         from backend.inversion.input_acquisition import InputAcquisition
         return InputAcquisition(self.inversion_fixture.connect,

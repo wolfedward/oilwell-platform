@@ -25,6 +25,25 @@ class PhysicalSupportTests(unittest.TestCase):
 
 
 class ParameterGovernanceTests(GovernanceCase):
+    def test_absolute_support_is_separate_from_relative_alignment_coverage(self):
+        from backend.inversion.parameters import _ns
+        from backend.inversion.contracts import utc
+        assembly,_=self.create_assembly(); record=self.approved_parameter(assembly.subject_id)
+        instant=_ns(utc(MID))
+        with self.inversion_fixture.connect('reader') as conn:
+            parsed=self.parameters._validate(conn.cursor(),record,start=instant,end=instant+1,uncertainty_ns=100,alignment_ns=0)
+            self.assertEqual(parsed.assembly_id,assembly.subject_id)
+            with self.assertRaises(InversionError) as error:
+                self.parameters._validate(conn.cursor(),record,start=instant,end=instant+1,uncertainty_ns=100,alignment_ns=1)
+            self.assertEqual(error.exception.code,'inversion.timing_envelope')
+        # A producer claim is not evidence: independently approved endpoints must match.
+        body=self.body(assembly.subject_id,parent=1)
+        for binding in body['provenance']['channel_bindings']:
+            binding['channel_pin']['producer_endpoint']=dict(gateway_id='gateway-1',device_id='other')
+        body['phase']['channel_pin']=body['provenance']['channel_bindings'][1]['channel_pin'].copy()
+        draft=self.parameters.create_version(body,command(version=1))
+        with self.assertRaises(InversionError): self.parameters.submit(draft.subject_id,command(version=1))
+
     def test_legacy_assignment_sources_fail_closed_without_writes(self):
         from hashlib import sha256
         import json

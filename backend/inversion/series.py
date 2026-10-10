@@ -24,7 +24,27 @@ class EvidencePin:
 
 
 @dataclass(frozen=True)
+class ProducerEndpoint:
+    """Stable physical installation; never a recorder/capture/boot locator."""
+    gateway_id: str
+    device_id: str
+
+    @classmethod
+    def from_wire(cls,value):
+        fields(value,{'gateway_id','device_id'})
+        return cls(value['gateway_id'],value['device_id'])
+
+    def __post_init__(self):
+        name(self.gateway_id); name(self.device_id)
+
+
+@dataclass(frozen=True)
 class ChannelPin:
+    """gateway/device/capture locate accepted bytes; producer identifies installation.
+
+    Legacy absent producer uses the locator endpoint, still subject to actual
+    archived/current stream and approved evidence agreement. No body is rewritten.
+    """
     gateway_id: str
     device_id: str
     capture_id: UUID
@@ -36,22 +56,30 @@ class ChannelPin:
     first_index: int
     last_index: int
     sync_pin: EvidencePin | None = None
+    producer_endpoint: ProducerEndpoint | None = None
+
+    @property
+    def physical_endpoint(self):
+        return self.producer_endpoint or ProducerEndpoint(self.gateway_id,self.device_id)
 
     @classmethod
     def from_wire(cls, value):
         if type(value) is not dict: fail()
-        fields(value, (set(cls.__dataclass_fields__)-{'sync_pin'}) | ({'sync_pin'} if 'sync_pin' in value else set()))
+        optional={'sync_pin','producer_endpoint'}
+        fields(value, (set(cls.__dataclass_fields__)-optional) | (optional & value.keys()))
         return cls(name(value["gateway_id"]), name(value["device_id"]), identity(value["capture_id"]),
                    name(value["stream_id"]), name(value["channel_id"]), digest(value["manifest_sha256"]),
                    EvidencePin.from_wire(value["calibration_pin"]), EvidencePin.from_wire(value["sampling_pin"]),
                    integer(value["first_index"]), integer(value["last_index"]),
-                   EvidencePin.from_wire(value['sync_pin']) if value.get('sync_pin') is not None else None)
+                   EvidencePin.from_wire(value['sync_pin']) if value.get('sync_pin') is not None else None,
+                   ProducerEndpoint.from_wire(value['producer_endpoint']) if value.get('producer_endpoint') is not None else None)
 
     def __post_init__(self):
         name(self.gateway_id); name(self.device_id); name(self.stream_id); name(self.channel_id)
         if type(self.capture_id) is not UUID or type(self.calibration_pin) is not EvidencePin or type(self.sampling_pin) is not EvidencePin: fail()
         digest(self.manifest_sha256)
         if self.sync_pin is not None and type(self.sync_pin) is not EvidencePin: fail()
+        if self.producer_endpoint is not None and type(self.producer_endpoint) is not ProducerEndpoint: fail()
         integer(self.first_index); integer(self.last_index, minimum=self.first_index)
 
 

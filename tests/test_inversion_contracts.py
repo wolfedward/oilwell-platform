@@ -17,6 +17,21 @@ from backend.waveforms.commands import Actor
 
 
 class InversionContractTests(unittest.TestCase):
+    def test_producer_endpoint_is_optional_strict_and_preserves_legacy_bytes(self):
+        legacy=parameter_wire(); parsed=parse_parameter_set(legacy)
+        self.assertEqual(parsed.raw,legacy)
+        self.assertEqual(parsed.phase.channel_pin.physical_endpoint.device_id,'device-1')
+        body=parameter_body()
+        for pin in [body['phase']['channel_pin'],body['provenance']['channel_bindings'][1]['channel_pin']]:
+            pin['producer_endpoint']=dict(gateway_id='physical-gateway',device_id='producer')
+        value=parse_parameter_set(parameter_wire(body))
+        self.assertEqual(value.phase.channel_pin.device_id,'device-1')
+        self.assertEqual(value.phase.channel_pin.physical_endpoint.device_id,'producer')
+        for endpoint in ({'gateway_id':'GW'}, {'gateway_id':'GW','device_id':'P','boot_id':'no'}, {'gateway_id':'GW','device_id':1}):
+            with self.subTest(endpoint=endpoint),self.assertRaises(ValueError):
+                ChannelPin.from_wire(CHANNEL|{'producer_endpoint':endpoint})
+        self.assertEqual(ChannelPin.from_wire(CHANNEL|{'producer_endpoint':None}),ChannelPin.from_wire(CHANNEL))
+
     def test_partial_coverage_rejects_duplicate_scope_and_wrong_purpose(self):
         for mutation in ('duplicate','purpose','nested_duplicate','nested_purpose'):
             body=parameter_body(); del body['provenance']['source_date']

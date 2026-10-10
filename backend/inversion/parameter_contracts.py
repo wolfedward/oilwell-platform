@@ -436,6 +436,7 @@ _CHANNEL_SHAPE = {"gateway_id": name, "device_id": name, "capture_id": identity,
                   "stream_id": name, "channel_id": name, "manifest_sha256": digest,
                   "calibration_pin": _PIN_SHAPE, "sampling_pin": _PIN_SHAPE,
                   "sync_pin": ('optional', _PIN_SHAPE),
+                  "producer_endpoint": ('optional', {'gateway_id': name, 'device_id': name}),
                   "first_index": integer, "last_index": integer}
 _BOUND_SHAPE = {"min": decimal, "max": decimal}
 _INT_BOUND_SHAPE = {"min": integer_text, "max": integer_text}
@@ -521,7 +522,7 @@ def _collect_missing(value, shape, path, missing):
         for key in sorted(shape):
             child = f"{path}.{key}"
             spec = shape[key]
-            if shape is _CHANNEL_SHAPE and key=='sync_pin' and key not in value: continue
+            if shape is _CHANNEL_SHAPE and key in ('sync_pin','producer_endpoint') and key not in value: continue
             if key not in value or value[key] is None and not (
                 type(spec) is tuple and spec[0] == "optional"):
                 missing.append(child); complete = False

@@ -127,7 +127,10 @@ def parameter_wire(body=None):
                       separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True):
+def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,producer=None,
+                  later_producer=None,changed_calibration=False,shared_selected=False,
+                  mapping_offset=0,mapping_ppm='0',later_utc='2026-09-29T00:01:00.000000Z',
+                  parameter_end=None,condition_end=None,reference_end='2000000001'):
     """Genuine WP04 intake/evidence/pair/freeze and independently approved governance."""
     from copy import deepcopy
     from dataclasses import replace
@@ -144,9 +147,16 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True):
     from tests.waveform_pairing_support import seed_pair,CREATOR,REVIEWER
     from tests.waveform_support import LIMITS
     from tests.inversion_governance_support import command,AUTHOR,REVIEWER as INV_REVIEWER
-    archive=seed_pair(case,count=count,inversion=True)
-    vector=seed_pair(case,count=count,inversion=True,reuse_evidence=archive['channel_evidence'],
-                     utc_start='2026-09-29T00:01:00.000000Z') if later else archive
+    archive=seed_pair(case,count=count,inversion=True,producer=producer,shared_selected=shared_selected)
+    reuse=archive['channel_evidence']
+    if changed_calibration:
+        reuse=dict(reuse)
+        config,cal=reuse['active_power']
+        from backend.waveforms.evidence_contracts import thaw
+        reuse['active_power']=(config,case.approved_evidence('calibration',thaw(cal.body)))
+    vector=seed_pair(case,count=count,inversion=True,reuse_evidence=None if later_producer else reuse,
+                     utc_start=later_utc,producer=later_producer or producer,shared_selected=shared_selected,
+                     mapping_offset=mapping_offset,mapping_ppm=mapping_ppm,reference_end=reference_end) if later else archive
     if not angle:
         vector=dict(vector); vector['selection']=deepcopy(vector['selection'])
         profile=__import__('backend.waveforms.evidence_contracts',fromlist=['thaw']).thaw(vector['profile'].body)
@@ -167,6 +177,8 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True):
     parameters=case.body(assembly)
     parameters['provenance']['operating_conditions'][0].update(
         valid_from='2025-01-01T00:00:00.000000Z',valid_to='2028-01-01T00:00:00.000000Z')
+    if parameter_end: parameters['valid_to']=parameter_end
+    if condition_end: parameters['provenance']['operating_conditions'][0]['valid_to']=condition_end
     # Replace every provenance pin with actual archived immutable channel identity.
     for binding in parameters['provenance']['channel_bindings']:
         chosen=next((c for c in archive['selection']['channels'] if c['role']==binding['role']),None)
@@ -178,6 +190,7 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True):
             'sync_pin':dict(id=str(archive['sync'].id),content_sha256=archive['sync'].content_sha256,review_version=archive['sync'].version),
             'calibration_pin':dict(id=chosen['calibration']['id'],content_sha256=chosen['calibration']['content_sha256'],review_version=int(chosen['calibration']['version']))}
         if not archive_sync: binding['channel_pin'].pop('sync_pin')
+        if producer: binding['channel_pin']['producer_endpoint']=dict(gateway_id='GW',device_id=producer)
     parameters['phase']['channel_pin']=deepcopy(parameters['provenance']['channel_bindings'][1]['channel_pin'])
     parameters['phase']['unwrap_kind']='unwrapped'
     for key,lo,hi in (('power_W','-100','100'),('speed_rad_s','0.1','10'),('acceleration_rad_s2','-10','10'),

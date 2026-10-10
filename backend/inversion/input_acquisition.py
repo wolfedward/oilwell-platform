@@ -18,8 +18,9 @@ from backend.waveforms.timing import sync_bound_ns
 from backend.waveforms.wire import parse_frame
 from .contracts import canonical_bytes,fail
 from .input_contracts import RunRequest,InputSnapshot,PreparedInput
-from .series import EvidencePin,ChannelPin,Sample,SampleSeries,PredictionInputs,ReferenceInputs,CycleWindow
+from .series import EvidencePin,ChannelPin,ProducerEndpoint,Sample,SampleSeries,PredictionInputs,ReferenceInputs,CycleWindow
 from .history import applicability_with_cursor,recheck_with_cursor
+from .input_timing import absolute_support
 from .parameters import refuse
 from .transactions import lock,LockPlan
 
@@ -110,7 +111,7 @@ class InputAcquisition:
         cycle=CycleWindow(context.cycle['start_ns'],context.cycle['end_ns'],physical['physical_cycle_key'])
         budget=sync_bound_ns(context.sync_evidence['budget'] if context.sync_evidence else None,cycle.end_ns-cycle.start_ns)
         if budget is None: refuse('timing_unknown')
-        uncertainty=max(int(frame.body['utc_uncertainty_ns']) for frame in manifests.values())+budget
+        uncertainty,absolute_terms=absolute_support(context,manifests)
         series={}; pins={}; power_config=None
         for data in context.streams:
             check()
@@ -131,7 +132,8 @@ class InputAcquisition:
             pin=ChannelPin(data.key.gateway_id,data.key.device_id,data.key.capture_id,data.stream.stream_id,data.channel.channel_id,
                 manifests[data.key].raw_sha256,EvidencePin(calibration.id,calibration.content_sha256,calibration.version),
                 EvidencePin(sampling.id,sampling.content_sha256,sampling.version),data.first_index,data.last_index,
-                EvidencePin(context.sync_evidence['evidence'].id,context.sync_evidence['evidence'].content_sha256,context.sync_evidence['evidence'].version))
+                EvidencePin(context.sync_evidence['evidence'].id,context.sync_evidence['evidence'].content_sha256,context.sync_evidence['evidence'].version),
+                ProducerEndpoint(data.stream.source['gateway_id'],data.stream.source['device_id']))
             values=[]
             for index in range(data.first_index,data.last_index+1):
                 if index%256==0: check()
@@ -139,7 +141,7 @@ class InputAcquisition:
                 if time is None: refuse('timing_unknown')
                 values.append(Sample(time,index,None if value is None else value*UNITS[role][calibration.body['unit']],quality))
             series[role]=SampleSeries(role,tuple(values),pin); pins[role]=pin
-        prediction=PredictionInputs(series['active_power'],series['crank_angle'],cycle,int(power_config['power']['averaging_window_ns']),Fraction(uncertainty))
+        prediction=PredictionInputs(series['active_power'],series['crank_angle'],cycle,int(power_config['power']['averaging_window_ns']),Fraction(budget))
         reference=ReferenceInputs(series['load'],series['displacement'])
         anchor=utc_ns(manifests[context.key])
         if anchor is None: refuse('observation_utc_unknown')
@@ -147,6 +149,7 @@ class InputAcquisition:
         sources=list(dict.fromkeys(CaptureKey(d.stream.source['gateway_id'],d.stream.source['device_id'],d.key.capture_id) for d in context.streams))
         observation=dict(utc_start=manifests[context.key].body['utc_start'],start_ns=str(anchor+first),end_ns=str(anchor+last),
             relative_start_ns=str(first),relative_end_ns=str(last),uncertainty_ns=str(uncertainty),
+            relative_alignment_ns=str(budget),absolute_timing_terms=absolute_terms,
             physical_cycle_key=cycle.physical_cycle_id,sources=[public(key) for key in sources])
         self._authorize(actor); check()
         with self.read_connect() as conn:

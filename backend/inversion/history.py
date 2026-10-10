@@ -31,7 +31,7 @@ def _no_connection():
     raise RuntimeError('History checks must use their transaction cursor')
 
 
-def approved_with_cursor(cur,request,bucket,*,start,end,uncertainty):
+def approved_with_cursor(cur,request,bucket,*,start,end,uncertainty,alignment):
     parameters=ParameterService(_no_connection,read_connect=_no_connection,authorize=_no_connection,accounting_bucket=bucket)
     models=ModelService(_no_connection,read_connect=_no_connection,authorize=_no_connection)
     parameter=parameters._get(cur,request.parameter_id); model=models._get(cur,request.model_id)
@@ -40,7 +40,7 @@ def approved_with_cursor(cur,request,bucket,*,start,end,uncertainty):
         refuse('parameter_pin_changed')
     if model.content_sha256!=request.model_sha256 or model.review_version!=request.model_review_version or model.review_state!='approved':
         refuse('model_pin_changed')
-    parsed=parameters._validate(cur,parameter,start=start,end=end,uncertainty_ns=uncertainty)
+    parsed=parameters._validate(cur,parameter,start=start,end=end,uncertainty_ns=uncertainty,alignment_ns=alignment)
     models._validate(model)
     cur.execute('SELECT id,version,body FROM inversion.selections WHERE assembly_id=%s ORDER BY version DESC LIMIT 1',(request.assembly_id,))
     selection=cur.fetchone()
@@ -59,7 +59,7 @@ def archived_channels(cur,parameters,selected,*,bucket):
     for binding in parameters.provenance.channel_bindings:
         pin=binding.channel_pin
         current=selected[binding.role]
-        for key in ('gateway_id','device_id','stream_id','channel_id','sampling_pin','calibration_pin'):
+        for key in ('physical_endpoint','stream_id','channel_id','sampling_pin','calibration_pin'):
             if getattr(pin,key)!=getattr(current,key): refuse('channel_installation_changed')
         key=(pin.gateway_id,pin.device_id,pin.capture_id)
         if key not in by_capture:
@@ -80,7 +80,8 @@ def archived_channels(cur,parameters,selected,*,bucket):
         calibration=cur.fetchone()[0]
         cur.execute('SELECT body FROM waveforms.evidence_versions WHERE evidence_id=%s',(pin.sampling_pin.id,))
         sampling=cur.fetchone()[0]
-        if (sampling['endpoint']!={'gateway_id':spec['source']['gateway_id'],'device_id':spec['source']['device_id'],
+        if (pin.physical_endpoint.gateway_id!=spec['source']['gateway_id'] or pin.physical_endpoint.device_id!=spec['source']['device_id']
+            or sampling['endpoint']!={'gateway_id':spec['source']['gateway_id'],'device_id':spec['source']['device_id'],
                                   'stream_id':pin.stream_id,'channel_id':pin.channel_id}
             or any(channel[key]!=sampling[key] for key in ('quantity','unit','encoding','measurement_source','signal_kind'))
             or sampling['rate']!={'num':spec['rate_num'],'den':spec['rate_den']}
@@ -222,7 +223,8 @@ def modbus_maps(cur,parameters,start,end,uncertainty):
     for binding in parameters.provenance.channel_bindings:
         if binding.source=='native_waveform': continue
         pin=binding.channel_pin; mapping=binding.modbus
-        cur.execute('SELECT id FROM waveforms.registry_devices WHERE gateway_id=%s AND device_id=%s',(pin.gateway_id,pin.device_id))
+        cur.execute('SELECT id FROM waveforms.registry_devices WHERE gateway_id=%s AND device_id=%s',
+                    (pin.physical_endpoint.gateway_id,pin.physical_endpoint.device_id))
         device=cur.fetchone()
         if not device or str(device[0])!=mapping.device_id: refuse('modbus_device_mismatch')
         cur.execute('SELECT device_id,version,transport,canonical_rule,content,sha256,status,created_at,reviewed_at,created_event_id,review_event_id FROM waveforms.registry_point_maps WHERE device_id=%s AND version=%s',(device[0],mapping.map_version))
@@ -252,7 +254,8 @@ def _json_record(value):
 
 def applicability_with_cursor(cur,request,bucket,observation,selected,source_ranges):
     start,end,u=(Fraction(observation[key]) for key in ('start_ns','end_ns','uncertainty_ns'))
-    record,model,parameters,selection=approved_with_cursor(cur,request,bucket,start=start,end=end,uncertainty=u)
+    record,model,parameters,selection=approved_with_cursor(cur,request,bucket,start=start,end=end,uncertainty=u,
+                                                        alignment=Fraction(observation['relative_alignment_ns']))
     conditions=operating_conditions(parameters,request.operating_condition_ids,start,end,u)
     archives=archived_channels(cur,parameters,selected,bucket=bucket)
     maps=modbus_maps(cur,parameters,start,end,u)

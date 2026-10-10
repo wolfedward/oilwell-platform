@@ -66,6 +66,16 @@ class ModbusHistoryTests(GovernanceCase):
             start=Fraction(datetime_ns(conn.execute('SELECT valid_from FROM device_registry.point_map_assignments').fetchone()[0]))
         self.assertEqual(evaluate(start,start+1)[0]['point_id'],'load')
         self.assertEqual(evaluate(start,start+1)[0]['version']['status'],'approved')
+        from backend.inversion.series import ProducerEndpoint
+        # Map ownership follows the physical producer, not the capture recorder.
+        physical=replace(bindings[0].channel_pin,gateway_id='recorder-gateway',device_id='recorder',
+                         producer_endpoint=ProducerEndpoint('gateway-1','device-1'))
+        distinct=replace(parameters,provenance=replace(parameters.provenance,channel_bindings=(
+            replace(bindings[0],channel_pin=physical),*bindings[1:])))
+        self.assertEqual(evaluate(start,start+1,value=distinct)[0]['version']['device_id'],device['id'])
+        wrong=replace(distinct,provenance=replace(distinct.provenance,channel_bindings=(
+            replace(bindings[0],channel_pin=replace(physical,producer_endpoint=ProducerEndpoint('gateway-1','other'))),*bindings[1:])))
+        with self.assertRaises(InversionError): evaluate(start,start+1,value=wrong)
         with self.assertRaises(InversionError): evaluate(start,start+1,Fraction(1,2))
         bad=replace(parameters,provenance=replace(parameters.provenance,channel_bindings=(
             replace(bindings[0],modbus=replace(bindings[0].modbus,map_sha256='f'*64)),*bindings[1:])))
