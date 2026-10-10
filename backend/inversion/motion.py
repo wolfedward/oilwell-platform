@@ -11,6 +11,12 @@ must lie inside the inclusive cycle. Angular support must contain the center;
 one-sided endpoint fits are allowed. The independently approved model envelope
 covers averaging mismatch and unobserved dynamics; fit residuals do not prove
 physical derivative accuracy or exclude hidden frequencies.
+
+The approved angular residual ceiling also covers the conditional local angle
+numerical estimate and final theta reconstruction loss. Unwrapped theta stays
+unwrapped: reconstruct its exact offset plus fitted local value before one
+float rounding, and measure that rounding loss exactly. This tightens the
+existing ceiling; it introduces no additional tolerance or phase convention.
 """
 
 from bisect import bisect_left, bisect_right
@@ -37,6 +43,7 @@ class MotionPoint:
     residual_rad: float | None = None
     condition: float | None = None
     speed_error_bound_rad_s: float | None = None
+    theta_error_estimate_rad: Fraction | None = None
 
 
 def _angle_runs(inputs: PredictionInputs, parameters: ParameterSet) -> list[
@@ -101,6 +108,9 @@ def estimate_motion(inputs: PredictionInputs, parameters: ParameterSet,
     These added terms can overlap the approved envelope; retaining all terms
     is conservative. Residual amplification is an observed-fit diagnostic,
     never a substitute for the independent physical/model envelope.
+    theta_error_estimate_rad stores the conditional local coefficient-angle
+    estimate plus exact final reconstruction loss, as a Fraction to avoid
+    losing precision at the combined ceiling. Raw residual_rad stays separate.
     """
     groups = ('provenance', 'geometry', 'phase', 'bodies', 'drive', 'domain', 'uncertainty', 'policy')
     if (parameters.is_draft or parameters.missing
@@ -152,7 +162,15 @@ def estimate_motion(inputs: PredictionInputs, parameters: ParameterSet,
             times = tuple(float((sample.time_ns-power.time_ns)/10**9) for sample in selected)
             # Exact angular subtraction preserves tiny changes at large offsets.
             fit = cubic_fit(times, tuple(float(value-values[0]) for value in values))
-            theta = fit.coefficients[0]+float(values[0])
+            reconstructed_theta = values[0] + Fraction.from_float(fit.coefficients[0])
+            theta = float(reconstructed_theta)
+            # QR's speed estimate originates from the whole scaled coefficient
+            # vector; undo its seconds conversion for the angular component.
+            # This remains a conditional software estimate, not a certified
+            # physical bound. Only the final float rounding loss is exact.
+            theta_error = (Fraction.from_float(fit.numerical_speed_error_rad_s)
+                           * Fraction.from_float(fit.time_scale_s)
+                           + abs(Fraction.from_float(theta)-reconstructed_theta))
             omega = fit.coefficients[1]
             alpha = 2*fit.coefficients[2]
             speed_error = (float(parameters.uncertainty.speed_bound_rad_s)
@@ -168,11 +186,14 @@ def estimate_motion(inputs: PredictionInputs, parameters: ParameterSet,
             continue
         point = replace(point, theta_rad=theta, omega_rad_s=omega, alpha_rad_s2=alpha,
                         residual_rad=fit.residual_rad, condition=fit.condition,
-                        speed_error_bound_rad_s=speed_error)
+                        speed_error_bound_rad_s=speed_error,
+                        theta_error_estimate_rad=theta_error)
         if fit.condition > float(policy.motion_max_condition):
             status = 'motion_condition_exceeded'
-        elif fit.residual_rad > float(policy.motion_max_residual_rad):
+        elif Fraction.from_float(fit.residual_rad) > Fraction(policy.motion_max_residual_rad):
             status = 'motion_residual_exceeded'
+        elif Fraction.from_float(fit.residual_rad)+theta_error > Fraction(policy.motion_max_residual_rad):
+            status = 'motion_theta_precision_exceeded'
         elif not float(parameters.domain.speed_rad_s.min) <= omega <= float(parameters.domain.speed_rad_s.max):
             status = 'speed_outside_domain'
         elif not float(parameters.domain.acceleration_rad_s2.min) <= alpha <= float(parameters.domain.acceleration_rad_s2.max):

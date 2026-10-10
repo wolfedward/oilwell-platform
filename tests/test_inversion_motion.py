@@ -1,7 +1,7 @@
 """Analytic local motion and refusal cases on native, exact timestamps."""
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from fractions import Fraction
 import math
 import unittest
@@ -72,6 +72,40 @@ class MotionTests(unittest.TestCase):
         for field in ('theta_rad', 'omega_rad_s', 'alpha_rad_s2', 'residual_rad', 'condition', 'speed_error_bound_rad_s'):
             self.assertEqual(getattr(first, field), getattr(shifted, field))
         self.assertEqual(shifted.time_ns, Fraction(1_800_000_000_000_000_000))
+
+    def test_large_unwrapped_offset_cannot_discard_a_radian_as_valid(self):
+        times = tuple(Fraction(i, 10) for i in range(-3, 4))
+        values = tuple(2**54 + 1 + 2*t + 3*t*t + 4*t*t*t for t in times)
+        point = self.point(motion_inputs(times, values))
+        self.assertEqual(point.status, 'motion_theta_precision_exceeded')
+        self.assertGreater(point.theta_error_estimate_rad, Fraction(1))
+        self.assertLess(point.residual_rad, 1e-12)
+
+    def test_theta_precision_ceiling_is_inclusive_and_exact(self):
+        # Public diagnostics let a caller set a ceiling exactly at the combined
+        # error. This tests the gate (including > vs >=), independently of QR.
+        point = self.point()
+        theta_error = getattr(point, 'theta_error_estimate_rad', None)
+        self.assertIsNotNone(theta_error)
+        combined = Fraction.from_float(point.residual_rad) + theta_error
+        with localcontext() as context:
+            context.prec = 300
+            ceiling = Decimal(combined.numerator)/Decimal(combined.denominator)
+            self.assertEqual(Fraction(ceiling), combined)
+            at_ceiling = self.point(policy=replace(self.policy, motion_max_residual_rad=ceiling))
+            self.assertEqual(at_ceiling.status, 'valid')
+            # This decrement is lost by float conversion: compare exactly.
+            beyond = self.point(policy=replace(self.policy, motion_max_residual_rad=ceiling-Decimal('1e-100')))
+            self.assertEqual(beyond.status, 'motion_theta_precision_exceeded')
+
+    def test_unwrapped_theta_remains_unwrapped_when_resolved(self):
+        times = tuple(Fraction(i, 10) for i in range(-3, 4))
+        values = tuple(1001 + 2*t + 3*t*t + 4*t*t*t for t in times)
+        point = self.point(motion_inputs(times, values))
+        self.assertEqual(point.status, 'valid')
+        self.assertAlmostEqual(point.theta_rad, 1001., delta=1e-9)
+        self.assertAlmostEqual(point.omega_rad_s, 2., delta=1e-9)
+        self.assertAlmostEqual(point.alpha_rad_s2, 6., delta=1e-9)
 
     def test_seven_points_without_gap_or_extrapolation(self):
         self.assertEqual(self.point().status, 'valid')
