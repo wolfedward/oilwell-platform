@@ -32,7 +32,7 @@ def probe_role(connect,role:str)->None:
         if not tables: fail()
         for oid,name,owner in tables:
             if owner==identity[0]: fail()
-            for privilege in ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'):
+            for privilege in ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'):
                 permitted=privilege=='SELECT' or role=='operator' and privilege=='INSERT' and name in INSERT_TABLES
                 actual=conn.execute('SELECT has_table_privilege(current_user,%s,%s)',(oid,privilege)).fetchone()[0]
                 if actual!=permitted: fail()

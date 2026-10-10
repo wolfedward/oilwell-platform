@@ -4,6 +4,28 @@ from tests.inversion_support import InversionDatabaseCase
 
 
 class PrivilegeTests(InversionDatabaseCase):
+    def test_maintain_and_grant_option_are_refused_for_runtime_roles(self):
+        from backend.inversion.privileges import probe_role
+        from backend.inversion.transactions import InversionError
+        for role in ('reader','operator'):
+            name=sql.Identifier(self.sidecar['roles'][role])
+            for grant_option in (False,True):
+                with self.subTest(role=role,grant_option=grant_option):
+                    with self.connect('owner') as conn:
+                        conn.execute(sql.SQL('GRANT MAINTAIN ON inversion.assemblies TO {}{}').format(
+                            name,sql.SQL(' WITH GRANT OPTION' if grant_option else '')))
+                    try:
+                        with self.assertRaises(InversionError) as caught:
+                            probe_role(lambda:self.connect(role),role)
+                        self.assertEqual(caught.exception.code,'inversion.unsafe_privileges')
+                    finally:
+                        with self.connect('owner') as conn:
+                            conn.execute(sql.SQL('REVOKE MAINTAIN ON inversion.assemblies FROM {}').format(name))
+        for role in ('reader','operator'):
+            with self.connect(role) as conn:
+                self.assertEqual(conn.execute("SELECT has_table_privilege(current_user,'inversion.assemblies','MAINTAIN'),has_table_privilege(current_user,'inversion.assemblies','MAINTAIN WITH GRANT OPTION')").fetchone(),(False,False))
+            probe_role(lambda:self.connect(role),role)
+
     def test_runtime_roles_and_receiver(self):
         from backend.inversion.privileges import probe_role
         for role in ('reader','operator'): probe_role(lambda:self.connect(role),role)
