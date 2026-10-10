@@ -1,0 +1,45 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href=STYLE_MODULE><main id="root"></main><pre id="result">pending</pre>
+<style>#result{display:none}body{padding:20px}#root{max-width:1200px;margin:auto}</style><script type="module">
+const checks=[];
+const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
+try {
+  const {mountComparison}=await import(CHART_MODULE);
+  const root=document.querySelector('#root');
+  const indices=['9007199254741001','9007199254741002','9007199254741003','9007199254741004','9007199254741005','9007199254741006'];
+  const prediction=indices.map((power_index,i)=>({power_index,time_ns:`${9007199254741001000n+BigInt(i)*100000000n}/3`,s_m:String(1.234+i/10),load_N:String(32456+i*1000),status:i===2?'invalid':i===4?'unobservable':'valid',reason_codes:i===2?['power_quality']:i===4?['deadpoint']:[],power_W:String(-120.456+i),theta_rad:String(1.234+i),drive_Nm:String(32.456+i),N_Nm:String(22+i),omega_rad_s:'2.345'}));
+  const reference=prediction.map((p,i)=>({...p,valid:i!==2,load_value_si:String(Number(p.load_N)+600),displacement_value_si:String(Number(p.s_m)+0.015),load_indices:[p.power_index],displacement_indices:[p.power_index],load_source:0,displacement_source:0}));
+  const filled=[{...prediction[4],load_N:'36456',original_reason_codes:['deadpoint'],periodic_assumption:true,method:'linear',source_indices:[indices[3],indices[5]],source_times_ns:[prediction[3].time_ns,prediction[5].time_ns]}];
+  const handle=mountComparison(root,{prediction,reference,filled,metadata:{source:'synthetic'}});
+  check(root.querySelectorAll('[data-chart-kind]').length>=4,'dual card plus power motion torque slots');
+  const dual=root.querySelector('[data-chart-kind="comparison"]');
+  check(dual.querySelector('svg').getAttribute('aria-label').includes('载荷（kN）'),'load axis converts server N to display kN');
+  check(dual.querySelector('[data-series="filled"]').hidden,'display fills hidden by default');
+  check(dual.querySelectorAll('[data-series="prediction"] path').length===3,'quality and deadpoint split original trace');
+  const metricBefore=JSON.stringify(prediction);
+  root.querySelector('[data-trace-toggle="prediction"]').click();
+  check(dual.querySelector('[data-series="prediction"]').hidden,'prediction independently hidden');
+  check(!dual.querySelector('[data-series="reference"]').hidden,'reference still visible');
+  root.querySelector('[data-trace-toggle="prediction"]').click();
+  root.querySelector('[data-trace-toggle="filled"]').click();
+  check(!dual.querySelector('[data-series="filled"]').hidden,'explicit display fill toggle');
+  check(dual.querySelector('[data-series="filled"] path').getAttribute('stroke-dasharray'),'fills dashed');
+  check(root.textContent.includes('periodic_assumption')&&root.textContent.includes('不进入主指标'),'fill assumption and scope explicit');
+  for(const chart of root.querySelectorAll('[data-chart-kind]')) {
+    check(chart.querySelectorAll('circle').length<=1,'one hover marker per chart');
+    const marker=chart.querySelector('circle');check(marker.getAttribute('visibility')==='hidden','no permanent point markers');
+    const hit=chart.querySelector('[data-chart-hit]');hit.focus();hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+    const tip=chart.querySelector('[role="status"]');check(tip.textContent.includes(indices[0]),'exact original index on keyboard');
+    check(Number(marker.getAttribute('r'))<=3,'hover marker small');
+    if(chart===dual)check(tip.textContent.includes('1.23')&&tip.textContent.includes('32.46'),'two decimal coordinates');
+    hit.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));check(tip.textContent.includes(indices[1]),'arrow traverses samples');
+    const bounds=hit.getBoundingClientRect();hit.dispatchEvent(new PointerEvent('pointermove',{clientX:bounds.left,clientY:bounds.bottom,bubbles:true}));
+    check(tip.textContent.includes('索引')&&tip.textContent.includes('状态'),'actual SVG pointer hover');
+    hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+  }
+  check(JSON.stringify(prediction)===metricBefore,'visibility never alters calculation values');
+  check(document.documentElement.scrollWidth<=innerWidth+1,'responsive charts fit viewport');
+  check(!root.querySelector('polyline'),'gaps use distinct paths');
+  const focus=dual.querySelector('[data-chart-hit]');focus.focus({preventScroll:true});focus.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));window.scrollTo(0,0);
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+} catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks});}
+</script></html>

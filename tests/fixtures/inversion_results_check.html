@@ -1,0 +1,92 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><main id="root"></main><pre id="result">pending</pre>
+<style>#result{display:none}body{padding:20px}#root{max-width:1200px;margin:auto}</style><script type="module">
+const mode='FIXTURE_MODE',checks=[],calls=[];
+const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
+const wait=async(fn)=>{const end=Date.now()+7000;while(!fn()){if(Date.now()>end)throw Error('timeout '+fn);await new Promise(r=>setTimeout(r,10));}};
+const id='11111111-1111-4111-8111-111111111111',run='22222222-2222-4222-8222-222222222222',digest='a'.repeat(64),base='/api/production-inversion';
+const metric=(value,unit='N',reason=null)=>({value,unit,reason});
+const comparison={scope:'original_valid_support',prediction_status:'applicable',prediction_reason_codes:[],primary:{load_mae:metric('1.234'),load_correlation:metric(null,'1','constant_reference'),load_relative_mae_percent:metric(null,'%','reference_denominator_below_threshold')},by_stroke:{up:{load_mae:metric('1.25')},down:{load_mae:metric(null,'N','no_valid_duration')}},coverage:{joint_fraction:metric('1/2','1'),prediction_numerical_fraction:metric('3/4','1')},work:{prediction_complete_cycle:metric(null,'J','incomplete_cycle_support')},invalid_reasons:{power_quality:1},independence:{status:'unknown',reason:'external_evidence_admission_required'}};
+let review={state:'unreviewed',version:0},restricted=false,runState='completed',mismatch=false,hold=false,held,aborted=false,metadataInvalid=false;
+const row=(kind,i)=>kind==='prediction'?{kind,columns:['time_ns','power_index','s_m','load_N','status','reason_codes','power_W','theta_rad','drive_Nm'],values:[String(1000000000000000000n+BigInt(i)*1000n),String(9007199254741001n+BigInt(i)),String(1.234+i/100000),'32.456','valid',[],'-120.456','1.234','32.456']}:{kind,columns:['time_ns','power_index','valid','reason_codes','load_value_si','load_indices','load_source','displacement_value_si','displacement_indices','displacement_source'],values:[String(1000000000000000000n+BigInt(i)*1000n),String(9007199254741001n+BigInt(i)),true,[],'32.456',[String(9007199254741001n+BigInt(i))],0,'1.234',[String(9007199254741001n+BigInt(i))],0]};
+let total=mode==='paging'?65536:mode==='bounds'?32769:8;
+const json=(data,status=200)=>new Response(JSON.stringify({ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
+window.fetch=async(path,options={})=>{
+ const url=new URL(path,'http://fixture'),route=url.pathname,body=options.body?JSON.parse(options.body):null;
+ calls.push({path,body,method:options.method||'GET'});
+ if(route===base+'/runs')return json({offset:0,limit:20,items:[{run_id:run,state:runState==='not_applicable'?'blocked':runState,result_id:runState==='completed'?id:null,reason_code:runState==='failed'?'worker_failed':runState==='not_applicable'?'not_applicable':null}]});
+ if(route===base+'/runs/'+run)return json({run_id:run,state:runState,request:{assembly_id:id,selection_version:2},result_id:id});
+ if(route.endsWith('/selections'))return json({offset:0,limit:100,items:[{id,version:2,body:{rollback_selection_id:run}}]});
+ if(route.endsWith('/versions'))return json({assembly_id:id,offset:0,limit:20,items:[{version:2,version_id:id,declared:{valid_from:'2026-01-01',valid_to:null},effective:{revision:2,valid_from:'2026-01-01',valid_to:'2026-12-01'}}]});
+ if(route===base+'/results/'+id){
+  if(metadataInvalid&&url.searchParams.has('include_input_metadata'))return new Response(JSON.stringify({code:'inversion.input_metadata_invalid',message:'Metadata unavailable',details:{}}),{status:409,headers:{'Content-Type':'application/json'}});
+  const value={id,run_id:run,content_sha256:digest,snapshot_sha256:'b'.repeat(64),request_sha256:'c'.repeat(64),execution:'completed',source:'synthetic',review,current_applicability:{state:restricted?'restricted':'applicable',reasons:restricted?['parameter_revoked']:[]},field_validation:{state:'not_field_validated',certified:false},body:{point_count:total/2,valid_point_count:total/2,prediction_status:'applicable',prediction_reason_codes:[],coverage_fraction:'3/4',cycle:{start_ns:'1000000000000000000',end_ns:'1000000006000000000'},reference_sources:[{gateway_id:'recorder',device_id:'receiver',producer_endpoint:{gateway_id:'physical',device_id:'sensor'}}],comparison,filled_comparison:null}};
+  if(url.searchParams.has('include_input_metadata'))value.input_snapshot_metadata={result_id:id,content_sha256:digest,snapshot_sha256:value.snapshot_sha256,hash_scope:'original_full_artifacts',request:{assembly_id:id,selection_version:2,parameter_id:run,model_id:id},observation:{relative_alignment_ns:'25/3',uncertainty_ns:'9007199254741001',absolute_timing_terms:null,relative_timing_terms:null},channel_pins:{active_power:{gateway_id:'recorder',device_id:'receiver',capture_id:id,physical_endpoint:{gateway_id:'physical',device_id:'sensor'},source:'native_waveform',first_index:'9007199254741001',last_index:'9007199254741008'}},applicability:{assignment:{well_id:'test:historical'},mechanical:{id,revision:2},selection:{id,version:2,rollback_selection_id:run},operating_conditions:[]}};
+  return json(value);
+ }
+ if(route.endsWith('/comparison'))return json({result_id:id,content_sha256:digest,comparison,filled_comparison:null});
+ if(route.endsWith('/points')){
+  if(hold){options.signal.addEventListener('abort',()=>{aborted=true;held?.(json({result_id:id,content_sha256:digest,offset:0,limit:1000,total:0,rows:[]}))});return new Promise(resolve=>held=resolve)}
+  const offset=Number(url.searchParams.get('offset')),limit=Number(url.searchParams.get('limit'));
+  return json({result_id:id,content_sha256:mismatch&&offset>0?'WRONG':digest,offset,limit,total,rows:Array.from({length:Math.min(limit,total-offset)},(_,j)=>{const n=offset+j;return row(mode==='bounds'||n<total/2?'prediction':'comparison',mode==='bounds'?n:n%(total/2))})});
+ }
+ if(route.endsWith('/review')){review={state:body.body.decision==='approve'?'approved':'rejected',version:1};return json({id,version:1})}
+ if(route.endsWith('/revoke')){review={state:'revoked',version:2};return json({id,version:2})}
+ if(route===base+'/exports')return json({id:run,result_id:id,format:body.body.format,intent:body.body.intent},201);
+ if(route===base+'/exports/'+run)return new Response('{}',{headers:{'Content-Type':'application/json'}});
+ throw Error('Unexpected '+path);
+};
+try {
+ const {renderProductionResults,mountProductionResults}=await import(RESULTS_MODULE);
+ const {api}=await import(API_MODULE),root=document.querySelector('#root');
+ const permissions=['inversion.read','inversion.review','inversion.export','inversion.audit.read','waveform.read','waveform.raw.read','waveform.export'];
+ let dispose;
+ const ctx=(extras={})=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession:{},capabilities:{production_inversion:{enabled:true,status:'ready'}},params:{result_id:id},page:{},pageHeader:()=>'<h1>结果与版本复核</h1>',isCurrent:()=>true,registerDispose:fn=>dispose=fn,...extras});
+ await renderProductionResults(ctx());
+ if(mode==='bounds'){
+  check(root.textContent.includes('32768')&&!root.querySelector('[data-chart-kind]'),'single kind above32768 refused');
+  total=131073;await renderProductionResults(ctx());
+  check(root.textContent.includes('分页数量')&&!root.querySelector('[data-chart-kind]'),'aggregate above131072 refused');
+ }else{
+ check(root.querySelector('[data-chart-kind="comparison"]'),'actual result draws server rows');
+ check(root.textContent.includes('完整几何冲程未提供'),'no invented geometric stroke');
+ check(root.textContent.includes('有效预测点位移跨度'),'span correctly named');
+ if(mode==='unknown-metrics'){
+  check(!root.querySelector('.inversion-metadata').textContent.includes('"state"'),'primary status summary uses human labels');
+  check(root.querySelector('.inversion-metadata').textContent.includes('合成数据'),'source label is translated without relabeling provenance');
+  check(root.textContent.includes('kN'),'display load ranges use kN');
+  for(const reason of ['constant_reference','reference_denominator_below_threshold','incomplete_cycle_support'])check(root.textContent.includes(reason),'unknown metric reason '+reason);
+  check(root.querySelector('[data-metric="load_correlation"]').textContent.includes('未知'),'null correlation never zero');
+  check(root.textContent.includes('本次物理周期折算冲次（次/分）')&&root.textContent.includes('10.00'),'rate from exact cycle difference');
+  check(root.textContent.includes('9007199254741001')&&root.textContent.includes('25/3'),'exact historical timing displayed');
+  check(root.textContent.includes('录波')&&root.textContent.includes('物理生产端点'),'recording and production provenance distinct');
+  check(document.documentElement.scrollWidth<=innerWidth+1,'result page fits narrow viewport');
+ }else if(mode==='result-states'){
+  check(root.textContent.includes('未复核'),'completed unreviewed separate');
+  review={state:'approved',version:1};restricted=true;await renderProductionResults(ctx());
+  check(root.textContent.includes('已复核但当前受限')&&root.textContent.includes('parameter_revoked'),'historical approval current restriction');
+  for(const [state,label] of [['queued','等待计算'],['not_applicable','数据不合格'],['failed','计算失败'],['blocked','运行受阻'],['cancelled','已取消']]){
+   runState=state;await renderProductionResults(ctx({params:{}}));check(root.textContent.includes(label),'distinct '+state);
+  }
+ }else if(mode==='paging'){
+  check(calls.filter(c=>c.path.includes('/points?')).length===66,'complete 65536 rows across two bounded kinds');
+  check(root.dataset.loadedPoints==='65536'||root.querySelector('[data-loaded-points="65536"]'),'full points count visible');
+  mismatch=true;await renderProductionResults(ctx());check(root.textContent.includes('摘要')&&!root.querySelector('[data-chart-kind]'),'mixed result page refused before render');
+  mismatch=false;hold=true;const pending=renderProductionResults(ctx());await wait(()=>held);dispose();await pending;
+  check(aborted,'dispose aborts actual pagination request');check(!root.querySelector('[data-chart-kind]'),'disposed pages never paint charts');
+ }else{
+  const form=root.querySelector('[data-inversion-action="results.review"]');form.querySelector('[name="reason"]').value='Independent check';form.requestSubmit();await wait(()=>root.querySelector('[data-inversion-action="results.revoke"]'));
+  check(calls.find(c=>c.path.endsWith('/review')).body.command.expected.kind==='absent','initial review exact precondition');
+  const exp=root.querySelector('[data-inversion-action="exports.create"]');exp.querySelector('[name="reason"]').value='Archive full result';exp.requestSubmit();await wait(()=>calls.some(c=>c.path===base+'/exports/'+run));
+  check(calls.find(c=>c.path===base+'/exports').body.body.result_id===id,'export uses real result id');
+  const rev=root.querySelector('[data-inversion-action="results.revoke"]');rev.querySelector('[name="reason"]').value='Review revoked';rev.requestSubmit();await wait(()=>root.textContent.includes('复核已撤销'));
+  check(calls.find(c=>c.path.endsWith('/revoke')).body.command.expected.version===1,'revoke uses current review version');
+  const start=calls.length;await renderProductionResults(ctx({permissions:new Set(['inversion.read'])}));
+  check(root.textContent.includes('元数据权限不可用'),'metadata explicit missing permission');
+  check(!calls.slice(start).some(c=>c.path.includes('include_input_metadata')),'no metadata opt in without waveform read');
+  metadataInvalid=true;await renderProductionResults(ctx());
+  check(root.textContent.includes('input_metadata_invalid')&&root.querySelector('[data-chart-kind]'),'unavailable metadata preserves verified base result');
+ }
+ }
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks});}
+</script></html>

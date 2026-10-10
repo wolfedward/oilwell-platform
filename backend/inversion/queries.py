@@ -46,11 +46,14 @@ def mechanical_view(assembly_id, row):
 
 
 def result_view(view):
-    return dict(id=str(view.id),run_id=str(view.run_id),content_sha256=view.content_sha256,
+    result=dict(id=str(view.id),run_id=str(view.run_id),content_sha256=view.content_sha256,
         request_sha256=view.request_sha256,snapshot_sha256=view.snapshot_sha256,execution=view.execution,
         source=view.source,review={key:view.review[key] for key in ('state','version')},
         current_applicability=public_value(wire(view.current_applicability)),
         field_validation=public_value(wire(view.field_validation)),body=public_result(wire(view.body)))
+    if view.input_snapshot_metadata is not None:
+        result['input_snapshot_metadata']=wire(view.input_snapshot_metadata)
+    return result
 
 
 def point_page(view, offset, limit):

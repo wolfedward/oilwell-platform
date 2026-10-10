@@ -10,7 +10,11 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => document.querySelector('#result')?.textContent !== 'pending', null, {timeout: 35000});
     const result = JSON.parse(await page.locator('#result').textContent());
     if (errors.length) {result.ok = false; result.pageErrors = errors;}
-    if (screenshot) await page.screenshot({path: screenshot, timeout: 5000});
+    if (screenshot) {
+      await page.screenshot({path: screenshot, timeout: 5000});
+      const charts=page.locator('.inversion-chart-grid').first();
+      if(await charts.count()) await charts.screenshot({path:screenshot.replace(/\.png$/, '-charts.png'),timeout:5000});
+    }
     process.stdout.write(JSON.stringify(result));
   } finally {await browser.close();}
 })().catch(error => {console.error(error); process.exitCode = 1;});

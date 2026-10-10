@@ -28,6 +28,8 @@ import { renderFieldRegistry } from "./frontend/pages/field-registry.js";
 import { renderIngestReliability } from "./frontend/pages/ingest-reliability.js";
 import { renderWaveforms } from "./frontend/pages/waveforms.js";
 import { renderProductionParameters, productionInversionGate } from "./frontend/pages/production-parameters.js";
+import { renderProductionInversion } from "./frontend/pages/production-inversion.js";
+import { renderProductionResults } from "./frontend/pages/production-results.js";
 import { renderQualityBoard } from "./frontend/pages/data-quality.js";
 import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
@@ -70,6 +72,8 @@ const NAVIGATION = [
     id: "production-inversion", label: "生产反演", icon: "参",
     pages: [
       { id: "production-parameters", label: "机械参数中心", description: "机械身份、参数版本、来源证据与独立复核", permission: "inversion.read" },
+      { id: "production-inversion", label: "反演与双图验证", description: "冻结成员预检、单成员运行、原始支撑双图与中间曲线", permission: "inversion.read" },
+      { id: "production-results", label: "结果与版本复核", description: "历史输入快照、独立复核、当前限制与完整结果导出", permission: "inversion.read" },
     ],
   },
   {
@@ -164,7 +168,7 @@ function activeContext() {
 }
 
 function pageVisible(page, user) {
-  if (page.id === "production-parameters") return productionInversionGate({
+  if (["production-parameters", "production-inversion", "production-results"].includes(page.id)) return productionInversionGate({
     permissions: new Set(user?.permissions || []), capabilities: user?.capabilities,
   }).allowed;
   return (!page.permission || user?.permissions?.includes(page.permission))
@@ -270,6 +274,8 @@ async function renderPage(pageId, params = {}) {
       "ingest-reliability": renderIngestReliability,
       waveforms: renderWaveforms,
       "production-parameters": renderProductionParameters,
+      "production-inversion": renderProductionInversion,
+      "production-results": renderProductionResults,
       "data-quality": renderQualityBoard,
       dynagraphs: renderDynagraphList,
       "dynagraph-analysis": renderDynagraphAnalysis,

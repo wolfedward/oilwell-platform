@@ -26,13 +26,15 @@ export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.a
   let disposed = false;
   const current = () => !disposed && (ctx.isCurrent?.() ?? true);
   const can = permission => !permission || ctx.permissions?.has(permission);
-  async function call(path, method, body, permission) {
+  async function call(path, method, body, permission, {absolute = false, filename} = {}) {
     if (!current()) return null;
     if (session.denied || !can(permission)) throw deniedError();
     const controller = new AbortController(); controllers.add(controller);
     try {
-      const value = await request(path.startsWith(INVERSION_BASE) ? path : INVERSION_BASE + path,
-        {method, ...(body === undefined ? {} : {body}), signal: controller.signal});
+      const target = absolute || path.startsWith(INVERSION_BASE) ? path : INVERSION_BASE + path;
+      const value = filename === undefined
+        ? await request(target, {method, ...(body === undefined ? {} : {body}), signal: controller.signal})
+        : await ctx.api.download(target, filename, {signal: controller.signal});
       return current() ? value : null;
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) session.denied = true;
@@ -90,6 +92,24 @@ export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.a
   }
   return {
     get(path, permission = 'inversion.read') {return call(path, 'GET', undefined, permission);},
+    preflight(body) {
+      if (!['inversion.run','waveform.read','waveform.raw.read','waveform.export'].every(can)) return Promise.reject(deniedError());
+      return call('/runs/preflight', 'POST', {body:clone(body)}, 'inversion.run');
+    },
+    waveformGet(path) {
+      // Metadata-only finite routes. Never accepts origin, raw, export or files URLs.
+      const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+      if (typeof path !== 'string' || !new RegExp(`^/(?:datasets(?:/${uuid})?|pairs/${uuid})(?:\\?[^#]*)?$`).test(path)) throw Error('无效冻结成员读取路径');
+      const query = new URLSearchParams(path.split('?')[1] || '');
+      const allowed = new Set(['state','page','page_size','snapshot_revision','received_before','received_after','view','version_id']);
+      if ([...query.keys()].some(key=>!allowed.has(key)) || query.has('view') && query.get('view') !== 'members') throw Error('仅支持冻结成员元数据');
+      return call('/api/waveforms'+path, 'GET', undefined, 'waveform.read', {absolute:true});
+    },
+    downloadExport(id, filename) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw Error('无效导出标识');
+      if (!['inversion.read','inversion.export','waveform.read','waveform.raw.read','waveform.export'].every(can)) return Promise.reject(deniedError());
+      return call('/exports/'+id, 'GET', undefined, 'inversion.export', {filename});
+    },
     submit, recoverPending, prepare,
     pending: session.pending,
     get denied() {return session.denied;},

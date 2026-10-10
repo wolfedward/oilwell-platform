@@ -73,6 +73,7 @@ class InversionApi:
             # Capture uses the same existing identity file read-only. Every
             # service callback checks this request's session anew.
             permissions=required_permissions(filters['action'] if action=='requests.get' else action)
+            if action=='results.get' and filters.get('include_input_metadata'): permissions |= {'waveform.read'}
             if action=='requests.get' and filters.get('intent')=='evidence': permissions |= {'inversion.audit.read'}
             ref=h.server.auth.capture_background_authority(h._token(),permissions)
             user=h.server.auth.refresh_background_authority(ref,permissions)
@@ -159,7 +160,7 @@ class InversionApi:
                 raise
         if action=='runs.get': return run_view(services['runs'].get(id),runtime.queries.result_id(id))
         if action.startswith('results.'):
-            view=services['results'].get(id,actor=actor)
+            view=services['results'].get(id,actor=actor,**({'include_input_metadata':True} if action=='results.get' and filters.get('include_input_metadata') else {}))
             if action=='results.points': return point_page(view,**filters)
             if action=='results.comparison': return dict(result_id=str(view.id),content_sha256=view.content_sha256,**{k:public_value(wire(view.body.get(k))) for k in ('comparison','filled_comparison')})
             return result_view(view)

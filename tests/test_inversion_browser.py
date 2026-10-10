@@ -9,14 +9,18 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class InversionParametersBrowserTests(unittest.TestCase):
+class BrowserFixtureCase(unittest.TestCase):
     def run_fixture(self, mode, width=1120):
-        fixture = 'inversion_review_check.html' if mode.startswith('round1-') else 'inversion_parameters_check.html'
+        fixture = getattr(self, 'fixture', None) or ('inversion_review_check.html' if mode.startswith('round1-') else 'inversion_parameters_check.html')
         source = (ROOT / 'tests/fixtures' / fixture).read_text(encoding='utf-8')
         for marker, path in {
             'STYLE_MODULE': 'styles.css', 'APP_MODULE': 'app.js',
             'PAGE_MODULE': 'frontend/pages/production-parameters.js',
             'API_MODULE': 'frontend/api.js',
+            'CHART_MODULE': 'frontend/inversion/charts.js',
+            'WORKBENCH_MODULE': 'frontend/pages/production-inversion.js',
+            'RESULTS_MODULE': 'frontend/pages/production-results.js',
+            'CLIENT_MODULE': 'frontend/inversion/client.js',
         }.items():
             source = source.replace(marker, json.dumps((ROOT / path).as_uri()))
         source = source.replace('FIXTURE_MODE', mode)
@@ -41,6 +45,62 @@ class InversionParametersBrowserTests(unittest.TestCase):
             outcome = json.loads(result.stdout)
             self.assertTrue(outcome['ok'], outcome)
             self.assertGreater(len(outcome['checks']), 1)
+
+
+class InversionWorkbenchBrowserTests(BrowserFixtureCase):
+    fixture = 'inversion_chart_check.html'
+
+    def test_two_card_toggles_hover_and_keyboard_two_decimals(self):
+        self.run_fixture('two-card', 1120)
+
+    def test_quality_gap_and_deadpoint_fill_are_distinct(self):
+        self.run_fixture('gaps', 760)
+
+    def test_large_indices_remain_exact_strings(self):
+        self.run_fixture('exact', 520)
+
+    def test_all_chart_types_use_small_hover_only_points(self):
+        self.run_fixture('all-charts', 1120)
+
+    def test_stale_selection_and_revoked_retry_refused(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('stale-retry')
+
+    def test_logout_stops_poll_and_denial_is_sticky(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('shell-logout')
+        self.run_fixture('sticky-denial')
+
+    def test_shell_disabled_unavailable_and_landing_routes(self):
+        self.fixture = 'inversion_workbench_check.html'
+        for mode in ('shell-disabled', 'shell-unavailable', 'shell-enabled'):
+            self.run_fixture(mode)
+
+    def test_additive_client_methods_share_sticky_authority_and_disposal(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('client-methods')
+
+
+class InversionResultsBrowserTests(BrowserFixtureCase):
+    fixture = 'inversion_results_check.html'
+
+    def test_unknown_metrics_show_reason_not_zero(self):
+        self.run_fixture('unknown-metrics', 760)
+
+    def test_result_states_not_collapsed_into_success(self):
+        self.run_fixture('result-states')
+
+    def test_complete_paging_identity_and_disposal(self):
+        self.run_fixture('paging')
+
+    def test_review_revoke_export_and_metadata_permission(self):
+        self.run_fixture('review-export')
+
+    def test_per_kind_and_aggregate_point_bounds_refused(self):
+        self.run_fixture('bounds')
+
+
+class InversionParametersBrowserTests(BrowserFixtureCase):
 
     def test_parameters_page_disabled_and_missing_evidence(self):
         self.run_fixture('disabled-evidence')

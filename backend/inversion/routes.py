@@ -55,12 +55,16 @@ def query(raw, action):
     if action == 'parameters.list': allowed |= {'assembly_id'}
     if action == 'audit': allowed |= {'action','subject_id'}
     if action == 'requests.get': allowed = {'action','intent'}
+    if action == 'results.get': allowed = {'include_input_metadata'}
     if len(raw) > 4096 or re.search(r'%(?![0-9a-fA-F]{2})', raw): raise InversionContractError()
     try:
         pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=True, encoding='utf-8', errors='strict', max_num_fields=4)
     except (ValueError, UnicodeError): raise InversionContractError() from None
     out = dict(pairs)
     if len(out) != len(pairs) or set(out)-allowed: raise InversionContractError()
+    if 'include_input_metadata' in out:
+        if out['include_input_metadata'] != 'true': raise InversionContractError()
+        out['include_input_metadata'] = True
     if action == 'requests.get' and out.get('action') not in RECOVERY_ACTIONS: raise InversionContractError()
     if action == 'requests.get':
         if out['action']=='exports.create':

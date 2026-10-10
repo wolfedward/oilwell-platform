@@ -58,6 +58,7 @@ class ResultView:
     field_validation: object
     body: object
     chunks: tuple[bytes,...]
+    input_snapshot_metadata: object = None
 
 class ResultService:
     def __init__(self,connect,*,read_connect,authorize):
@@ -126,12 +127,22 @@ class ResultService:
             freeze(dict(state='restricted' if reasons else 'applicable',reasons=sorted(set(reasons)))),
             freeze(field),body,stored.prepared.chunks)
 
-    def get(self,id,*,actor):
-        self._auth(actor,{'inversion.read'}); stored=self._load(id)
+    def get(self,id,*,actor,include_input_metadata=False):
+        if type(include_input_metadata) is not bool: refuse('input_metadata_invalid',400)
+        capabilities={'inversion.read','waveform.read'} if include_input_metadata else {'inversion.read'}
+        self._auth(actor,capabilities); stored=self._load(id)
         with self.connect() as conn:
             cur=conn.cursor(); configure(cur); lock(cur,GUARDS)
-            self._auth(actor,{'inversion.read'})
-            return self._view(cur,stored)
+            self._auth(actor,capabilities)
+            view=self._view(cur,stored)
+            if include_input_metadata:
+                from dataclasses import replace
+                from .input_metadata import project_input_metadata
+                metadata=project_input_metadata(stored.prepared.snapshot.body,result_id=str(stored.id),
+                    content_sha256=stored.content_sha256,snapshot_sha256=stored.prepared.snapshot.content_sha256,
+                    request_sha256=stored.request_sha256)
+                view=replace(view,input_snapshot_metadata=freeze(metadata))
+            return view
 
     def review(self,id,decision,command):
         if decision not in ('approve','reject'): refuse('review_decision_invalid')

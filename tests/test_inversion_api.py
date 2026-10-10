@@ -38,6 +38,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body['data']['status'], 'disabled')
         self.assertEqual(cache, 'no-store')
 
+    def test_input_metadata_opt_in_requires_waveform_read_before_dispatch(self):
+        path='/results/11111111-1111-4111-8111-111111111111'
+        with self.server.database.transaction(None,'test.revoke','role',None) as conn:
+            conn.execute("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='administrator') AND permission_id=(SELECT id FROM permissions WHERE code='waveform.read')")
+        self.assertEqual(self.request('GET',path)[0],503)  # Default read still reaches disabled runtime.
+        status,_,cache=self.request('GET',path+'?include_input_metadata=true')
+        self.assertEqual((status,cache),(403,'no-store'))
+        for query in ('include_input_metadata=false','include_input_metadata=1','include_input_metadata=true&include_input_metadata=true'):
+            self.assertEqual(self.request('GET',path+'?'+query)[0],400)
+
     def parameter_runtime(self):
         from backend.inversion.parameters import ParameterService
         from backend.inversion.runtime import InversionRuntime
@@ -426,6 +436,15 @@ class LiveApiTests(RunCase):
         published=worker.runs.publish(attempt,result,authority)
         self.assertIsNotNone(published)
         status,view=self.http('GET','/results/'+str(published.id)); self.assertEqual(status,200,view)
+        self.assertNotIn('input_snapshot_metadata',view['data'])
+        status,metadata_view=self.http('GET','/results/'+str(published.id)+'?include_input_metadata=true')
+        self.assertEqual(status,200,metadata_view)
+        metadata=metadata_view['data']['input_snapshot_metadata']
+        self.assertEqual(metadata['result_id'],str(published.id))
+        self.assertEqual(metadata['content_sha256'],view['data']['content_sha256'])
+        self.assertEqual(metadata['snapshot_sha256'],prepared.snapshot.content_sha256)
+        self.assertEqual(metadata['observation']['relative_alignment_ns'],prepared.snapshot.body['observation']['relative_alignment_ns'])
+        self.assertNotIn('samples',metadata)
         self.assertNotIn('session',json.dumps(view)); self.assertNotIn('authority',json.dumps(view))
         status,points=self.http('GET','/results/'+str(published.id)+'/points?offset=0&limit=2')
         self.assertEqual(status,200,points); self.assertEqual(len(points['data']['rows']),2)
