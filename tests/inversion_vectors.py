@@ -33,7 +33,7 @@ def policy_wire():
 def parameter_body():
     policy = policy_body()
     policy_sha = sha256(policy_wire()).hexdigest()
-    return json.loads(json.dumps({
+    body = json.loads(json.dumps({
         "schema": "inversion.parameter-set/1",
         "assembly_id": "33333333-3333-4333-8333-333333333333",
         "assembly_version": 1, "source_kind": "synthetic",
@@ -96,6 +96,30 @@ def parameter_body():
         },
         "policy": {"body": policy, "content_sha256": policy_sha},
     }))
+
+
+    def attachment(purpose):
+        return {'id': PIN['id'], 'content_sha256': PIN['content_sha256'],
+                'purpose': purpose, 'source_description': 'Explicit synthetic report section for ' + purpose}
+    for group in ('geometry', 'phase', 'bodies', 'drive', 'domain', 'uncertainty'):
+        body[group]['evidence_refs'] = [attachment(group)]
+    body['drive']['loss_grid']['evidence_refs'] = [attachment('loss_grid')]
+    body['provenance']['attachment_pins'] = [attachment('provenance')]
+    for item in body['provenance']['operating_conditions']:
+        item['attachment_pins'] = [attachment('operating_conditions')]
+    for item in body['provenance']['channel_bindings']:
+        item['installation_evidence_refs'] = [attachment('installation')]
+    canonical = lambda item: json.dumps(item, sort_keys=True, separators=(',', ':')).encode()
+    body['provenance']['coverage'] = {
+        'policy_sha256': policy_sha,
+        'domain_sha256': sha256(canonical(body['domain'])).hexdigest(),
+        'uncertainty_sha256': sha256(canonical(body['uncertainty'])).hexdigest(),
+        'max_time_alignment_error_ns': '0',
+        'scopes': [{'scope': scope, 'attachment_pin': attachment(scope),
+                    'basis': 'Known synthetic bound; uN/uJ contribution described in section ' + scope}
+                   for scope in ('loss_calibration', 'time_alignment', 'averaged_power_mismatch',
+                     'motion_angle_policy', 'upstream_dynamics', 'load_range', 'geometry_envelope', 'crank_friction')]}
+    return body
 
 
 def parameter_wire(body=None):

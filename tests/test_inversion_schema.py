@@ -4,6 +4,28 @@ from tests.inversion_support import InversionDatabaseCase, TEST_DATABASE
 
 
 class SchemaTests(InversionDatabaseCase):
+    def test_mechanical_effective_end_is_constrained_append_only(self):
+        from psycopg.types.json import Jsonb
+        assembly=self.assembly(); version=uuid4()
+        with self.connect() as conn:
+            conn.execute('INSERT INTO inversion.assembly_versions(id,assembly_id,version,body,content_sha256) VALUES(%s,%s,2,%s,%s)',
+                (version,assembly,Jsonb({'valid_from':'2026-01-01T00:00:00.000000Z','valid_to':None}),'b'*64))
+        with self.connect() as conn:
+            with self.assertRaises(psycopg.Error):
+                conn.execute('INSERT INTO inversion.assembly_versions(assembly_id,version,body,content_sha256) VALUES(%s,3,%s,%s)',
+                    (assembly,Jsonb({'valid_from':'2026-02-01T00:00:00.000000Z','valid_to':None}),'c'*64))
+        with self.connect() as conn:
+            conn.execute("INSERT INTO inversion.mechanical_events(id,version_id,revision,valid_to,actor,reason,body) VALUES(gen_random_uuid(),%s,2,'2026-03-01','{}','Explicit closure','{}')",(version,))
+        for end in ('2025-12-01','2026-04-01'):
+            with self.connect() as conn:
+                with self.assertRaises(psycopg.Error):
+                    conn.execute("INSERT INTO inversion.mechanical_events(id,version_id,revision,valid_to,actor,reason,body) VALUES(gen_random_uuid(),%s,3,%s,'{}','Invalid','{}')",(version,end))
+        for query in ('UPDATE inversion.mechanical_state SET valid_to=NULL', 'DELETE FROM inversion.mechanical_events'):
+            with self.connect() as conn:
+                with self.assertRaises(psycopg.Error): conn.execute(query)
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.mechanical_events'),1)
+        self.assertEqual(self.scalar('SELECT content_sha256 FROM inversion.assembly_versions WHERE id=%s',(version,)),'b'*64)
+
     def test_immutable_payload_update_rejected(self):
         identifier=self.assembly()
         for mutation in ('UPDATE inversion.assemblies SET body=\'{"changed":true}\' WHERE id=%s',

@@ -1,8 +1,9 @@
 """Immutable SI parameter packages with exact evidence and no inferred values.
 
-Wire choices: ``evidence_refs`` are reviewed content pins in every physical
-group; ``policy`` contains its fixed body and canonical digest. Provenance
-records operating conditions and four role bindings as explicit lists.
+Physical ``evidence_refs`` pin attachments with a declared purpose and source;
+actual channel calibration/sampling references retain reviewed EvidencePins.
+Coverage is immutable declared engineering scope, attested by the independent
+parameter reviewer; attachment identity alone does not establish its substance.
 """
 
 from dataclasses import dataclass
@@ -15,12 +16,31 @@ from uuid import UUID
 from .contracts import (canonical_bytes, decimal, digest, fields, identity, integer,
                         integer_text, name, strict_json, text, utc, fail)
 from .policy import AlgorithmPolicy, parse_policy
-from .series import ChannelPin, EvidencePin
+from .series import ChannelPin
+
+COVERAGE_SCOPES = frozenset(('loss_calibration', 'time_alignment', 'averaged_power_mismatch',
+    'motion_angle_policy', 'upstream_dynamics', 'load_range', 'geometry_envelope', 'crank_friction'))
+ATTACHMENT_PURPOSES = COVERAGE_SCOPES | frozenset(('provenance', 'operating_conditions',
+    'geometry', 'phase', 'bodies', 'drive', 'loss_grid', 'domain', 'uncertainty', 'installation'))
+
+
+@dataclass(frozen=True)
+class AttachmentPin:
+    id: UUID
+    content_sha256: str
+    purpose: str
+    source_description: str
+
+    @classmethod
+    def from_wire(cls, raw):
+        fields(raw, cls.__dataclass_fields__)
+        if type(raw['purpose']) is not str or raw['purpose'] not in ATTACHMENT_PURPOSES: fail()
+        return cls(identity(raw['id']), digest(raw['content_sha256']), raw['purpose'], text(raw['source_description']))
 
 
 def _pins(raw, *, minimum=1):
     if type(raw) is not list or not minimum <= len(raw) <= 64: fail()
-    pins = tuple(EvidencePin.from_wire(item) for item in raw)
+    pins = tuple(AttachmentPin.from_wire(item) for item in raw)
     if len({pin.id for pin in pins}) != len(pins): fail()
     return pins
 
@@ -61,7 +81,7 @@ class Geometry:
     branch: int
     rotation_sign: int
     displacement_sign: int
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _geometry(raw):
@@ -79,7 +99,7 @@ class Phase:
     zero_reading_rad: Decimal
     encoder_direction: int
     unwrap_kind: str
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _phase(raw):
@@ -120,7 +140,7 @@ class Bodies:
     pitman_inertia_kg_m2: Decimal
     gravity_m_s2: Decimal
     component_ledger: tuple[Component, ...]
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _bodies(raw):
@@ -140,7 +160,7 @@ class LossGrid:
     motor_speed_rad_s: tuple[Decimal, ...]
     loss_W: tuple[tuple[Decimal, ...], ...]
     error_W: tuple[tuple[Decimal, ...], ...]
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _axis(raw):
@@ -173,7 +193,7 @@ class Drive:
     loss_grid: LossGrid
     crank_friction_Nm: Decimal
     viscous_friction_Nm_s: Decimal
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _drive(raw):
@@ -196,7 +216,7 @@ class Domain:
     bandwidth_Hz: Bound
     window_ns: Bound
     load_N: Bound
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _domain(raw):
@@ -212,7 +232,7 @@ class Uncertainty:
     speed_bound_rad_s: Decimal
     numerical_budget_Nm: Decimal
     numerical_factor_budget_m: Decimal
-    evidence_refs: tuple[EvidencePin, ...]
+    evidence_refs: tuple[AttachmentPin, ...]
 
 
 def _uncertainty(raw):
@@ -237,7 +257,7 @@ class OperatingCondition:
     supply_voltage_V: Bound
     supply_frequency_Hz: Bound
     source_description: str
-    attachment_pins: tuple[EvidencePin, ...]
+    attachment_pins: tuple[AttachmentPin, ...]
 
 
 @dataclass(frozen=True)
@@ -253,7 +273,7 @@ class ChannelBinding:
     role: str
     source: str
     channel_pin: ChannelPin
-    installation_evidence_refs: tuple[EvidencePin, ...]
+    installation_evidence_refs: tuple[AttachmentPin, ...]
     modbus: ModbusBinding | None
 
 
@@ -261,11 +281,12 @@ class ChannelBinding:
 class Provenance:
     source_organization: str
     source_date: date
-    attachment_pins: tuple[EvidencePin, ...]
+    attachment_pins: tuple[AttachmentPin, ...]
     calibration_cycles: tuple[CalibrationCycle, ...]
     operating_conditions: tuple[OperatingCondition, ...]
     channel_bindings: tuple[ChannelBinding, ...]
     notes: str
+    coverage: object
 
 
 def _bindings(bindings):
@@ -318,7 +339,25 @@ def _provenance(raw):
             _pins(item["attachment_pins"])))
     if len({item.id for item in parsed_conditions}) != len(parsed_conditions): fail()
     return Provenance(organization, parsed_date, _pins(raw["attachment_pins"]),
-                      tuple(parsed_cycles), tuple(parsed_conditions), _bindings(raw["channel_bindings"]), notes)
+                      tuple(parsed_cycles), tuple(parsed_conditions), _bindings(raw["channel_bindings"]), notes,
+                      _coverage(raw['coverage']))
+
+
+def _coverage(raw):
+    fields(raw, ('policy_sha256', 'domain_sha256', 'uncertainty_sha256', 'max_time_alignment_error_ns', 'scopes'))
+    integer_text(raw['max_time_alignment_error_ns'])
+    for key in ('policy_sha256', 'domain_sha256', 'uncertainty_sha256'): digest(raw[key])
+    if type(raw['scopes']) is not list or len(raw['scopes']) != len(COVERAGE_SCOPES): fail()
+    scopes = set()
+    for item in raw['scopes']:
+        fields(item, ('scope', 'attachment_pin', 'basis'))
+        if type(item['scope']) is not str or item['scope'] not in COVERAGE_SCOPES or item['scope'] in scopes: fail()
+        scopes.add(item['scope'])
+        pin = AttachmentPin.from_wire(item['attachment_pin'])
+        if pin.purpose != item['scope']: fail()
+        text(item['basis'])
+    from .contracts import freeze
+    return freeze(raw)
 
 
 @dataclass(frozen=True)
@@ -385,7 +424,9 @@ def _optional(item):
 
 _PIN_SHAPE = {"id": identity, "content_sha256": digest,
               "review_version": lambda v: integer(v, minimum=1)}
-_PINS_SHAPE = _list(_PIN_SHAPE, 1, 64)
+_ATTACHMENT_SHAPE = {'id': identity, 'content_sha256': digest,
+    'purpose': _choices(*sorted(ATTACHMENT_PURPOSES)), 'source_description': text}
+_PINS_SHAPE = _list(_ATTACHMENT_SHAPE, 1, 64)
 _CHANNEL_SHAPE = {"gateway_id": name, "device_id": name, "capture_id": identity,
                   "stream_id": name, "channel_id": name, "manifest_sha256": digest,
                   "calibration_pin": _PIN_SHAPE, "sampling_pin": _PIN_SHAPE,
@@ -457,7 +498,11 @@ _GROUP_SHAPES = {
                                                  "physical_cycle_id": name}, 1, 64),
                    "operating_conditions": _list(_CONDITION_SHAPE, 1, 64),
                    "channel_bindings": _list(_BINDING_SHAPE, 4, 4),
-                   "notes": lambda v: text(v, maximum=262144)},
+                   "notes": lambda v: text(v, maximum=262144),
+                   "coverage": {'policy_sha256': digest, 'domain_sha256': digest, 'uncertainty_sha256': digest,
+                       'max_time_alignment_error_ns': integer_text,
+                       'scopes': _list({'scope': _choices(*sorted(COVERAGE_SCOPES)),
+                           'attachment_pin': _ATTACHMENT_SHAPE, 'basis': text}, 8, 8)}},
     "policy": {"body": _POLICY_SHAPE, "content_sha256": digest},
 }
 
@@ -486,6 +531,10 @@ def _collect_missing(value, shape, path, missing):
             if value.get("min_coverage_fraction") is not None and decimal(value["min_coverage_fraction"]) > 1: fail()
             if value.get("fill_max_time_span_ns") is not None and value.get("reference_max_gap_ns") is not None:
                 if integer_text(value["fill_max_time_span_ns"]) > integer_text(value["reference_max_gap_ns"]): fail()
+        if path.startswith('provenance.coverage.scopes[') and path.endswith(']'):
+            pin=value.get('attachment_pin')
+            if value.get('scope') is not None and type(pin) is dict and pin.get('purpose') is not None and pin['purpose']!=value['scope']:
+                fail()
         if path.startswith("provenance.channel_bindings[") and value.get("source") == "modbus" and value.get("modbus") is None:
             child = path + ".modbus"
             if child not in missing: missing.append(child)
@@ -528,7 +577,8 @@ def _collect_missing(value, shape, path, missing):
             if any(left >= right for left, right in zip(supplied_nodes, supplied_nodes[1:])): fail()
         unique_field = ("id" if path == "bodies.component_ledger" or path == "provenance.operating_conditions"
                         or path.endswith((".evidence_refs", ".attachment_pins", ".installation_evidence_refs"))
-                        else "role" if path == "provenance.channel_bindings" else None)
+                        else "role" if path == "provenance.channel_bindings"
+                        else "scope" if path == "provenance.coverage.scopes" else None)
         if unique_field is not None:
             supplied = [item[unique_field] for item in value if type(item) is dict and item.get(unique_field) is not None]
             if unique_field == "id" and path.endswith((".evidence_refs", ".attachment_pins", ".installation_evidence_refs")):
@@ -591,6 +641,7 @@ def _partial_group(key, item):
         if "unwrap_kind" in item and item["unwrap_kind"] is not None:
             if type(item["unwrap_kind"]) is not str or item["unwrap_kind"] not in {"wrapped_2pi", "unwrapped"}: fail()
     elif key == "provenance":
+        if "coverage" in item and item["coverage"] is not None: _coverage(item["coverage"])
         if "source_organization" in item and item["source_organization"] is not None:
             text(item["source_organization"], maximum=128)
         if "source_date" in item and item["source_date"] is not None:
@@ -643,8 +694,7 @@ def parse_parameter_set(raw: bytes, *, draft: bool = False) -> ParameterSet:
     valid_to = utc(body["valid_to"]) if body.get("valid_to") is not None else None
     if valid_from is not None and valid_to is not None and valid_from >= valid_to: fail()
     parent = body.get("parent_version")
-    if parent is not None: integer(parent, minimum=1, maximum=(version-1 if version is not None else 9_223_372_036_854_775_807))
-    elif version is not None and version != 1: fail()
+    if parent is not None: integer(parent, minimum=1)
     groups = {}
     for key in _GROUP_FIELDS:
         item = body.get(key)

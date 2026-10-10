@@ -2,6 +2,7 @@
 from .transactions import InversionError
 
 INSERT_TABLES=frozenset('assemblies assembly_versions assignments assignment_events parameter_versions reviews model_versions model_reviews selections run_requests run_state run_events attempts attempt_events results result_chunks result_reviews restrictions audit receipts reservations'.split())
+INSERT_TABLES = INSERT_TABLES | {'mechanical_events'}
 UPDATE_COLUMNS={'state_head':{'version'},'capacity':{'queued','running','reserved_bytes','used_bytes','version'},
                 'reservations':{'state','used_bytes','version'},'run_state':{'version','state','generation','owner_id','deadline','heartbeat_at','reason_code'},
                 **{table:{'id'} for table in ('assemblies','assembly_versions','parameter_versions','model_versions','run_requests','results')}}

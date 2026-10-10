@@ -33,6 +33,12 @@ RESET_TABLES = "dataset_exports dataset_manifest_chunks dataset_files dataset_me
 
 class WaveformDatabaseCase(unittest.TestCase):
     def setUp(self):
+        self._validate_waveform_fixture()
+        self._lock_waveform_fixture()
+        self._migrate_and_grant_waveform_under_lock()
+        self._reset_waveform_under_lock()
+
+    def _validate_waveform_fixture(self):
         config = os.environ.get("OILWELL_WAVEFORM_TEST_CONFIG")
         self.assertTrue(config, "Waveform tests require explicit isolated OILWELL_WAVEFORM_TEST_CONFIG")
         self.config_path = Path(config).resolve()
@@ -51,13 +57,16 @@ class WaveformDatabaseCase(unittest.TestCase):
             _verify_live(conn,self.identity,database=TEST_DATABASE)
             marker="oilwell-waveform-test:"+self.manifest["fixture_id"]
             self.assertEqual(conn.execute("SELECT pg_get_userbyid(datdba),shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()").fetchone(), (self.settings["migration_owner"]["user"],marker))
+    def _lock_waveform_fixture(self):
         self.guard=self.connect("migration_owner")
         self.guard.autocommit=True
         self.guard.execute("SET statement_timeout='30s'")
         self.guard.execute("SELECT pg_advisory_lock(%s)",(TEST_LOCK,))
+    def _migrate_and_grant_waveform_under_lock(self):
         migrate(self.settings["migration_owner"],expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
         with self.connect("migration_owner") as conn:
             grant_roles(conn,roles={role:self.settings[role]["user"] for role in ROLES})
+    def _reset_waveform_under_lock(self):
         with self.connect("migration_owner") as conn:
             self._check_endpoint(conn)
             conn.execute(sql.SQL("TRUNCATE {} ").format(sql.SQL(",").join(sql.Identifier("waveforms",name) for name in RESET_TABLES)))

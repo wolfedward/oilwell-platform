@@ -17,6 +17,38 @@ from backend.waveforms.commands import Actor
 
 
 class InversionContractTests(unittest.TestCase):
+    def test_partial_coverage_rejects_duplicate_scope_and_wrong_purpose(self):
+        for mutation in ('duplicate','purpose','nested_duplicate','nested_purpose'):
+            body=parameter_body(); del body['provenance']['source_date']
+            scopes=body['provenance']['coverage']['scopes']
+            if mutation.startswith('nested'): del body['provenance']['coverage']['max_time_alignment_error_ns']
+            if mutation.endswith('duplicate'): scopes[1]=scopes[0].copy()
+            else: scopes[0]['attachment_pin']['purpose']='geometry'
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                parse_parameter_set(parameter_wire(body),draft=True)
+
+    def test_attachment_pins_are_not_reviewed_waveform_evidence(self):
+        body = parameter_body()
+        pin = {'id': body['provenance']['attachment_pins'][0]['id'],
+               'content_sha256': 'a' * 64, 'purpose': 'provenance',
+               'source_description': 'Synthetic calculation report, section 1'}
+        body['provenance']['attachment_pins'] = [pin]
+        parsed = parse_parameter_set(parameter_wire(body))
+        self.assertEqual(parsed.provenance.attachment_pins[0].purpose, 'provenance')
+        self.assertFalse(hasattr(parsed.provenance.attachment_pins[0], 'review_version'))
+        pin['review_version'] = 1
+        with self.assertRaises(ValueError): parse_parameter_set(parameter_wire(body))
+
+    def test_parameter_parent_is_independent_of_mechanical_version(self):
+        for mechanical, parent in ((1, 1), (2, None), (2, 4)):
+            body = parameter_body()
+            body.update(assembly_version=mechanical, parent_version=parent)
+            parsed = parse_parameter_set(parameter_wire(body))
+            self.assertEqual(parsed.parent_version, parent)
+        for parent in (0, -1, True, "1"):
+            body = parameter_body(); body['parent_version'] = parent
+            with self.assertRaises(ValueError): parse_parameter_set(parameter_wire(body))
+
     def test_command_preconditions_and_authority_are_exact(self):
         actor = Actor("local", "7", "Tester", "engineer")
         command = InversionCommand(actor, UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
