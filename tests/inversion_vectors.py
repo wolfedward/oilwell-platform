@@ -130,7 +130,8 @@ def parameter_wire(body=None):
 def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,producer=None,
                   later_producer=None,changed_calibration=False,shared_selected=False,
                   mapping_offset=0,mapping_ppm='0',later_utc='2026-09-29T00:01:00.000000Z',
-                  parameter_end=None,condition_end=None,reference_end='2000000001'):
+                  parameter_end=None,condition_end=None,reference_end='2000000001',
+                  two=False,utc_uncertainties=(0,0),alignment_limit=0):
     """Genuine WP04 intake/evidence/pair/freeze and independently approved governance."""
     from copy import deepcopy
     from dataclasses import replace
@@ -147,7 +148,8 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
     from tests.waveform_pairing_support import seed_pair,CREATOR,REVIEWER
     from tests.waveform_support import LIMITS
     from tests.inversion_governance_support import command,AUTHOR,REVIEWER as INV_REVIEWER
-    archive=seed_pair(case,count=count,inversion=True,producer=producer,shared_selected=shared_selected)
+    archive=seed_pair(case,count=count,inversion=True,producer=producer,shared_selected=shared_selected,
+                      two=two,utc_uncertainties=utc_uncertainties)
     reuse=archive['channel_evidence']
     if changed_calibration:
         reuse=dict(reuse)
@@ -156,7 +158,8 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
         reuse['active_power']=(config,case.approved_evidence('calibration',thaw(cal.body)))
     vector=seed_pair(case,count=count,inversion=True,reuse_evidence=None if later_producer else reuse,
                      utc_start=later_utc,producer=later_producer or producer,shared_selected=shared_selected,
-                     mapping_offset=mapping_offset,mapping_ppm=mapping_ppm,reference_end=reference_end) if later else archive
+                     mapping_offset=mapping_offset,mapping_ppm=mapping_ppm,reference_end=reference_end,
+                     two=two,utc_uncertainties=utc_uncertainties) if later else archive
     if not angle:
         vector=dict(vector); vector['selection']=deepcopy(vector['selection'])
         profile=__import__('backend.waveforms.evidence_contracts',fromlist=['thaw']).thaw(vector['profile'].body)
@@ -200,6 +203,7 @@ def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True,prod
     policy=parameters['policy']['body']; policy['motion_max_time_span_ns']='1000000000'; policy['motion_max_angle_span_rad']='0.5'
     parameters['policy']['content_sha256']=sha256(canonical_bytes(policy)).hexdigest()
     coverage=parameters['provenance']['coverage']; coverage['policy_sha256']=parameters['policy']['content_sha256']
+    coverage['max_time_alignment_error_ns']=str(alignment_limit)
     coverage['domain_sha256']=sha256(canonical_bytes(parameters['domain'])).hexdigest()
     frame=archive['frames'][-1]; declaration=frame.body['cycle']
     stream=next(s for s in frame.streams if s.stream_id=='sensor')

@@ -14,13 +14,12 @@ from backend.waveforms.member_exports import MemberResearchExporter,member_reque
 from backend.waveforms.pair_contracts import capture_key,public
 from backend.waveforms.quality_context import utc_ns
 from backend.waveforms.samples import iter_samples
-from backend.waveforms.timing import sync_bound_ns
 from backend.waveforms.wire import parse_frame
 from .contracts import canonical_bytes,fail
 from .input_contracts import RunRequest,InputSnapshot,PreparedInput
 from .series import EvidencePin,ChannelPin,ProducerEndpoint,Sample,SampleSeries,PredictionInputs,ReferenceInputs,CycleWindow
 from .history import applicability_with_cursor,recheck_with_cursor
-from .input_timing import absolute_support
+from .input_timing import absolute_support,relative_alignment
 from .parameters import refuse
 from .transactions import lock,LockPlan
 
@@ -109,8 +108,7 @@ class InputAcquisition:
         physical=context.cycle['physical_cycles'][0]
         if canonical_bytes(context.cycle['physical_cycles'])!=canonical_bytes(member.certificate['snapshot']['physical_cycles']): refuse('cycle_changed')
         cycle=CycleWindow(context.cycle['start_ns'],context.cycle['end_ns'],physical['physical_cycle_key'])
-        budget=sync_bound_ns(context.sync_evidence['budget'] if context.sync_evidence else None,cycle.end_ns-cycle.start_ns)
-        if budget is None: refuse('timing_unknown')
+        budget,relative_terms=relative_alignment(context,manifests,cycle.end_ns-cycle.start_ns)
         uncertainty,absolute_terms=absolute_support(context,manifests)
         series={}; pins={}; power_config=None
         for data in context.streams:
@@ -149,7 +147,7 @@ class InputAcquisition:
         sources=list(dict.fromkeys(CaptureKey(d.stream.source['gateway_id'],d.stream.source['device_id'],d.key.capture_id) for d in context.streams))
         observation=dict(utc_start=manifests[context.key].body['utc_start'],start_ns=str(anchor+first),end_ns=str(anchor+last),
             relative_start_ns=str(first),relative_end_ns=str(last),uncertainty_ns=str(uncertainty),
-            relative_alignment_ns=str(budget),absolute_timing_terms=absolute_terms,
+            relative_alignment_ns=str(budget),relative_timing_terms=relative_terms,absolute_timing_terms=absolute_terms,
             physical_cycle_key=cycle.physical_cycle_id,sources=[public(key) for key in sources])
         self._authorize(actor); check()
         with self.read_connect() as conn:

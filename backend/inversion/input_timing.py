@@ -4,13 +4,36 @@ All coordinates are exact Fractions. Mapping uncertainty is a bound, never a
 second timestamp correction. The unused approved reference remains relevant.
 """
 from fractions import Fraction
+from itertools import combinations
 from backend.waveforms.pair_contracts import capture_key,public
 from backend.waveforms.quality import channel_identity
 from backend.waveforms.quality_context import utc_ns
-from backend.waveforms.timing import sample_time_ns
+from backend.waveforms.timing import sample_time_ns,sync_bound_ns
 from backend.waveforms.evidence_contracts import decimal_value
 from .contracts import utc
 from .parameters import covers_observation,refuse
+
+
+def relative_alignment(context,manifests,duration_ns):
+    """Conservative decomposition; no inferred cross-capture UTC correlation.
+
+    WP04's mapping/calibration maximum omits capture anchors. Common capture
+    UTC cancels, but different capture anchors contribute BOTH bounds. Adding
+    these two maxima is conservative even when attained by different pairs.
+    """
+    mapping=sync_bound_ns(context.sync_evidence['budget'] if context.sync_evidence else None,duration_ns)
+    if mapping is None: refuse('timing_unknown')
+    anchors=[]
+    for key in sorted({data.key for data in context.streams},key=lambda key:(key.gateway_id,key.device_id,str(key.capture_id))):
+        frame=manifests.get(key)
+        if frame is None or utc_ns(frame) is None or frame.body['utc_uncertainty_ns'] is None: refuse('relative_timing_unknown')
+        anchors.append(dict(capture=public(key),utc_uncertainty_ns=frame.body['utc_uncertainty_ns']))
+    if not anchors: refuse('relative_timing_unknown')
+    utc_bound=max((int(a['utc_uncertainty_ns'])+int(b['utc_uncertainty_ns'])
+                   for a,b in combinations(anchors,2)),default=0)
+    total=mapping+utc_bound
+    return total,dict(mapping_and_calibration_ns=str(mapping),noncommon_capture_utc_ns=str(utc_bound),
+                      capture_utc_bounds=anchors,total_bound_ns=str(total))
 
 
 def absolute_support(context,manifests):

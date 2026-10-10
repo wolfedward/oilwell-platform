@@ -120,7 +120,8 @@ def three_phase_case(*,signal='instantaneous',missing_phase=False,wiring=True):
 
 def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=False,
               inversion=False,reuse_evidence=None,utc_start='2026-09-29T00:00:00.000000Z',
-              producer=None,shared_selected=False,mapping_offset=0,mapping_ppm='0',reference_end='2000000001'):
+              producer=None,shared_selected=False,mapping_offset=0,mapping_ppm='0',reference_end='2000000001',
+              utc_uncertainties=(0,0)):
     """Actual intake, assembly and independent evidence approval; synthetic only."""
     import base64
     from backend.waveforms.evidence import EvidenceService
@@ -201,7 +202,7 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
             reference_channel='displacement',reference_events=[dict(event=event,stream_id='sensor',sample_index=str(index))
                 for event,index in (('start',0),('turn',(count-1)//2),('end',count-1))]) if has_sensor else None
         body=dict(key,schema='OWP-WAVE/1.0',kind='manifest',boot_id=str(boot),capture_kind='cycle' if cycle else 'event',source_kind='synthetic',
-            producer=dict(manufacturer='Synthetic fixture',recorder_version='1'),source_evidence=None,utc_start=utc_start,utc_uncertainty_ns='0',
+            producer=dict(manufacturer='Synthetic fixture',recorder_version='1'),source_evidence=None,utc_start=utc_start,utc_uncertainty_ns=str(utc_uncertainties[n]),
             clock_domain_id='clock',sync_evidence_id=None,window_ns='2000000000',cycle=cycle,streams=streams)
         manifest=encoded(body); observed=observation(manifest,topic=f'oil/v2/GW/{device}/waveform'); stored=repo.ingest(observed)
         wire=[manifest]

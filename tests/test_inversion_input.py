@@ -18,6 +18,29 @@ def request_body():
 
 
 class InputContractTests(unittest.TestCase):
+    def test_relative_budget_keeps_mapping_residuals_and_only_cancels_common_utc(self):
+        from dataclasses import replace
+        from fractions import Fraction
+        from backend.inversion.input_timing import relative_alignment
+        from backend.waveforms.contracts import ManifestFrame
+        from backend.waveforms.timing import SyncBudget
+        from tests.waveform_pairing_support import pure_case
+        context,_=pure_case(); left=context.key; right=replace(left,capture_id=uuid4())
+        # Pure arithmetic metadata, not an asserted acquisition/provenance lifecycle.
+        frames={key:ManifestFrame(key,'a'*64,dict(utc_start='2026-09-29T00:00:00.000000Z',
+                utc_uncertainty_ns=str(u),source_kind='synthetic'),(context.streams[0].stream,))
+                for key,u in ((left,20),(right,30))}
+        endpoints=tuple(dict(identity=key,reference_ns=Fraction(0),start_ns=Fraction(0),end_ns=Fraction(2000000000),
+                        offset_ns=offset,residual_ns=0,ppm=Fraction(0)) for key,offset in ((left,3),(right,7)))
+        budget=SyncBudget(endpoints,(left,right,right),(1,2,3))
+        split=replace(context,streams=(context.streams[0],*(replace(d,key=right) for d in context.streams[1:])),
+                      sync_evidence=context.sync_evidence|{'budget':budget})
+        value,terms=relative_alignment(split,frames,Fraction(2000000000))
+        self.assertEqual(value,Fraction(64))  # mapping10 + worst cross residual4 + UTC20+30
+        self.assertEqual(terms['mapping_and_calibration_ns'],'14')
+        common=replace(context,sync_evidence=context.sync_evidence|{'budget':replace(budget,channel_endpoints=(left,left,left))})
+        self.assertEqual(relative_alignment(common,frames,Fraction(2000000000))[0],Fraction(5))
+
     def test_archive_sync_pin_is_optional_without_rewriting_legacy_body(self):
         from copy import deepcopy
         from backend.inversion.parameter_contracts import parse_parameter_set
@@ -44,6 +67,57 @@ class InputContractTests(unittest.TestCase):
 
 
 class AcquisitionTests(GovernanceCase,DatasetCase):
+    def test_two_capture_utc_sum_reaches_numerical_support_and_frozen_recheck(self):
+        from fractions import Fraction
+        from backend.inversion.motion import estimate_motion
+        from backend.inversion.history import recheck_with_cursor
+        from backend.inversion.transactions import lock,LockPlan
+        case=acquired_case(self,two=True,utc_uncertainties=(20000000,30000000),alignment_limit=50000000)
+        prepared=self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        # Actual approved 1 ms power window at 15.625 ms: the 50 ms
+        # independent-anchor sum pushes support across the cycle boundary.
+        points=estimate_motion(prepared.prediction_inputs,prepared.parameters,prepared.policy)
+        self.assertEqual(points[1].status,'power_support_outside_cycle')
+        self.assertEqual(prepared.prediction_inputs.time_bound_ns,Fraction(50000000))
+        self.assertEqual(prepared.snapshot.body['observation']['relative_alignment_ns'],'50000000')
+        terms=prepared.snapshot.body['observation']['relative_timing_terms']
+        self.assertEqual(terms['mapping_and_calibration_ns'],'0')
+        self.assertEqual(terms['noncommon_capture_utc_ns'],'50000000')
+        self.assertEqual(len(prepared.snapshot.body['captures']),2)
+        with self.inversion_fixture.connect() as conn:
+            cur=conn.cursor(); lock(cur,LockPlan(waveform=True,registry=True))
+            self.assertEqual(recheck_with_cursor(cur,prepared.snapshot),())
+            # Negative server-snapshot probe: recheck must actually consume the
+            # frozen relative quantity, not fall back to a zero/common budget.
+            from hashlib import sha256
+            from backend.inversion.contracts import strict_json
+            from backend.inversion.input_contracts import InputSnapshot
+            body=strict_json(prepared.snapshot.canonical)
+            body['observation']['relative_alignment_ns']='50000001'
+            wire=canonical_bytes(body)
+            excessive=InputSnapshot(body,wire,sha256(wire).hexdigest())
+            self.assertEqual(recheck_with_cursor(cur,excessive),('timing_envelope',))
+            conn.rollback()
+
+    def test_two_capture_utc_sum_exceeds_independently_approved_timing_envelope(self):
+        from backend.inversion.transactions import InversionError
+        # max(20 ms,30 ms) would pass this independently approved ceiling;
+        # summing non-common bounds must refuse it.
+        case=acquired_case(self,two=True,utc_uncertainties=(20000000,30000000),alignment_limit=30000000)
+        with self.assertRaises(InversionError) as error:
+            self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(error.exception.code,'inversion.timing_envelope')
+
+    def test_shared_capture_utc_cancels_only_in_relative_alignment(self):
+        from fractions import Fraction
+        case=acquired_case(self,later=True,shared_selected=True,utc_uncertainties=(30000000,0),
+                           mapping_offset=100000000,mapping_ppm='100')
+        prepared=self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
+        self.assertEqual(prepared.prediction_inputs.time_bound_ns,Fraction(0))
+        observation=prepared.snapshot.body['observation']
+        self.assertEqual(observation['uncertainty_ns'],'130200000')
+        self.assertEqual(observation['relative_timing_terms']['noncommon_capture_utc_ns'],'0')
+
     def test_distinct_recorder_producer_later_capture_is_supported(self):
         case=acquired_case(self,later=True,producer='P')
         prepared=self.acquirer(case).prepare_input(parse_run_request(canonical_bytes(case['request'])),AUTHOR,check=lambda:None)
