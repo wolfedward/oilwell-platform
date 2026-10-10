@@ -149,7 +149,14 @@ class InversionApi:
 
     def _get(self,action,id,filters,actor,services,runtime):
         from .queries import governance_view, result_view, point_page, run_view, public_value, wire
-        if action=='parameters.get': return governance_view(services['parameters'].get(id))
+        if action=='parameters.get':
+            from .transactions import InversionError
+            try: return governance_view(services['parameters'].get(id))
+            except InversionError as error:
+                # Public resource absence is not an internal dependency conflict.
+                if error.code=='inversion.parameter_missing':
+                    raise InversionError('parameter_missing',status=404) from None
+                raise
         if action=='runs.get': return run_view(services['runs'].get(id),runtime.queries.result_id(id))
         if action.startswith('results.'):
             view=services['results'].get(id,actor=actor)

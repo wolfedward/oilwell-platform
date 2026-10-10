@@ -38,6 +38,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body['data']['status'], 'disabled')
         self.assertEqual(cache, 'no-store')
 
+    def parameter_runtime(self):
+        from backend.inversion.parameters import ParameterService
+        from backend.inversion.runtime import InversionRuntime
+        from unittest.mock import MagicMock
+        conn=MagicMock(); conn.__enter__.return_value=conn
+        conn.cursor.return_value.fetchone.return_value=None
+        parameters=ParameterService(lambda:conn,read_connect=lambda:conn,authorize=lambda *_:None,accounting_bucket='GW')
+        runtime=InversionRuntime('ready')
+        runtime.allowed_origins=self.server.inversion_runtime.allowed_origins
+        runtime.services_for=lambda _: {'parameters':parameters}
+        self.server.inversion_runtime=runtime
+        return parameters
+
+    def test_missing_public_parameter_is_404(self):
+        from uuid import uuid4
+        self.parameter_runtime()
+        status,payload,_=self.request('GET','/parameters/'+str(uuid4()))
+        self.assertEqual(status,404,payload)
+        self.assertEqual(payload['code'],'inversion.parameter_missing')
+
+    def test_parameter_dependency_and_version_conflicts_remain_409(self):
+        from uuid import uuid4
+        from backend.inversion.transactions import InversionError
+        parameters=self.parameter_runtime(); path='/parameters/'+str(uuid4())
+        command={'key':str(uuid4()),'expected':{'kind':'absent'},'reason':'Submit absent dependency'}
+        status,payload,_=self.request('POST',path+'/submit',{'command':command})
+        self.assertEqual(status,409,payload); self.assertEqual(payload['code'],'inversion.parameter_missing')
+        for code in ('dependency_missing','version_conflict'):
+            with patch.object(parameters,'get',side_effect=InversionError(code,status=409)):
+                status,payload,_=self.request('GET',path)
+                self.assertEqual(status,409,payload); self.assertEqual(payload['code'],'inversion.'+code)
+
     def test_unknown_method_path_headers_and_fields_refused(self):
         for method, path, expected in [('DELETE','/runs',405),('GET','/runs/finish',400),('GET','/runs%2f',400),('GET','/health?surprise=1',400)]:
             with self.subTest(path=path): self.assertEqual(self.request(method,path)[0],expected)
