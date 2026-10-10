@@ -200,6 +200,50 @@ class PredictionTests(unittest.TestCase):
         self.assertIn('no_valid_points', result.reason_codes)
         self.assertTrue(all(p.status=='outside_model_domain' for p in result.points))
 
+    def test_isolated_and_gapped_centers_have_no_supported_duration(self):
+        from backend.inversion.solver import predict
+        inputs, parameters, policy = conservation_case()
+        for retained in ((10,), (10, 60)):
+            sparse = replace(inputs, power=replace(inputs.power,
+                samples=tuple(inputs.power.samples[i] for i in retained)))
+            for minimum in (Decimal('.8'), Decimal(0)):
+                selected_policy = replace(policy, min_coverage_fraction=minimum)
+                result = predict(sparse, replace(parameters, policy=selected_policy), selected_policy)
+                self.assertTrue(all(p.status == 'valid' for p in result.points))
+                self.assertEqual(result.status, 'not_applicable')
+                self.assertEqual(result.coverage_fraction, Fraction(0))
+                self.assertIn('insufficient_coverage', result.reason_codes)
+
+    def test_native_gaps_split_supported_duration(self):
+        from backend.inversion.solver import predict
+        inputs, parameters, policy = conservation_case()
+        samples = tuple(inputs.power.samples[i] for i in (10, 11, 60, 61))
+        result = predict(replace(inputs, power=replace(inputs.power, samples=samples)), parameters, policy)
+        self.assertTrue(all(p.status == 'valid' for p in result.points))
+        # Two 1/80-second segments, divided by the declared one-second cycle.
+        self.assertEqual(result.coverage_fraction, Fraction(1, 40))
+        self.assertEqual(result.status, 'not_applicable')
+
+    def test_irregular_centers_weight_time_and_invalid_points_break_support(self):
+        from backend.inversion.solver import predict
+        inputs, parameters, policy = conservation_case()
+        # Native adjacent samples at .1375, .1875, .7625 seconds: the invalid
+        # third point cannot contribute its much longer .575-second interval.
+        samples = tuple(replace(inputs.power.samples[source], index=index)
+                        for index, source in enumerate((10, 14, 60)))
+        samples = samples[:2]+(replace(samples[2], value_si=None, quality=1),)
+        sparse = replace(inputs, power=replace(inputs.power, samples=samples))
+        for minimum, status in [(Decimal('.5'), 'not_applicable'), (Decimal('.04'), 'applicable')]:
+            selected_policy = replace(policy, min_coverage_fraction=minimum)
+            result = predict(sparse, replace(parameters, policy=selected_policy), selected_policy)
+            self.assertEqual(tuple(p.status for p in result.points), ('valid', 'valid', 'input_gap'))
+            self.assertEqual(result.coverage_fraction, Fraction(1, 20))
+            self.assertEqual(result.status, status)
+        samples = (samples[0], replace(samples[1], value_si=None, quality=1),
+                   replace(inputs.power.samples[60], index=2))
+        result = predict(replace(sparse, power=replace(sparse.power, samples=samples)), parameters, policy)
+        self.assertEqual(result.coverage_fraction, Fraction(0))
+
     def test_unknown_envelope_and_oversize_refused(self):
         from backend.inversion.solver import predict
         inputs, parameters, policy = conservation_case()
@@ -214,7 +258,7 @@ class PredictionTests(unittest.TestCase):
         from backend.inversion.solver import predict
         inputs, parameters, policy = conservation_case()
         baseline = predict(inputs, parameters, policy)
-        epoch = Fraction(1_800_000_000_000_000_000)
+        epoch = Fraction(1_800_000_000_000_000_000)+Fraction(1, 3)
         tau = Fraction.from_float(math.tau)
         angles = tuple(replace(s, time_ns=s.time_ns+epoch, value_si=s.value_si % tau) for s in inputs.crank_angle.samples)
         shifted = replace(inputs,
@@ -223,6 +267,11 @@ class PredictionTests(unittest.TestCase):
             cycle=replace(inputs.cycle, start_ns=epoch, end_ns=epoch+10**9))
         parameters = replace(parameters, phase=replace(parameters.phase, unwrap_kind='wrapped_2pi'))
         result = predict(shifted, parameters, policy)
+        self.assertEqual(result.cycle, shifted.cycle)
+        self.assertEqual(result.cycle.start_ns, epoch)
+        self.assertEqual(result.cycle.end_ns, epoch+10**9)
+        self.assertEqual(result.cycle.physical_cycle_id, 'cycle-1')
+        self.assertEqual(baseline.cycle, inputs.cycle)
         self.assertEqual(result.status, baseline.status)
         for point, original in zip(result.points, baseline.points):
             self.assertEqual(point.time_ns-original.time_ns, epoch)

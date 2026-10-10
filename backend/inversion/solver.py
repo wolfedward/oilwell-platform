@@ -11,7 +11,7 @@ from .mechanics import EnergyTerms, energy_terms
 from .motion import MotionPoint, estimate_motion, _angle_runs
 from .parameter_contracts import ParameterSet
 from .policy import AlgorithmPolicy
-from .series import PredictionInputs
+from .series import CycleWindow, PredictionInputs
 
 
 @dataclass(frozen=True)
@@ -116,6 +116,7 @@ class PredictionPoint:
 @dataclass(frozen=True)
 class PredictionSeries:
     points: tuple[PredictionPoint, ...]
+    cycle: CycleWindow
     status: str
     reason_codes: tuple[str, ...]
     coverage_fraction: Fraction
@@ -173,9 +174,11 @@ def predict(inputs: PredictionInputs, parameters: ParameterSet,
             policy: AlgorithmPolicy) -> PredictionSeries:
     """Numerically conditional prediction at every native power center.
 
-    No reference channel can enter this interface. Coverage is valid native
-    centers / all supplied native centers, including quality failures. No-valid
-    and low-coverage series are explicitly not_applicable, with diagnostics
+    No reference channel can enter this interface. Coverage is the sum of
+    intervals between valid, adjacent native indices divided by the exact
+    selected cycle duration. Invalid points and index gaps split support;
+    isolated points and unsupported cycle edges contribute no duration. No-valid,
+    zero-duration and low-coverage series are not_applicable, with diagnostics
     retained. Runtime must enforce independent evidence approval, applicability,
     loss/model-envelope coverage and current authorizations BEFORE calling this
     pure kernel. Evidence pins alone do not prove field accuracy or admission.
@@ -245,13 +248,17 @@ def predict(inputs: PredictionInputs, parameters: ParameterSet,
             else:
                 append('motion_unreliable', ('numerical_failure',))
     valid_count = sum(point.status == 'valid' for point in points)
-    coverage = Fraction(valid_count, len(points))
+    supported_duration_ns = sum((right.time_ns-left.time_ns
+        for left, right in zip(points, points[1:])
+        if left.status == right.status == 'valid'
+        and right.power_index == left.power_index+1), Fraction(0))
+    coverage = supported_duration_ns/(inputs.cycle.end_ns-inputs.cycle.start_ns)
     reasons = []
     if not full_cycle:
         reasons.append('full_cycle_unconfirmed')
     if valid_count == 0:
         reasons.append('no_valid_points')
-    if coverage < _fraction(policy.min_coverage_fraction):
+    if supported_duration_ns <= 0 or coverage < _fraction(policy.min_coverage_fraction):
         reasons.append('insufficient_coverage')
     metadata = MappingProxyType(dict(
         algorithm=policy.algorithm, model_version=policy.model_version,
@@ -264,5 +271,5 @@ def predict(inputs: PredictionInputs, parameters: ParameterSet,
             'Approved physical envelopes must cover loss calibration, angular policy, timing and unmodeled dynamics; pins alone are not evidence admission',
             'Solver algebra and bilinear interpolation use exact rationals; output rounding is checked against independent numerical budgets',
         )))
-    return PredictionSeries(tuple(points), 'not_applicable' if reasons else 'applicable',
+    return PredictionSeries(tuple(points), inputs.cycle, 'not_applicable' if reasons else 'applicable',
                             tuple(reasons), coverage, metadata)
