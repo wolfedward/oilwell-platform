@@ -25,7 +25,7 @@ def required_permissions(action):
         'parameters.create':'parameters.manage','parameters.submit':'parameters.manage',
         'parameters.review':'parameters.review','parameters.revoke':'parameters.review',
         'models.create':'models.manage','models.review':'models.review','models.revoke':'models.review',
-        'selections.list':'models.manage','selections.create':'models.manage','selections.rollback':'models.manage',
+        'selections.list':'read','selections.create':'models.manage','selections.rollback':'models.manage',
         'results.review':'review','results.revoke':'review','audit':'audit.read',
     }.get(action, 'read')
     return frozenset({'inversion.' + capability})

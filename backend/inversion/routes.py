@@ -43,6 +43,7 @@ def route(method, path):
             group, _, action = parts
             if action in ACTIONS.get(group, ()): possibilities['POST'] = group + '.' + action
             if group == 'assemblies' and action == 'selections': possibilities['GET'] = 'selections.list'
+            if group == 'assemblies' and action == 'versions': possibilities['GET'] = 'assembly_versions.list'
             if group == 'results' and action in ('points','comparison'): possibilities['GET'] = 'results.' + action
     if not possibilities: raise RouteError(404)
     if method not in possibilities: raise RouteError(405)

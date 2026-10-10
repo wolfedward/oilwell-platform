@@ -6,6 +6,15 @@ from backend.seed import bootstrap_local_auth
 
 
 class PermissionTests(unittest.TestCase):
+    def test_selection_history_is_read_only_without_management_grant(self):
+        from backend.inversion.permissions import required_permissions, ROLE_PERMISSIONS
+        reader=frozenset(ROLE_PERMISSIONS['production_engineer'])
+        self.assertTrue(required_permissions('selections.list') <= reader)
+        self.assertTrue(required_permissions('assembly_versions.list') <= reader)
+        for action in ('selections.create','selections.rollback'):
+            self.assertFalse(required_permissions(action) <= reader)
+            self.assertEqual(required_permissions(action),frozenset({'inversion.models.manage'}))
+
     def test_preexisting_definitions_upgrade_once_including_admin(self):
         with tempfile.TemporaryDirectory() as directory:
             db=Database(Path(directory)/'auth.db'); db.migrate(); bootstrap_local_auth(db)

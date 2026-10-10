@@ -8,6 +8,9 @@ from .contracts import canonical_bytes
 from .exports import public_value, public_result
 from .transactions import InversionError
 
+MECHANICAL_FIELDS = frozenset(('assembly_id','manufacturer','model','asset_number','mechanism','source_kind',
+    'source_organization','valid_from','valid_to','parent_version','installation_evidence'))
+
 
 def wire(value):
     if isinstance(value, UUID): return str(value)
@@ -29,6 +32,17 @@ def governance_view(record):
     result = {key:wire(getattr(record,key)) for key in names if hasattr(record,key)}
     result['body'] = public_value(wire(record.body))
     return result
+
+
+def mechanical_view(assembly_id, row):
+    version_id,version,content_sha256,body,revision,valid_from,valid_to=row
+    known=body.get('valid_from') is not None
+    declared=dict(interval_known=known,valid_from=body.get('valid_from') if known else None,
+        valid_to=body.get('valid_to') if known else None,
+        body={key:value for key,value in body.items() if key in MECHANICAL_FIELDS})
+    effective=None if revision is None else dict(revision=revision,valid_from=valid_from,valid_to=valid_to)
+    return public_value(wire(dict(assembly_id=assembly_id,version_id=version_id,version=version,
+        content_sha256=content_sha256,declared=declared,effective=effective)))
 
 
 def result_view(view):
@@ -77,6 +91,13 @@ class InversionQueries:
         }
         with self.read_connect() as conn:
             self.configure(conn)
+            if action == 'assembly_versions.list':
+                if conn.execute('SELECT 1 FROM inversion.assemblies WHERE id=%s',(identifier,)).fetchone() is None:
+                    raise InversionError('assembly_missing',status=404)
+                rows=conn.execute('SELECT v.id,v.version,v.content_sha256,v.body,s.revision,s.valid_from,s.valid_to FROM inversion.assembly_versions v LEFT JOIN inversion.mechanical_state s ON s.version_id=v.id WHERE v.assembly_id=%s ORDER BY v.version DESC LIMIT %s OFFSET %s',
+                    (identifier,limit,offset)).fetchall()
+                return dict(assembly_id=str(identifier),offset=offset,limit=limit,
+                    items=[mechanical_view(identifier,row) for row in rows])
             if action == 'assemblies.get':
                 rows=conn.execute('SELECT a.id,v.version,v.content_sha256,v.body,s.valid_from,s.valid_to FROM inversion.assemblies a JOIN LATERAL (SELECT * FROM inversion.assembly_versions WHERE assembly_id=a.id ORDER BY version DESC LIMIT 1) v ON true LEFT JOIN inversion.mechanical_state s ON s.version_id=v.id WHERE a.id=%s',(identifier,)).fetchall()
                 if not rows: raise InversionError('assembly_missing',status=404)

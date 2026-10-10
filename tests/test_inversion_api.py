@@ -76,6 +76,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.request('GET','/health',headers={'Transfer-Encoding':'chunked'})[0],400)
         self.assertEqual(self.request('POST','/runs',{'actor':'forged'})[0],400)
 
+    def test_mechanical_versions_has_finite_bounded_read_route(self):
+        from uuid import uuid4
+        path='/assemblies/'+str(uuid4())+'/versions'
+        # A valid disabled read reaches availability, not unknown-route404.
+        self.assertEqual(self.request('GET',path)[0],503)
+        for query in ('?limit=101','?offset=100001','?limit=1&limit=2','?unknown=1'):
+            self.assertEqual(self.request('GET',path+query)[0],400)
+        self.assertEqual(self.request('POST',path,{})[0],405)
+
     def test_body_limit_before_json_parse(self):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         conn.request('POST', PREFIX+'/runs', b'{', {'Authorization':'Bearer '+self.token, 'Content-Type':'application/json','Content-Length':'262145'})
@@ -230,6 +239,62 @@ class LiveApiTests(RunCase):
         result={'command':{'key':str(key or uuid4()),'expected':{'kind':'absent'} if version is None else {'kind':'match','version':version},'reason':'Explicit isolated HTTP validation'}}
         if body is not None: result['body']=body
         return result
+
+    def test_engineer_reads_exact_selection_pins_and_mechanical_history(self):
+        from uuid import uuid4
+        from hashlib import sha256
+        from datetime import datetime
+        from backend.inversion.contracts import canonical_bytes
+        from tests.inversion_governance_support import command,MID
+        # Existing role and a real current session, never models.manage.
+        engineer=self.server.auth.login('production_engineer','Production@2026')
+        with self.server.database.transaction(None,'test.waveform_grants','role',None) as conn:
+            for capability in ('waveform.read','waveform.raw.read','waveform.export'):
+                conn.execute("INSERT OR IGNORE INTO role_permissions(role_id,permission_id,source_type) SELECT r.id,p.id,'system' FROM roles r CROSS JOIN permissions p WHERE r.code='production_engineer' AND p.code=?",(capability,))
+        current=self.server.auth.me(engineer.token)
+        self.assertNotIn('inversion.models.manage',current.permissions)
+        assembly=self.case['request']['assembly_id']
+        selection_path='/assemblies/'+assembly+'/selections'
+        status,payload=self.http('GET',selection_path+'?limit=1',token=engineer.token)
+        self.assertEqual(status,200,payload)
+        selected=payload['data']['items'][0]
+        self.assertEqual((payload['data']['limit'],len(payload['data']['items'])),(1,1))
+        pins=self.case['request'].copy(); pins['selection_version']=selected['version']
+        for key in ('assembly_id','parameter_id','parameter_sha256','parameter_review_version','model_id','model_sha256','model_review_version'):
+            self.assertEqual(selected['body'][key],self.case['request'][key]); pins[key]=selected['body'][key]
+        status,preflight=self.http('POST','/runs/preflight',{'body':pins},token=engineer.token)
+        self.assertEqual(status,200,preflight); self.assertEqual(preflight['data']['missing'],[])
+        for path in ('/selections','/selections/'+selected['id']+'/rollback'):
+            self.assertEqual(self.http('POST',path,{},token=engineer.token)[0],403)
+        self.assertEqual(self.http('GET',selection_path+'?offset=1&limit=1',token=engineer.token)[1]['data']['items'],[])
+        for suffix in ('?limit=101','?limit=1&limit=2','?unknown=1'):
+            self.assertEqual(self.http('GET',selection_path+suffix,token=engineer.token)[0],400)
+        # Separate genuine service-created physical lineage; no synthetic result inserts.
+        receipt,original=self.create_assembly(source_organization='Known installation')
+        successor=original | dict(parent_version=1,valid_from=MID,asset_number='TEST-002')
+        self.parameters.create_assembly(successor,command(version=1))
+        path='/assemblies/'+str(receipt.subject_id)+'/versions'
+        status,history=self.http('GET',path,token=engineer.token)
+        self.assertEqual(status,200,history)
+        data=history['data']; self.assertEqual((data['assembly_id'],data['offset'],data['limit']),(str(receipt.subject_id),0,50))
+        self.assertEqual([row['version'] for row in data['items']],[2,1])
+        latest,old=data['items']
+        self.assertEqual(old['declared'],dict(interval_known=True,valid_from=original['valid_from'],valid_to=None,body=original))
+        self.assertEqual(old['content_sha256'],sha256(canonical_bytes(original)).hexdigest())
+        self.assertEqual(old['effective']['revision'],2)
+        self.assertEqual(datetime.fromisoformat(old['effective']['valid_to']),datetime.fromisoformat(MID))
+        self.assertEqual(latest['effective']['revision'],1); self.assertIsNone(latest['effective']['valid_to'])
+        self.assertEqual(latest['declared']['body'],successor)
+        self.assertNotIn('actor',json.dumps(history)); self.assertNotIn('authority',json.dumps(history))
+        page=self.http('GET',path+'?offset=1&limit=1',token=engineer.token)[1]['data']
+        self.assertEqual([row['version'] for row in page['items']],[1])
+        self.assertEqual(self.http('GET',path+'?offset=100000',token=engineer.token)[1]['data']['items'],[])
+        self.assertEqual(self.http('GET','/assemblies/'+str(uuid4())+'/versions?offset=100000',token=engineer.token)[0],404)
+        legacy=self.inversion_fixture.assembly()
+        unknown=self.http('GET','/assemblies/'+str(legacy)+'/versions',token=engineer.token)[1]['data']['items'][0]
+        self.assertEqual(unknown['declared'],dict(interval_known=False,valid_from=None,valid_to=None,body={}))
+        self.assertIsNone(unknown['effective'])
+        self.assertEqual((self.scalar('SELECT queued FROM inversion.capacity'),self.scalar('SELECT running FROM inversion.capacity'),self.scalar('SELECT reserved_bytes FROM inversion.capacity')),(0,0,0))
 
     def test_preflight_is_not_calculation(self):
         before=self.scalar('SELECT count(*) FROM waveforms.audit_metadata')
