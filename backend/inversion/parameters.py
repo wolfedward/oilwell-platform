@@ -155,7 +155,8 @@ class ParameterService(GovernanceService):
             cur.execute('SELECT body FROM inversion.assemblies WHERE id=%s',(assembly,)); row=cur.fetchone()
             if row is None: refuse('assembly_missing')
             source=row[0].get('source_kind')
-            if source=='unknown' or source=='synthetic' and not test: refuse('source_ineligible')
+            allowed_sources=('synthetic','bench_measurement','field_measurement') if test else ('bench_measurement','field_measurement')
+            if type(source) is not str or source not in allowed_sources: refuse('source_ineligible')
             if not test:
                 cur.execute('SELECT status FROM device_registry.wells WHERE id=%s',(UUID(well),))
                 if cur.fetchone() != ('active',): refuse('well_unavailable')

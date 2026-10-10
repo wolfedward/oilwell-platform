@@ -25,6 +25,52 @@ class PhysicalSupportTests(unittest.TestCase):
 
 
 class ParameterGovernanceTests(GovernanceCase):
+    def test_legacy_assignment_sources_fail_closed_without_writes(self):
+        from hashlib import sha256
+        import json
+        from psycopg.types.json import Jsonb
+        legacy_bodies=[{}]+[{'source_kind':value} for value in
+            (None,'unknown','unrecognized','',True,1,1.5,[],{})]
+        tables=('assignments','assignment_events','audit','receipts')
+        for index,stored in enumerate(legacy_bodies):
+            well=self.registry_command('well.create',area_code='A',well_code=f'LEGACY-{index}',name='Legacy source gate fixture')['entity']
+            for destination in (well['id'],f'test:legacy-{index}'):
+                with self.subTest(stored=stored,destination=destination):
+                    assembly=uuid4(); prior=uuid4()
+                    digest=sha256(json.dumps(stored,sort_keys=True).encode('utf-8')).hexdigest()
+                    # Foundation records can predate the strict assembly parser.
+                    with self.inversion_fixture.connect() as conn:
+                        conn.execute('INSERT INTO inversion.assemblies(id,body,content_sha256) VALUES(%s,%s,%s)',
+                            (assembly,Jsonb(stored),digest))
+                        conn.execute("INSERT INTO inversion.assignments(id,assembly_id,well_id,valid_from,body,content_sha256) VALUES(%s,%s,%s,%s,'{}',%s)",
+                            (prior,assembly,'test:prior-'+str(assembly),START,'a'*64))
+                    before=tuple(self.inv_scalar('SELECT count(*) FROM inversion.'+table) for table in tables)
+                    body=dict(assembly_id=str(assembly),well_id=destination,valid_from=MID,valid_to=END,close_assignment_id=str(prior))
+                    with self.assertRaises(InversionError) as caught:
+                        self.parameters.assign(body,command(version=1))
+                    self.assertEqual(caught.exception.code,'inversion.source_ineligible')
+                    self.assertEqual(tuple(self.inv_scalar('SELECT count(*) FROM inversion.'+table) for table in tables),before)
+                    self.assertEqual(self.inv_scalar('SELECT version FROM inversion.assignment_state WHERE assignment_id=%s',(prior,)),1)
+                    self.assertIsNone(self.inv_scalar('SELECT valid_to FROM inversion.assignment_state WHERE assignment_id=%s',(prior,)))
+                    self.assertEqual(self.inv_scalar('SELECT body FROM inversion.assemblies WHERE id=%s',(assembly,)),stored)
+                    self.assertEqual(self.inv_scalar('SELECT content_sha256 FROM inversion.assemblies WHERE id=%s',(assembly,)),digest)
+
+    def test_known_assignment_sources_keep_test_and_production_separation(self):
+        for source in ('synthetic','bench_measurement','field_measurement'):
+            for test_identity in (True,False):
+                with self.subTest(source=source,test_identity=test_identity):
+                    assembly,_=self.create_assembly(source_kind=source)
+                    well=self.registry_command('well.create',area_code='A',well_code=str(uuid4()),name='Known source fixture')['entity']
+                    body=dict(assembly_id=str(assembly.subject_id),well_id='test:'+str(assembly.subject_id) if test_identity else well['id'],
+                        valid_from=START,valid_to=END,close_assignment_id=None)
+                    if source=='synthetic' and not test_identity:
+                        with self.assertRaises(InversionError) as caught: self.parameters.assign(body,command())
+                        self.assertEqual(caught.exception.code,'inversion.source_ineligible')
+                    else:
+                        assigned=self.parameters.assign(body,command())
+                        self.assertEqual(self.inv_scalar('SELECT well_id FROM inversion.assignments WHERE id=%s',(assigned.subject_id,)),body['well_id'])
+                    self.assertEqual(self.inv_scalar("SELECT body->>'source_kind' FROM inversion.assemblies WHERE id=%s",(assembly.subject_id,)),source)
+
     def test_broader_condition_record_retains_own_interval(self):
         from backend.inversion.parameters import covers_observation, _ns
         from backend.inversion.contracts import utc
