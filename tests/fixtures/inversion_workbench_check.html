@@ -9,6 +9,7 @@ const pins={assembly_id:assembly,parameter_id:parameter,parameter_sha256:'a'.rep
 const permissions=['inversion.read','inversion.run','waveform.read','waveform.raw.read','waveform.export'];
 const json=(data,status=200,code='inversion.selection_changed')=>new Response(JSON.stringify(status>=400?{code,message:'Refused',details:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
 let refusePreflight=true,deny=false,holdPoll=false,held,aborted=false,runState='running';
+let diagnosticCause='not_applicable',diagnosticVersion=3;
 const replacing=mode.startsWith('replace-'),runB=id(8),resultA=id(9),digest='e'.repeat(64);
 let submissions=0,pollsA=0,pollsB=0,activePolls=0,maxActivePolls=0,releaseA,releasePage,pageAborted=false;
 const completedA=()=>({run_id:run,version:2,state:'completed',result_id:resultA});
@@ -61,6 +62,10 @@ window.fetch=async(path,options={})=>{
  if(route===base+'/runs/'+run+'/cancel')return json({run_id:run,version:2,state:'running',reason_code:'cancel_requested',cancelling:true});
  if(route===base+'/runs/'+run){
   if(holdPoll){options.signal.addEventListener('abort',()=>{aborted=true;held?.(json({run_id:run,state:'completed',result_id:'LATE'}))});return new Promise(resolve=>held=resolve)}
+  if(mode==='terminal-diagnostics')return json({run_id:run,version:3,state:'blocked',reason_code:diagnosticCause,result_id:null,
+   terminal_diagnostics:{run_id:run,version:diagnosticVersion,state:'blocked',reason_code:diagnosticCause,
+    reasons:[diagnosticCause==='not_applicable'?'insufficient_coverage':'parameter_pin_changed'],
+    ...(diagnosticCause==='not_applicable'?{coverage_fraction:'1/3',point_count:3,valid_point_count:2}:{})}});
   return json({run_id:run,version:1,state:runState,reason_code:runState==='failed'?'worker_failed':null,result_id:null});
  }
  throw Error('Unexpected '+path);
@@ -69,7 +74,21 @@ try {
  const {renderProductionInversion,mountProductionInversion}=await import(WORKBENCH_MODULE);
  const {api}=await import(API_MODULE),root=document.querySelector('#root'),session={};
  const ctx=()=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession:session,capabilities:{production_inversion:{enabled:true,status:'ready'}},params:{},page:{},pageHeader:()=>'<h1>反演与双图验证</h1>',isCurrent:()=>true,registerDispose:()=>{}});
- if(replacing){
+ if(mode==='terminal-diagnostics'){
+  const open=()=>renderProductionInversion({...ctx(),params:{run_id:run}});
+  await open();check(root.querySelector('.inversion-run').textContent.includes('有效支撑不足'),'stored numerical cause readable');
+  check(root.querySelector('.inversion-run').textContent.includes('1/3')&&root.querySelector('.inversion-run').textContent.includes('2 / 3'),'exact coverage and valid counts visible');
+  check(root.querySelector('.inversion-run').textContent.includes('缺口'),'numerical cause has actionable next step');
+  diagnosticCause='input_changed';await open();check(root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'changed parameter cause visible');
+  check(root.querySelector('.inversion-run').textContent.includes('重新读取'),'changed input has relevant next step');
+  await open();check(root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'durable cause survives reread');
+  check(!root.querySelector('[data-chart-kind]'),'blocked result never fabricates chart');
+  diagnosticVersion=2;await open();check(!root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'mismatched diagnostic version not rendered');
+  check(root.querySelector('.inversion-run').textContent.includes('诊断详情不可用'),'missing exact diagnostics are explicit');
+  root.replaceChildren();holdPoll=true;const handle=mountProductionInversion({...ctx(),params:{run_id:run}});
+  await wait(()=>held);handle.dispose();await handle.ready;
+  check(aborted&&!root.textContent.includes('LATE')&&!root.textContent.includes('参数内容或复核版本已变化'),'disposed late diagnostics cannot paint');
+ }else if(replacing){
   refusePreflight=false;
   const handle=mountProductionInversion({...ctx(),permissions:new Set([...permissions,'inversion.review','inversion.export'])});await handle.ready;
   root.querySelector('[name="operating_condition_ids"]').click();root.querySelector('[data-inversion-preflight]').click();

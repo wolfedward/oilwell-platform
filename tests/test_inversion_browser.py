@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class BrowserFixtureCase(unittest.TestCase):
-    def run_fixture(self, mode, width=1120):
+    def run_fixture(self, mode, width=1120, encoded_rows=None):
         fixture = getattr(self, 'fixture', None) or ('inversion_review_check.html' if mode.startswith('round1-') else 'inversion_parameters_check.html')
         source = (ROOT / 'tests/fixtures' / fixture).read_text(encoding='utf-8')
         for marker, path in {
@@ -24,6 +24,7 @@ class BrowserFixtureCase(unittest.TestCase):
         }.items():
             source = source.replace(marker, json.dumps((ROOT / path).as_uri()))
         source = source.replace('FIXTURE_MODE', mode)
+        source = source.replace('ENCODED_ROWS', json.dumps(encoded_rows or []))
         runtime = Path(os.environ['USERPROFILE']) / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
         with tempfile.TemporaryDirectory(prefix='inversion-ui-') as directory:
             page = Path(directory) / 'check.html'
@@ -78,6 +79,10 @@ class InversionWorkbenchBrowserTests(BrowserFixtureCase):
         self.fixture = 'inversion_workbench_check.html'
         self.run_fixture('replace-pages')
 
+    def test_blocked_causes_are_readable_exact_and_disposal_safe(self):
+        self.fixture='inversion_workbench_check.html'
+        self.run_fixture('terminal-diagnostics')
+
     def test_logout_stops_poll_and_denial_is_sticky(self):
         self.fixture = 'inversion_workbench_check.html'
         self.run_fixture('shell-logout')
@@ -101,6 +106,27 @@ class InversionResultsBrowserTests(BrowserFixtureCase):
 
     def test_reference_range_uses_independent_measured_support(self):
         self.run_fixture('reference-support')
+
+    def test_encoded_reference_gaps_never_join_and_legacy_support_is_unknown(self):
+        from dataclasses import replace
+        from backend.inversion.comparison import compare
+        from backend.inversion.result_codec import encode
+        from tests.test_inversion_comparison import prediction,reference,policy
+        from tests.test_inversion_worker import CodecTests
+        pred=prediction((0,3),(12.,12.))
+        pred=replace(pred,points=tuple(replace(p,status='unobservable',load_N=None,
+            reason_codes=('deadpoint',)) for p in pred.points))
+        bad=reference((0,1,2,3),(10,None,10,10))
+        missing=replace(bad,load=replace(bad.load,samples=(bad.load.samples[0],)+bad.load.samples[2:]))
+        for ref,chosen in ((bad,policy()),(missing,policy()),
+                           (reference((0,3),(10,10)),replace(policy(),reference_max_gap_ns=10**8))):
+            result=encode(pred,compare(pred,ref,chosen),CodecTests().snapshot())
+            rows=[dict(kind=block['kind'],columns=block['columns'],values=row)
+                  for raw in result.chunks for block in (json.loads(raw),) for row in block['rows']]
+            self.run_fixture('reference-edges',encoded_rows=rows)
+        for row in rows:
+            if row['kind']=='comparison': row['columns']=row['columns'][:-1]; row['values']=row['values'][:-1]
+        self.run_fixture('reference-legacy',encoded_rows=rows)
 
     def test_result_states_not_collapsed_into_success(self):
         self.run_fixture('result-states')
@@ -138,6 +164,8 @@ class InversionParametersBrowserTests(BrowserFixtureCase):
 
     def test_rejected_draft_can_be_corrected_without_new_login(self):
         self.run_fixture('round1-rejection')
+        self.run_fixture('round1-attachment')
+        self.run_fixture('round1-attachment-pending')
 
     def test_assembly_parameter_and_other_histories_page_without_guessing_head(self):
         self.run_fixture('round1-pagination')

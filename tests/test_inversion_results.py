@@ -61,6 +61,62 @@ class ResultTests(ResultCase):
             conn.execute('UPDATE device_registry.registry_head SET revision=revision+1 WHERE singleton=1')
         self.assertEqual(self.results.get(self.published.id,actor=ACTOR).current_applicability['state'],'applicable')
 
+    def test_later_assignment_closure_preserves_immutable_result_and_export(self):
+        from backend.inversion.exports import ResultExporter
+        before=self.results.get(self.published.id,actor=ACTOR)
+        snapshot=self.prepared_result.snapshot.canonical
+        assignment=self.prepared_result.snapshot.body['applicability']['assignment']
+        self.parameters.assign(dict(assembly_id=str(self.request.assembly_id),well_id='test:next-well',
+            valid_from='2026-12-01T00:00:00.000000Z',valid_to=None,close_assignment_id=assignment['id']),command(version=1))
+        after=self.results.get(self.published.id,actor=ACTOR)
+        self.assertEqual(after.current_applicability['state'],'applicable')
+        self.approve()
+        exporter=ResultExporter(self.results)
+        exported=exporter.create(self.published.id,'quantitative','json',command(ACTOR))
+        self.assertTrue(b''.join(exporter.open(exported.id,actor=ACTOR)))
+        self.assertEqual((before.body,before.chunks,before.content_sha256,before.snapshot_sha256),
+                         (after.body,after.chunks,after.content_sha256,after.snapshot_sha256))
+        self.assertEqual(self.prepared_result.snapshot.canonical,snapshot)
+        from backend.inversion.contracts import canonical_bytes
+        self.assertEqual(canonical_bytes(self.scalar('SELECT input_snapshot FROM inversion.results WHERE id=%s',
+            (self.published.id,))),snapshot)
+
+    def test_later_mechanical_successor_preserves_historical_result(self):
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.exports import ResultExporter
+        import json
+        before=self.results.get(self.published.id,actor=ACTOR)
+        original=self.scalar('SELECT body FROM inversion.assemblies WHERE id=%s',(self.request.assembly_id,))
+        successor=json.loads(canonical_bytes(original)); successor.update(parent_version=1,
+            valid_from='2026-12-01T00:00:00.000000Z',asset_number='TEST-SUCCESSOR')
+        self.parameters.create_assembly(successor,command(version=1))
+        after=self.results.get(self.published.id,actor=ACTOR)
+        self.assertEqual(after.current_applicability['state'],'applicable')
+        self.approve()
+        exporter=ResultExporter(self.results)
+        exported=exporter.create(self.published.id,'quantitative','json',command(ACTOR))
+        self.assertTrue(b''.join(exporter.open(exported.id,actor=ACTOR)))
+        self.assertEqual((before.body,before.chunks,before.content_sha256,before.snapshot_sha256),
+                         (after.body,after.chunks,after.content_sha256,after.snapshot_sha256))
+
+    def test_assignment_closure_inside_uncertain_support_restricts_result(self):
+        from datetime import datetime,timedelta,timezone
+        from fractions import Fraction
+        from backend.inversion.exports import ResultExporter
+        before=self.results.get(self.published.id,actor=ACTOR)
+        observation=self.prepared_result.snapshot.body['observation']
+        upper=Fraction(observation['end_ns'])+Fraction(observation['uncertainty_ns'])
+        close=datetime(1970,1,1,tzinfo=timezone.utc)+timedelta(microseconds=upper//1000)
+        assignment=self.prepared_result.snapshot.body['applicability']['assignment']
+        self.parameters.assign(dict(assembly_id=str(self.request.assembly_id),well_id='test:next-well',
+            valid_from=close.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),valid_to=None,close_assignment_id=assignment['id']),command(version=1))
+        after=self.results.get(self.published.id,actor=ACTOR)
+        self.assertEqual(after.current_applicability['state'],'restricted')
+        self.assertIn('assignment_interval',after.current_applicability['reasons'])
+        with self.assertRaises(RuntimeError): self.approve()
+        with self.assertRaises(RuntimeError): ResultExporter(self.results).create(self.published.id,'quantitative','json',command(ACTOR))
+        self.assertEqual((before.body,before.chunks,before.snapshot_sha256),(after.body,after.chunks,after.snapshot_sha256))
+
     def test_review_replay_authorizes_and_revoke_is_append_only(self):
         cmd=command(REVIEWER); first=self.results.review(self.published.id,'approve',cmd)
         self.assertTrue(self.results.review(self.published.id,'approve',cmd).replayed)
@@ -86,6 +142,37 @@ class ResultTests(ResultCase):
     def test_current_read_authority_is_required(self):
         self.session_valid=False
         with self.assertRaises(RuntimeError): self.results.get(self.published.id,actor=ACTOR)
+
+    def test_reference_edge_rows_survive_published_readback_and_legacy_bytes(self):
+        import json
+        from uuid import uuid4
+        from backend.inversion.result_codec import encode,PreparedResult
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.comparison import compare
+        from backend.inversion.queries import point_page
+        from tests.test_inversion_comparison import prediction,reference,policy
+        from tests.inversion_worker import REF,authority
+        pred=prediction((0,3),(12.,12.)); ref=reference((0,1,2,3),(10,None,10,10))
+        current=encode(pred,compare(pred,ref,policy()),self.prepared_result.snapshot)
+        legacy=[]
+        for raw in current.chunks:
+            block=json.loads(raw)
+            if block['kind']=='comparison':
+                block['columns'].pop(); [row.pop() for row in block['rows']]
+            legacy.append(canonical_bytes(block))
+        old=PreparedResult(current.snapshot,current.metadata,tuple(legacy))
+        for prepared in (current,old):
+            run=self.create(); attempt=self.service.claim(uuid4())
+            published=self.service.publish(attempt,prepared,authority(REF))
+            view=self.results.get(published.id,actor=ACTOR)
+            self.assertEqual((view.chunks,view.content_sha256),(prepared.chunks,prepared.content_sha256))
+            page=point_page(view,2,2)
+            self.assertEqual((page['offset'],len(page['rows'])),(2,2))
+            values=[dict(zip(row['columns'],row['values'])) for row in page['rows']]
+            self.assertEqual([row['time_ns'] for row in values],['0','3000000000'])
+            if prepared is current:
+                self.assertEqual([row['reference_edge_from_previous'] for row in values],[False,False])
+            else: self.assertTrue(all('reference_edge_from_previous' not in row for row in values))
 
     def test_reader_rejects_corrupt_chunks_snapshot_and_aggregate_digest(self):
         from unittest.mock import patch

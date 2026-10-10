@@ -99,7 +99,7 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
     };
     for(const point of trace.points){
       if(!point.valid||point.x===null||point.y===null){flush();previous=null;continue;}
-      if(previous&&!contiguous(previous,point)){flush();}
+      if(previous&&(!contiguous(previous,point)||trace.id==='reference'&&point.raw.reference_edge_from_previous!==true)){flush();}
       segment.push(point);previous=point;
     }
     flush();groups.set(trace.id,group);svg.append(group);
@@ -145,6 +145,10 @@ export function mountComparison(elementRoot,{prediction,reference,filled,metadat
   const points=(rows,x,y,valid)=>rows.map(raw=>({raw,power_index:raw.power_index,x:x(raw),y:y(raw),valid:valid(raw)}));
   const pred=points(prediction,p=>numeric(p.s_m),p=>kilonewtons(p.load_N),p=>p.status==='valid');
   const ref=points(reference,p=>numeric(p.displacement_value_si),p=>kilonewtons(p.load_value_si),referenceSupported);
+  if(reference.some(point=>typeof point.reference_edge_from_previous!=='boolean'))
+    controls.append(element('p','参考连续性未知；旧结果仅提供独立点的悬停或键盘坐标，不推断连接线。'));
+  else if(reference.length===1||reference.some((point,index)=>index>0&&!point.reference_edge_from_previous))
+    controls.append(element('p','参考缺口保持断开；独立点仅通过悬停或方向键查看坐标。'));
   const fillMap=new Map(filled.map(p=>[p.power_index,p]));
   const fillPoints=points(prediction.map(p=>fillMap.get(p.power_index)||p),p=>numeric(p.s_m),p=>kilonewtons(p.load_N),p=>fillMap.has(p.power_index)||p.status==='valid');
   // Only segments adjacent to an actual fill are display-only. Original trace

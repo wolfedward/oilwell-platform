@@ -3,6 +3,8 @@ from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 import json
+import re
+from fractions import Fraction
 from uuid import UUID
 from .contracts import canonical_bytes
 from .exports import public_value, public_result
@@ -10,6 +12,48 @@ from .transactions import InversionError
 
 MECHANICAL_FIELDS = frozenset(('assembly_id','manufacturer','model','asset_number','mechanism','source_kind',
     'source_organization','valid_from','valid_to','parent_version','installation_evidence'))
+
+# Explicit producers: solver.predict terminal reasons and history.recheck plus
+# the parameter/model admission routines it calls. Never echo arbitrary events.
+DIAGNOSTIC_REASONS={
+    'not_applicable':frozenset(('full_cycle_unconfirmed','no_valid_points','insufficient_coverage')),
+    'input_changed':frozenset('''dataset_changed member_changed pair_review_changed evidence_changed capture_changed
+        applicability_changed parameter_pin_changed model_pin_changed selection_changed selection_incompatible
+        operating_conditions_unknown operating_condition_interval channel_installation_changed archive_capture_missing
+        archive_manifest_changed archive_restricted archive_source_changed archive_channel_changed archive_range_changed
+        archive_evidence_interval archive_sync_invalid archive_sync_endpoint archive_sync_interval archive_sync_unapproved
+        archive_sync_source modbus_device_mismatch modbus_map_unapproved modbus_point_missing modbus_assignment_unbounded
+        modbus_assignment_interval registry_ineligible assignment_unbounded assignment_interval source_ineligible
+        assignment_well_mismatch parameter_missing model_missing parameter_interval physical_interval source_mismatch
+        attachment_missing attachment_purpose attachment_mismatch evidence_unavailable evidence_binding evidence_interval
+        condition_domain timing_envelope coverage_mismatch calibration_binding calibration_incomplete artifact_changed
+        artifact_unavailable model_not_installed'''.split()),
+}
+
+
+def terminal_diagnostics(run,event):
+    """Narrow bounded projection; missing/malformed historical data stays unknown."""
+    allowed=DIAGNOSTIC_REASONS.get(run.reason_code)
+    if run.state!='blocked' or allowed is None or type(event) is not dict or event.get('reason_code')!=run.reason_code:
+        return None
+    details=event.get('details')
+    if type(details) is not dict: return None
+    reasons=details.get('reasons')
+    if (type(reasons) is not list or not 1<=len(reasons)<=32
+        or any(type(code) is not str or len(code)>128 or code not in allowed for code in reasons)):
+        return None
+    result=dict(run_id=str(run.id),version=run.version,state=run.state,reason_code=run.reason_code,reasons=reasons.copy())
+    if run.reason_code=='not_applicable':
+        count,valid=details.get('point_count'),details.get('valid_point_count')
+        coverage=details.get('coverage_fraction')
+        if (type(count) is not int or type(valid) is not int or not 0<=valid<=count<=32768
+            or type(coverage) is not str or len(coverage)>256
+            or re.fullmatch(r'(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?',coverage) is None):
+            return None
+        fraction=Fraction(coverage)
+        if str(fraction)!=coverage or not 0<=fraction<=1: return None
+        result.update(point_count=count,valid_point_count=valid,coverage_fraction=coverage)
+    return result if len(canonical_bytes(result))<=8192 else None
 
 
 def wire(value):
@@ -145,6 +189,16 @@ class InversionQueries:
             self.configure(conn)
             row=conn.execute('SELECT id FROM inversion.results WHERE run_id=%s',(run_id,)).fetchone()
             return str(row[0]) if row else None
+
+    def run_diagnostics(self,run):
+        if run.state!='blocked' or run.reason_code not in DIAGNOSTIC_REASONS: return None
+        with self.read_connect() as conn:
+            self.configure(conn)
+            row=conn.execute("SELECT CASE WHEN octet_length(e.body::text)<=65536 THEN e.body END "
+                "FROM inversion.run_events e JOIN inversion.run_state s ON e.run_id=s.run_id AND e.version=s.version AND e.state=s.state "
+                "WHERE e.run_id=%s AND e.version=%s AND e.state=%s AND s.reason_code=%s AND e.body->>'reason_code'=%s LIMIT 1",
+                (run.id,run.version,run.state,run.reason_code,run.reason_code)).fetchone()
+            return terminal_diagnostics(run,row[0]) if row else None
 
     def preflight(self, request):
         from .runs import RunService

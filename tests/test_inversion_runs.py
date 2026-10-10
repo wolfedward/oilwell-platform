@@ -70,6 +70,8 @@ class RunTests(RunCase):
         self.assertIsNone(self.service.publish(attempt,result,authority(REF)))
         terminal=self.service.get(run.id)
         self.assertEqual((terminal.state,terminal.reason_code),('blocked','not_applicable'))
+        from backend.inversion.queries import InversionQueries
+        self.assertEqual(InversionQueries(self.service.read_connect).run_diagnostics(terminal)['reasons'],['insufficient_coverage'])
         self.assertEqual(self.scalar('SELECT count(*) FROM inversion.results'),0)
         self.assertEqual(self.scalar('SELECT used_bytes FROM inversion.capacity'),run.request_bytes)
     def test_missing_frozen_member_refuses_before_reservation(self):
@@ -86,6 +88,8 @@ class RunTests(RunCase):
                 (uuid4(),self.request.parameter_id,Jsonb(asdict(ACTOR)),Jsonb({})))
         self.assertIsNone(self.service.publish(attempt,prepared,authority(REF)))
         self.assertEqual(self.service.get(run.id).state,'blocked')
+        from backend.inversion.queries import InversionQueries
+        self.assertEqual(InversionQueries(self.service.read_connect).run_diagnostics(self.service.get(run.id))['reasons'],['parameter_pin_changed'])
         self.assertEqual(self.scalar('SELECT count(*) FROM inversion.results'),0)
         self.assertEqual(self.scalar('SELECT used_bytes FROM inversion.capacity'),run.request_bytes)
 

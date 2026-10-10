@@ -12,6 +12,36 @@ from backend.seed import bootstrap_local_auth
 PREFIX = '/api/production-inversion'
 
 
+class EnvelopeTests(unittest.TestCase):
+    def test_definite_noncommit_proof_is_action_and_code_specific(self):
+        from backend.inversion.api import noncommit_details
+        self.assertEqual(noncommit_details('assemblies.create',409,'inversion.attachment_mismatch'),
+                         dict(commit_outcome='not_committed',action='assemblies.create'))
+        for action,status,code in (('exports.create',409,'inversion.attachment_mismatch'),
+                ('parameters.create',409,'inversion.attachment_mismatch'),
+                ('assemblies.create',503,'inversion.attachment_mismatch'),
+                ('assemblies.create',409,'inversion.export_manifest_corrupt'),
+                ('assemblies.create',409,'inversion.idempotency_conflict')):
+            self.assertEqual(noncommit_details(action,status,code),{})
+
+    def test_installed_model_identifier_requires_bounded_string(self):
+        from backend.inversion.api import InversionApi
+        from backend.inversion.errors import InversionContractError
+        from backend.waveforms.commands import Actor
+        from uuid import uuid4
+        actor = Actor('local', '1', 'Author', 'administrator')
+        envelope = {'command': {'key': str(uuid4()), 'expected': {'kind': 'absent'},
+                               'reason': 'Register installed model'}, 'body': {}}
+        for value in (None, True, 1, [], {}, '', ' ', 'a' * 129):
+            with self.subTest(value=value):
+                envelope['body'] = {'installed_id': value}
+                with self.assertRaises(InversionContractError):
+                    InversionApi._envelope('models.create', envelope, actor)
+        for value in ('beam_energy_balance/1', 'not_installed/1'):
+            envelope['body'] = {'installed_id': value}
+            self.assertEqual(InversionApi._envelope('models.create', envelope, actor)[1], envelope['body'])
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -218,6 +248,75 @@ class LiveApiTests(HttpRuntimeMixin, RunCase):
     def setUp(self):
         super().setUp()
         self.start_http()
+
+    def test_attachment_rejection_is_definite_noncommit_and_correctable(self):
+        from copy import deepcopy
+        from uuid import uuid4
+        original=self.assembly_body()
+        before=tuple(self.scalar('SELECT count(*) FROM inversion.'+table) for table in ('assemblies','audit','receipts'))
+        for missing in (False,True):
+            bad=deepcopy(original)
+            bad['installation_evidence'][0]['content_sha256']='0'*64
+            if missing: bad['installation_evidence'][0]['id']=str(uuid4())
+            envelope=self.envelope(bad)
+            status,response=self.http('POST','/assemblies',envelope)
+            self.assertEqual((status,response['code']),(409,'inversion.attachment_mismatch'))
+            self.assertEqual(response['details'],dict(commit_outcome='not_committed',action='assemblies.create'))
+            self.assertEqual(tuple(self.scalar('SELECT count(*) FROM inversion.'+table) for table in ('assemblies','audit','receipts')),before)
+            recovery='/requests/'+envelope['command']['key']+'?action=assemblies.create'
+            self.assertEqual(self.http('GET',recovery)[1]['data'],{'state':'unknown'})
+        status,response=self.http('POST','/assemblies',self.envelope(original))
+        self.assertEqual(status,201,response)
+        self.assertEqual(response['data']['subject_id'],original['assembly_id'])
+
+    def test_models_malformed_scalar_is_400_and_uninstalled_string_is_409(self):
+        before=self.scalar('SELECT count(*) FROM inversion.model_versions')
+        for value in (None,True,1,[],{},'', 'a'*129):
+            self.assertEqual(self.http('POST','/models',self.envelope({'installed_id':value}))[0],400)
+        status,response=self.http('POST','/models',self.envelope({'installed_id':'not_installed/1'}))
+        self.assertEqual((status,response['code']),(409,'inversion.model_not_installed'))
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.model_versions'),before)
+
+    def test_blocked_run_detail_exposes_exact_durable_causes_without_result(self):
+        from dataclasses import replace
+        from uuid import UUID,uuid4
+        from backend.inversion.runtime import worker_services
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.result_codec import encode
+        from backend.inversion.comparison import compare
+        from tests.test_inversion_comparison import prediction
+        from tests.inversion_governance_support import command,REVIEWER
+        worker=worker_services(canonical_bytes({'config_path':str(self.runtime_path)}))
+        for cause in ('not_applicable','input_changed'):
+            status,created=self.http('POST','/runs',self.envelope(self.case['request']))
+            self.assertEqual(status,202,created)
+            attempt=worker.runs.claim(uuid4()); run=worker.runs.get(attempt.run_id)
+            authority=worker.runs._authority(run.authority,run.actor)
+            acquired=worker.acquisition.prepare_input(run.request,run.actor,check=lambda:None)
+            pred=prediction(); prepared=encode(pred,compare(pred,acquired.reference_inputs,acquired.policy),acquired.snapshot)
+            if cause=='not_applicable':
+                body=prepared.body; body.update(prediction_status='not_applicable',prediction_reason_codes=['insufficient_coverage'],coverage_fraction='1/3',valid_point_count=2)
+                prepared=replace(prepared,metadata=canonical_bytes(body))
+            else: self.parameters.revoke(self.request.parameter_id,command(REVIEWER,3))
+            self.assertIsNone(worker.runs.publish(attempt,prepared,authority))
+            terminal=worker.runs.get(run.id)
+            original_event=self.scalar('SELECT body FROM inversion.run_events WHERE run_id=%s AND version=%s',(run.id,terminal.version))
+            status,response=self.http('GET','/runs/'+str(run.id)); self.assertEqual(status,200,response)
+            detail=response['data']; diagnostic=detail['terminal_diagnostics']
+            self.assertEqual((detail['state'],detail['reason_code'],detail['result_id']),('blocked',cause,None))
+            self.assertEqual((diagnostic['run_id'],diagnostic['version'],diagnostic['state'],diagnostic['reason_code']),
+                (str(run.id),terminal.version,'blocked',cause))
+            self.assertEqual(diagnostic['reasons'],['insufficient_coverage'] if cause=='not_applicable' else ['parameter_pin_changed'])
+            if cause=='not_applicable': self.assertEqual((diagnostic['coverage_fraction'],diagnostic['point_count'],diagnostic['valid_point_count']),('1/3',3,2))
+            self.assertEqual(self.http('GET','/runs/'+str(run.id))[1]['data'],detail)
+            self.assertEqual(self.scalar('SELECT body FROM inversion.run_events WHERE run_id=%s AND version=%s',(run.id,terminal.version)),original_event)
+            self.assertIsNone(self.server.inversion_runtime.queries.run_diagnostics(replace(terminal,version=terminal.version-1)))
+            self.assertNotIn('authority',json.dumps(detail)); self.assertNotIn('session',json.dumps(detail)); self.assertNotIn(str(self.runtime_path),json.dumps(detail))
+        self.assertEqual(self.scalar('SELECT count(*) FROM inversion.results'),0)
+        with self.server.database.transaction(None,'test.revoke','role',None) as conn:
+            conn.execute("DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code='administrator') AND permission_id=(SELECT id FROM permissions WHERE code='inversion.read')")
+        with patch.object(self.server.inversion_runtime.queries,'run_diagnostics',side_effect=AssertionError('Read must authorize first')):
+            self.assertEqual(self.http('GET','/runs/'+str(run.id))[0],403)
 
     def test_filtered_parameters_latest_lineage_and_assembly_isolation(self):
         from backend.inversion.contracts import canonical_bytes, strict_json

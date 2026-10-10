@@ -9,6 +9,7 @@ try {
   const prediction=indices.map((power_index,i)=>({power_index,time_ns:`${9007199254741001000n+BigInt(i)*100000000n}/3`,s_m:String(1.234+i/10),load_N:String(32456+i*1000),status:i===2?'invalid':i===4?'unobservable':'valid',reason_codes:i===2?['power_quality']:i===4?['deadpoint']:[],power_W:String(-120.456+i),theta_rad:String(1.234+i),drive_Nm:String(32.456+i),N_Nm:String(22+i),omega_rad_s:'2.345'}));
   const reference=prediction.map((p,i)=>({time_ns:p.time_ns,power_index:p.power_index,valid:p.status==='valid',reason_codes:p.reason_codes,load_value_si:String(Number(p.load_N)+600),displacement_value_si:String(Number(p.s_m)+0.015),load_reason:i===2?'load_quality':null,displacement_reason:null,load_indices:[p.power_index],displacement_indices:[p.power_index],load_weights:['1'],displacement_weights:['1'],load_source:0,displacement_source:0}));
   const filled=[{...prediction[4],load_N:'36456',original_reason_codes:['deadpoint'],periodic_assumption:true,method:'linear',source_indices:[indices[3],indices[5]],source_times_ns:[prediction[3].time_ns,prediction[5].time_ns]}];
+  reference.forEach((point,i)=>point.reference_edge_from_previous=i!==0&&i!==2&&i!==3);
   const handle=mountComparison(root,{prediction,reference,filled,metadata:{source:'synthetic'}});
   check(root.querySelectorAll('[data-chart-kind]').length>=4,'dual card plus power motion torque slots');
   const dual=root.querySelector('[data-chart-kind="comparison"]');

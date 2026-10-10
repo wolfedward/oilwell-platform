@@ -7,9 +7,29 @@ from backend.auth import AuthError, PermissionDenied
 from backend.ingest_reliability.config import _origin
 from backend.waveforms.commands import Actor
 from . import routes
-from .contracts import fields, strict_json, canonical_bytes, identity, InversionCommand, VersionPrecondition
+from .contracts import fields, strict_json, canonical_bytes, identity, text, InversionCommand, VersionPrecondition
 from .errors import InversionContractError
 from .permissions import required_permissions, RUN, SessionAuthority
+
+# Audited service refusal sites occur before their mutation commits. Never
+# infer this from status alone: postcommit reads can also raise conflicts.
+PRECOMMIT_ACTIONS = {
+    'attachment_mismatch': frozenset(('assemblies.create','parameters.submit','parameters.review')),
+    'self_review': frozenset(('parameters.review','models.review','results.review')),
+    'parent_conflict': frozenset(('assemblies.create','parameters.create')),
+    'review_transition': frozenset(('parameters.submit','parameters.review','parameters.revoke',
+        'models.review','models.revoke','results.review','results.revoke')),
+    'version_conflict': frozenset(('assemblies.create','assignments.create','parameters.create',
+        'parameters.submit','parameters.review','parameters.revoke','models.create','models.review',
+        'models.revoke','selections.create','selections.rollback','runs.create','runs.retry',
+        'runs.cancel','results.review','results.revoke','exports.create')),
+}
+
+
+def noncommit_details(action,status,code):
+    if status==409 and code.startswith('inversion.') and action in PRECOMMIT_ACTIONS.get(code[10:],()):
+        return dict(commit_outcome='not_committed',action=action)
+    return {}
 
 
 class InversionApi:
@@ -60,7 +80,7 @@ class InversionApi:
             if routes.PREFIX not in path: return False
             parsed=None
         if parsed is not None and not (path.startswith(routes.PREFIX) or parsed.path.startswith(routes.PREFIX)): return False
-        previous=h.connection.gettimeout()
+        previous=h.connection.gettimeout(); action=None
         try:
             h.connection.settimeout(3)
             if parsed is None or not path.startswith(routes.PREFIX) or parsed.scheme or parsed.netloc or parsed.fragment or '#' in path or re.search(r'[\x00-\x20\x7f]',path): raise InversionContractError()
@@ -122,7 +142,7 @@ class InversionApi:
                     status=503 if error.code in ('inversion.capacity_exhausted','inversion.slot_exhausted') else error.status
                     code,message=error.code,'Inversion operation refused'
                 else: status,code,message=503,'inversion.unavailable','Inversion operation unavailable; no durable success confirmed'
-            try: self._json(status,dict(code=code,message=message,details={}))
+            try: self._json(status,dict(code=code,message=message,details=noncommit_details(action,status,code)))
             except (OSError,ValueError): pass
         finally: h.connection.settimeout(previous)
         return True
@@ -142,7 +162,8 @@ class InversionApi:
         if action.endswith('.review'):
             fields(body,('decision',))
             if body['decision'] not in ('approve','reject'): raise InversionContractError()
-        if action=='models.create': fields(body,('installed_id',))
+        if action=='models.create':
+            fields(body,('installed_id',)); text(body['installed_id'],maximum=128)
         if action=='exports.create':
             fields(body,('result_id','intent','format')); identity(body['result_id'])
             if body['intent'] not in ('quantitative','evidence') or body['format'] not in ('json','csv'): raise InversionContractError()
@@ -158,7 +179,9 @@ class InversionApi:
                 if error.code=='inversion.parameter_missing':
                     raise InversionError('parameter_missing',status=404) from None
                 raise
-        if action=='runs.get': return run_view(services['runs'].get(id),runtime.queries.result_id(id))
+        if action=='runs.get':
+            run=services['runs'].get(id)
+            return run_view(run,runtime.queries.result_id(id)) | {'terminal_diagnostics':runtime.queries.run_diagnostics(run)}
         if action.startswith('results.'):
             view=services['results'].get(id,actor=actor,**({'include_input_metadata':True} if action=='results.get' and filters.get('include_input_metadata') else {}))
             if action=='results.points': return point_page(view,**filters)

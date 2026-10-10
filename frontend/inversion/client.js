@@ -13,6 +13,7 @@ const deniedError = () => Object.assign(new Error('当前登录会话无权继�
 const DEFINITE_PRECOMMIT_REJECTIONS = new Set([
   'inversion.self_review', 'inversion.version_conflict', 'inversion.parent_conflict',
   'inversion.review_transition',
+  'inversion.attachment_mismatch',
 ]);
 
 export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.api)} = {}) {
@@ -84,7 +85,8 @@ export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.a
       return value;
     } catch (error) {
       const definite = error?.status === 400 && error?.code === 'inversion.contract_invalid'
-        || error?.status === 409 && DEFINITE_PRECOMMIT_REJECTIONS.has(error?.code);
+        || error?.status === 409 && DEFINITE_PRECOMMIT_REJECTIONS.has(error?.code)
+          && error?.details?.commit_outcome === 'not_committed' && error.details.action === saved.action;
       if (definite && !session.uncertain.has(slot)) session.pending.delete(slot);
       else session.uncertain.add(slot);
       throw error;

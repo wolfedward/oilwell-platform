@@ -1,6 +1,7 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><main id="root"></main><pre id="result">pending</pre>
 <style>#result{display:none}body{padding:20px}#root{max-width:1200px;margin:auto}</style><script type="module">
 const mode='FIXTURE_MODE',checks=[],calls=[];
+const encodedRows=ENCODED_ROWS;
 const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
 const wait=async(fn)=>{const end=Date.now()+7000;while(!fn()){if(Date.now()>end)throw Error('timeout '+fn);await new Promise(r=>setTimeout(r,10));}};
 const id='11111111-1111-4111-8111-111111111111',run='22222222-2222-4222-8222-222222222222',digest='a'.repeat(64),base='/api/production-inversion';
@@ -16,7 +17,7 @@ function codecRow(kind,i){
  value.columns.push('load_reason','displacement_reason','load_weights','displacement_weights');
  value.values.push(i===2?'load_quality':null,i===3?'displacement_quality':null,['1'],['1']);return value;
 }
-let total=mode==='paging'?65536:mode==='bounds'?32769:8;
+let total=encodedRows.length||(mode==='paging'?65536:mode==='bounds'?32769:8);
 const json=(data,status=200)=>new Response(JSON.stringify({ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
 window.fetch=async(path,options={})=>{
  const url=new URL(path,'http://fixture'),route=url.pathname,body=options.body?JSON.parse(options.body):null;
@@ -35,6 +36,7 @@ window.fetch=async(path,options={})=>{
  if(route.endsWith('/points')){
   if(hold){options.signal.addEventListener('abort',()=>{aborted=true;held?.(json({result_id:id,content_sha256:digest,offset:0,limit:1000,total:0,rows:[]}))});return new Promise(resolve=>held=resolve)}
   const offset=Number(url.searchParams.get('offset')),limit=Number(url.searchParams.get('limit'));
+  if(encodedRows.length)return json({result_id:id,content_sha256:digest,offset,limit,total,rows:encodedRows.slice(offset,offset+limit)});
   return json({result_id:id,content_sha256:mismatch&&offset>0?'WRONG':digest,offset,limit,total,rows:Array.from({length:Math.min(limit,total-offset)},(_,j)=>{const n=offset+j;return codecRow(mode==='bounds'||n<total/2?'prediction':'comparison',mode==='bounds'?n:n%(total/2))})});
  }
  if(route.endsWith('/review')){review={state:body.body.decision==='approve'?'approved':'rejected',version:1};return json({id,version:1})}
@@ -58,7 +60,16 @@ try {
  check(root.querySelector('[data-chart-kind="comparison"]'),'actual result draws server rows');
  check(root.textContent.includes('完整几何冲程未提供'),'no invented geometric stroke');
  check(root.textContent.includes('有效预测点位移跨度'),'span correctly named');
- if(mode==='reference-support'){
+ if(mode==='reference-edges'||mode==='reference-legacy'){
+  const paths=[...root.querySelectorAll('[data-series="reference"] path')];
+  check(paths.length===2&&paths.every(path=>!path.getAttribute('d').includes('L')),'measured gap produces two isolated reference paths with no connecting line');
+  check(root.querySelector('[data-series="prediction"]').childElementCount===0,'prediction deadpoint remains independent');
+  check(root.textContent.includes('独立点'),'isolated coordinates have explicit point-only interaction guidance');
+  root.querySelector('[data-trace-toggle="prediction"]').click();
+  const hit=root.querySelector('[data-chart-kind="comparison"] [data-chart-hit]');
+  for(const key of ['Home','End']){hit.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true}));check(root.querySelector('[data-chart-kind="comparison"] circle').getAttribute('visibility')==='visible','isolated measured endpoint keyboard accessible '+key);}
+  if(mode==='reference-legacy')check(root.textContent.includes('参考连续性未知'),'legacy missing edge support explicitly unknown');
+ }else if(mode==='reference-support'){
   const label=[...root.querySelectorAll('dt')].find(node=>node.textContent==='已对齐参考载荷范围');
   check(label.nextElementSibling.textContent==='10.00 — 40.00 kN','reference range survives rejected prediction and excludes own quality failures');
   check(root.querySelector('[data-series="prediction"]').childElementCount===0,'unobservable prediction not fabricated');

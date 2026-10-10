@@ -6,7 +6,7 @@ const wait=async(fn)=>{const end=Date.now()+5000;while(!fn()){if(Date.now()>end)
 const base='/api/production-inversion',A='11111111-1111-4111-8111-111111111111',B='22222222-2222-4222-8222-222222222222',C='33333333-3333-4333-8333-333333333333';
 const P1='44444444-4444-4444-8444-444444444444',P2='55555555-5555-4555-8555-555555555555',M='66666666-6666-4666-8666-666666666666';
 const calls=[],session={},root=document.querySelector('#root');let status409=false,mutations=0;
-const answer=(data,status=200,code='inversion.contract_invalid')=>new Response(JSON.stringify(status>=400?{code,message:'refused',details:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
+const answer=(data,status=200,code='inversion.contract_invalid',action)=>new Response(JSON.stringify(status>=400?{code,message:'refused',details:action?{commit_outcome:'not_committed',action}:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
 const assembly=(id,version=1)=>({id,version,valid_from:'2026-01-01T00:00:00Z',valid_to:null,body:{assembly_id:id,manufacturer:'Maker',model:'Beam',asset_number:'ASSET',mechanism:'conventional_crank_balanced',source_kind:'field_measurement',source_organization:'Field Lab',valid_from:'2026-01-01T00:00:00Z',valid_to:null,parent_version:version===1?null:version-1,installation_evidence:[]}});
 const body1={schema:'inversion.parameter-set/1',assembly_id:A,assembly_version:1,source_kind:'field_measurement',valid_from:'2026-01-01T00:00:00Z',valid_to:null,parent_version:null,geometry:{pivot_x_m:'1.250000000000000001',crank_radius_m:'0.75',evidence_refs:[{id:C,content_sha256:'a'.repeat(64),purpose:'geometry',source_description:'original report'}]},provenance:{coverage:{max_time_alignment_error_ns:'1250000',scopes:[]}}};
 const body2=structuredClone(body1);body2.parent_version=1;body2.geometry.pivot_x_m='1.260000000000000001';body2.geometry.evidence_refs[0].content_sha256='b'.repeat(64);body2.valid_to='2027-01-01T00:00:00Z';
@@ -22,7 +22,7 @@ const versions=[{assembly_id:A,version_id:C,version:2,content_sha256:'b'.repeat(
 function page(items,url){const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||50);return {offset,limit,items:items.slice(offset,offset+limit)}};
 async function http(path,options={}){
  const url=new URL(path,'http://local'),route=url.pathname.slice(base.length),entry={path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(entry);
- if(route==='/assemblies')return answer(page(mode==='round1-pagination'?Array.from({length:22},(_,i)=>assembly(i===0?A:i===21?B:`${(i+10).toString(16).padStart(8,'0')}-9999-4999-8999-999999999999`)): [assembly(A,2)],url));
+ if(route==='/assemblies'&&options.method!=='POST')return answer(page(mode==='round1-pagination'?Array.from({length:22},(_,i)=>assembly(i===0?A:i===21?B:`${(i+10).toString(16).padStart(8,'0')}-9999-4999-8999-999999999999`)): [assembly(A,2)],url));
  if(route==='/assemblies/'+A)return answer(assembly(A,2));if(route==='/assemblies/'+B)return answer(assembly(B));
  if(route.endsWith('/versions'))return answer({assembly_id:route.split('/')[2],...page(route.includes(A)?versions:[],url)});
  if(route==='/parameters'){
@@ -37,7 +37,9 @@ async function http(path,options={}){
  if(options.method==='POST'){
    mutations++;
    if(mode==='round1-rejection'&&route==='/parameter-versions'&&mutations===1)return answer({},400,'inversion.contract_invalid');
-   if(mode==='round1-rejection'&&route.endsWith('/review')&&status409)return answer({},409,'inversion.self_review');
+   if(mode==='round1-rejection'&&route.endsWith('/review')&&status409)return answer({},409,'inversion.self_review','parameters.review');
+   if(mode==='round1-attachment-pending'&&route==='/assemblies'&&mutations===1)throw Error('lost response');
+   if(mode.startsWith('round1-attachment')&&route==='/assemblies'&&mutations<=(mode.endsWith('pending')?2:1))return answer({},409,'inversion.attachment_mismatch','assemblies.create');
    if(mode==='round1-postcommit'&&route==='/parameter-versions'&&mutations===1)return answer({},409,'inversion.export_manifest_corrupt');
    if(mode==='round1-pending'&&route==='/parameter-versions'&&mutations===1)throw Error('lost response');
    if(mode==='round1-pending'&&route==='/parameter-versions'&&mutations===2)return answer({},409,'inversion.self_review');
@@ -50,7 +52,31 @@ const all=['inversion.read','inversion.parameters.manage','inversion.parameters.
 try{
  const {renderProductionParameters}=await import(PAGE),{api}=await import(API);window.fetch=http;
  const ctx=(permissions=all,params={},authSession=session)=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession,capabilities:{production_inversion:{enabled:true,status:'ready'}},page:{label:'机械参数'},pageHeader:()=>'<h1>机械参数</h1>',params,isCurrent:()=>true,registerDispose:()=>{},navigate:async(_,next)=>renderProductionParameters(ctx(permissions,next,authSession))});
- if(mode==='round1-rejection'){
+ if(mode.startsWith('round1-attachment')){
+   await renderProductionParameters(ctx());let form=root.querySelector('[data-inversion-action="assemblies.create"]');
+   form.querySelector('[name=body]').value=JSON.stringify({...assembly(B).body,installation_evidence:[{id:C,content_sha256:'0'.repeat(64)}]});
+   form.querySelector('[name=reason]').value='Correctable attachment';form.requestSubmit();
+   await wait(()=>calls.some(c=>c.method==='POST'&&c.path===base+'/assemblies'));
+   await wait(()=>form.textContent.includes(mode.endsWith('pending')?'待确认':'版本、证据'));
+   const first=calls.find(c=>c.method==='POST'&&c.path===base+'/assemblies');
+   if(mode.endsWith('pending')){
+    form.querySelector('[data-inversion-recover]').click();await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);
+    form.querySelector('[data-inversion-replay]').click();await wait(()=>calls.filter(c=>c.method==='POST'&&c.path===base+'/assemblies').length===2);
+    await wait(()=>form.textContent.includes('版本、证据'));
+    check(form.querySelector('[name=body]').disabled,'attachment rejection after timeout retains frozen draft');
+    await renderProductionParameters(ctx());form=root.querySelector('[data-inversion-action="assemblies.create"]');
+    check(form.querySelector('[data-inversion-saved]').textContent.includes(first.body.command.key),'remount retains original uncertain key');
+    form.querySelector('[data-inversion-recover]').click();await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);form.querySelector('[data-inversion-replay]').click();
+   }else{
+    check(!form.querySelector('[name=body]').disabled,'first attachment mismatch restores editable assembly draft');
+    const corrected=JSON.parse(form.querySelector('[name=body]').value);corrected.installation_evidence[0].content_sha256='a'.repeat(64);
+    form.querySelector('[name=body]').value=JSON.stringify(corrected);form.requestSubmit();
+   }
+   await wait(()=>form.textContent.includes('操作已提交'));
+   const last=calls.filter(c=>c.method==='POST'&&c.path===base+'/assemblies').at(-1);
+   if(mode.endsWith('pending'))check(JSON.stringify(first.body)===JSON.stringify(last.body),'uncertain rejection replays exact original key/body');
+   else check(first.body.command.key!==last.body.command.key&&last.body.body.installation_evidence[0].content_sha256==='a'.repeat(64),'corrected attachment uses new key in same session');
+ }else if(mode==='round1-rejection'){
    await renderProductionParameters(ctx());const form=root.querySelector('[data-inversion-action="parameters.create"]');
    form.querySelector('[name=body]').value=JSON.stringify({...body2,assembly_id:A,parent_version:2});form.querySelector('[name=reason]').value='Draft correction';form.requestSubmit();
    await wait(()=>form.textContent.includes('核对字段'));check(!form.querySelector('[name=body]').disabled,'definite 400 restores editable draft');

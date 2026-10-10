@@ -285,6 +285,39 @@ def applicability_with_cursor(cur,request,bucket,observation,selected,source_ran
         external_evidence_admission_required=True,field_accuracy_certified=False)
 
 
+def observation_applicability(value,observation):
+    """Compare admitted facts over exact observation support, retaining history.
+
+    Only effective closure endpoints and their closure counters are normalized.
+    Stable period identities, starts, immutable content, review pins, registry
+    state, map versions and all other facts remain part of equality. Each side
+    must itself cover the complete uncertain support before normalization.
+    """
+    import json
+    from datetime import datetime
+    result=json.loads(canonical_bytes(value))
+    start,end,u=(Fraction(observation[key]) for key in ('start_ns','end_ns','uncertainty_ns'))
+    def interval(record,counter=None):
+        if record is None: return
+        # Stored DB projections use isoformat(), which may omit zero fractions;
+        # these are server-owned snapshots, not the stricter request UTC wire.
+        lower=datetime.fromisoformat(record['valid_from'])
+        upper=datetime.fromisoformat(record['valid_to']) if record['valid_to'] else None
+        if covers_observation(lower,upper,start,end,u):
+            record.pop('valid_to')
+            if counter: record.pop(counter,None)
+    interval(result.get('assignment'),'version')
+    interval(result.get('mechanical'),'revision')
+    for mapping in result.get('modbus_maps',()): interval(mapping['assignment'])
+    registry=result.get('registry')
+    if registry is not None:
+        registry.pop('revision',None)
+        for source in registry.get('sources',()):
+            for key in ('states','bindings'):
+                for period in source.get(key,()): interval(period)
+    return result
+
+
 def recheck_with_cursor(cur,snapshot) -> tuple[str,...]:
     """Caller holds waveform → registry → inversion, then any payer/capacity.
 
@@ -321,8 +354,8 @@ def recheck_with_cursor(cur,snapshot) -> tuple[str,...]:
     try:
         _,current=applicability_with_cursor(cur,request,body['accounting_bucket'],body['observation'],
             {key:ChannelPin.from_wire(strict_json(canonical_bytes(value))) for key,value in body['channel_pins'].items()},body['source_ranges'])
-        old=dict(body['applicability']); current['registry'].pop('revision',None)
-        old['registry']=dict(old['registry']); old['registry'].pop('revision',None)
+        old=observation_applicability(body['applicability'],body['observation'])
+        current=observation_applicability(current,body['observation'])
         if canonical_bytes(current)!=canonical_bytes(old): reasons.append('applicability_changed')
     except InversionError as error:
         reasons.append(error.code.removeprefix('inversion.'))

@@ -95,6 +95,8 @@ class ComparisonTests(unittest.TestCase):
             self.assertEqual(report.coverage['joint_fraction'].value, 0)
             self.assertIsNone(report.primary['load_mae'].value)
             self.assertIsNone(report.work['prediction_valid_segments'].value)
+            self.assertEqual([e.reference_edge_from_previous for e in report.evaluations], [False, False])
+            self.assertTrue(all(e.load.reason is None and e.displacement.reason is None for e in report.evaluations))
         pred = replace(pred, points=(pred.points[0], replace(pred.points[1], power_index=2)))
         self.assertEqual(self.compare(pred).coverage['joint_fraction'].value, 0)
 
@@ -110,6 +112,17 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(report.primary['load_mae'].value, 0.)
         report = self.compare(pred, ref, replace(policy(), reference_max_gap_ns=10**8))
         self.assertIsNone(report.primary['load_mae'].value)
+
+    def test_measured_edges_survive_prediction_deadpoints_and_gap_ceiling(self):
+        pred=prediction((0,1,2),(10.,10.,10.))
+        pred=replace(pred,points=(pred.points[0],replace(pred.points[1],status='unobservable',
+            load_N=None,reason_codes=('deadpoint',)),pred.points[2]))
+        ref=reference((0,1,2),(10,20,30))
+        report=self.compare(pred,ref)
+        self.assertEqual([e.reference_edge_from_previous for e in report.evaluations],[False,True,True])
+        self.assertEqual(report.coverage['joint_fraction'].value,0)
+        report=self.compare(pred,ref,replace(policy(),reference_max_gap_ns=10**8))
+        self.assertEqual([e.reference_edge_from_previous for e in report.evaluations],[False,False,False])
 
     def test_no_cycle_extrapolation_or_implicit_closure(self):
         pred = prediction((1, 2), (12., 12.))
@@ -179,6 +192,12 @@ class ComparisonTests(unittest.TestCase):
         report = self.compare(prediction((0, 1), (0., 1e200)), reference((0, 1), (0, 10**200)))
         self.assertAlmostEqual(report.primary['load_correlation'].value, 1.)
         self.assertIsNotNone(report.primary['load_rmse'].value)
+
+    def test_tiny_representable_correlation_does_not_underflow(self):
+        for sign in (1, -1):
+            report = self.compare(prediction((0, 1, 2), (0., float(sign), 0.)),
+                                  reference((0, 1, 2), (-1, Fraction(1, 10**200), 1)))
+            self.assertAlmostEqual(report.primary['load_correlation'].value / 5e-201, sign)
 
     def test_relative_mae_uses_absolute_reference_integral(self):
         report = self.compare(prediction((0, 2), (-8., 12.)), reference((0, 2), (-10, 10)))

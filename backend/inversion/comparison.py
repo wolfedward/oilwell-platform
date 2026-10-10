@@ -43,6 +43,7 @@ class Evaluation:
     displacement: ReferenceValue
     valid: bool
     reason_codes: tuple[str, ...]
+    reference_edge_from_previous: bool
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,7 @@ def _metrics(segments, values, policy):
         if vr == 0 or vp == 0:
             result[name+'_correlation'] = Metric(None, '1', 'constant_reference' if vr == 0 else 'constant_prediction')
         else:
-            magnitude = math.sqrt(float(cov*cov/(vp*vr)))
+            magnitude = _sqrt_metric(cov*cov/(vp*vr), '1').value
             result[name+'_correlation'] = Metric(-magnitude if cov < 0 else magnitude, '1')
         if name == 'load':
             # Relative MAE = 100*integral|error|/integral|reference|.
@@ -190,7 +191,7 @@ def _report(prediction, reference, policy, filled_indices=frozenset()):
     displacement = _Reference(reference.displacement, cycle, policy)
     evaluations, rows = [], []
     reasons = Counter()
-    for p in prediction.points:
+    for i, p in enumerate(prediction.points):
         l, s = load.at(p.time_ns), displacement.at(p.time_ns)
         bad = list(p.reason_codes if p.status != 'valid' else ())
         if p.status != 'valid' and not bad:
@@ -199,7 +200,13 @@ def _report(prediction, reference, policy, filled_indices=frozenset()):
         if p.status == 'valid' and not all(v is not None and math.isfinite(v) for v in (p.load_N, p.s_m)):
             bad.append('invalid_prediction_value')
         ok = p.status == 'valid' and not bad
-        evaluations.append(Evaluation(p.time_ns, p.power_index, l, s, ok, tuple(bad)))
+        previous = prediction.points[i-1] if i else None
+        reference_edge = bool(previous is not None and p.power_index == previous.power_index+1
+            and all(v.reason is None and v.value_si is not None
+                    for v in (l, s, evaluations[-1].load, evaluations[-1].displacement))
+            and load.supports(previous.time_ns, p.time_ns)
+            and displacement.supports(previous.time_ns, p.time_ns))
+        evaluations.append(Evaluation(p.time_ns, p.power_index, l, s, ok, tuple(bad), reference_edge))
         reasons.update(set(bad))
         rows.append((Fraction(p.load_N), l.value_si, Fraction(p.s_m), s.value_si) if ok else None)
     segments = []

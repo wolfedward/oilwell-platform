@@ -5,6 +5,31 @@ import {mountResultDetail,runStateText} from './results.js';
 const RUN_PERMISSIONS=['inversion.run','waveform.read','waveform.raw.read','waveform.export'];
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+const DIAGNOSTIC_CAUSES={
+  insufficient_coverage:'有效支撑不足',no_valid_points:'没有可用的预测点',full_cycle_unconfirmed:'完整物理周期尚未确认',
+  parameter_pin_changed:'参数内容或复核版本已变化',model_pin_changed:'模型内容或复核版本已变化',
+  selection_changed:'持久化选用已变化',pair_review_changed:'配对复核已变化',evidence_changed:'证据内容或审批已变化',
+  capture_changed:'采集记录已变化或受限',assignment_interval:'总成与井的有效期未覆盖观测',
+  physical_interval:'机械版本有效期未覆盖观测',parameter_interval:'参数有效期未覆盖观测',
+  operating_condition_interval:'工况有效期未覆盖观测',registry_ineligible:'设备登记或井归属无法覆盖观测',
+  modbus_assignment_interval:'Modbus点表有效期未覆盖观测',applicability_changed:'观测适用的依赖事实已变化',
+};
+
+function appendRunDiagnostics(root,run) {
+  const detail=run.terminal_diagnostics;
+  if(!detail||detail.run_id!==run.run_id||detail.version!==run.version||detail.state!==run.state
+    ||detail.reason_code!==run.reason_code||!Array.isArray(detail.reasons)||!detail.reasons.length||detail.reasons.length>32){
+    root.append(element('p','诊断详情不可用。请重新读取运行，并核对当前输入与审批记录。'));return;
+  }
+  const section=element('section');section.dataset.runDiagnostics='';
+  for(const code of detail.reasons)section.append(element('p',DIAGNOSTIC_CAUSES[code]||'输入证据或适用范围未通过当前核验'));
+  if(run.reason_code==='not_applicable'){
+    section.append(element('p',`有效支撑比例 ${detail.coverage_fraction} · 有效点 ${detail.valid_point_count} / ${detail.point_count}`),
+      element('p','请检查角度完整周期、原始通道质量与缺口，并核对已批准的适用范围；确认后重新提交。'));
+  }else section.append(element('p','请重新读取参数、模型选用、配对复核和有效期，核对变更后重新预检；原冻结输入不会自动改写。'));
+  root.append(section);
+}
+
 function choice(root,label,name) {
   const wrap=element('label',label),select=element('select');select.name=name;wrap.append(select);root.append(wrap);return select;
 }
@@ -102,10 +127,10 @@ export function mountProductionInversion(ctx,client=createInversionClient(ctx)) 
   function clearRunForms(){runForms.splice(0).forEach(form=>form.dispose());}
   function showRun(run,own=runGeneration){
     if(!current()||own!==runGeneration||run.run_id!==runId)return;
-    const signature=run.version+':'+run.state+':'+run.reason_code;
+    const signature=run.version+':'+run.state+':'+run.reason_code+':'+JSON.stringify(run.terminal_diagnostics??null);
     if(runVersion===signature)return;runVersion=signature;clearRunForms();
     runRoot.replaceChildren(element('h2',runStateText(run)),element('p',`运行 ${run.run_id} · ${run.reason_code||'无附加原因'}`));
-    if(run.state==='blocked')runRoot.append(element('p','请核对角度通道、当前参数证据与配对复核；原输入不会被自动调相位或重新选用。'));
+    if(run.state==='blocked')appendRunDiagnostics(runRoot,run);
     const expected={kind:'match',version:run.version};
     if(['queued','running'].includes(run.state)&&!run.cancelling&&run.reason_code!=='cancel_requested'&&ctx.permissions.has('inversion.run')){
       runForms.push(mountActionForm(runRoot,client,{action:'runs.cancel',path:`/runs/${run.run_id}/cancel`,permission:'inversion.run',expected,label:'取消运行'},value=>{showRun(value.run||value,own);}));

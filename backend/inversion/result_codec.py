@@ -20,7 +20,8 @@ from .transactions import InversionError
 MAX_RESULT=16*1024**2
 INTERMEDIATES=tuple('theta_rad omega_rad_s alpha_rad_s2 angle_indices window_span_ns residual_rad condition speed_error_bound_rad_s theta_error_estimate_rad power_W motor_speed_rad_s loss_W loss_error_W loss_numerical_error_W drive_Nm J_m torque_bound_Nm factor_bound_m N_Nm friction_Nm U_prime_Nm M_kg_m2 M_prime_kg_m2 nominal_load_N numerical_torque_error_Nm geometry_factor_error_m geometry_displacement_error_m energy_numerical_torque_error_Nm'.split())
 POINT_COLUMNS=('time_ns','power_index','s_m','load_N','error_bound_N','status','reason_codes')+INTERMEDIATES
-EVALUATION_COLUMNS=('time_ns','power_index','valid','reason_codes','load_value_si','load_indices','load_weights','load_source','load_reason','displacement_value_si','displacement_indices','displacement_weights','displacement_source','displacement_reason')
+LEGACY_EVALUATION_COLUMNS=('time_ns','power_index','valid','reason_codes','load_value_si','load_indices','load_weights','load_source','load_reason','displacement_value_si','displacement_indices','displacement_weights','displacement_source','displacement_reason')
+EVALUATION_COLUMNS=LEGACY_EVALUATION_COLUMNS+('reference_edge_from_previous',)
 FILL_COLUMNS=tuple('time_ns power_index s_m load_N original_reason_codes source_indices weights source_times_ns periodic_assumption method'.split())
 
 def exact(value):
@@ -52,14 +53,32 @@ class PreparedResult:
         shapes={'prediction':POINT_COLUMNS,'comparison':EVALUATION_COLUMNS,
                 'display_only_comparison':EVALUATION_COLUMNS,'display_only_fills':FILL_COLUMNS}
         counts={name:0 for name in shapes}
+        comparison_shapes={}
+        previous_evaluation={}
         for chunk in self.chunks:
             if type(chunk) is not bytes: raise InversionError('result_chunk_invalid')
             block=json.loads(chunk); kind=block.get('kind')
+            columns=block.get('columns')
+            comparison_kind=kind in ('comparison','display_only_comparison')
+            accepted=(list(EVALUATION_COLUMNS),list(LEGACY_EVALUATION_COLUMNS)) if comparison_kind else (list(shapes.get(kind,())),)
             if (canonical_bytes(block)!=chunk or set(block)!= {'kind','columns','rows'} or kind not in shapes
-                or block['columns']!=list(shapes[kind]) or type(block['rows']) is not list
+                or columns not in accepted or type(block['rows']) is not list
                 or not 1<=len(block['rows'])<=256
-                or any(type(row) is not list or len(row)!=len(shapes[kind]) for row in block['rows'])):
+                or any(type(row) is not list or len(row)!=len(columns) for row in block['rows'])):
                 raise InversionError('result_chunk_invalid')
+            if comparison_kind:
+                if kind in comparison_shapes and comparison_shapes[kind]!=columns:
+                    raise InversionError('result_chunk_invalid')
+                comparison_shapes[kind]=columns
+                for row in block['rows']:
+                    if columns==list(EVALUATION_COLUMNS):
+                        edge=row[-1]; previous=previous_evaluation.get(kind)
+                        try:
+                            valid_edge=(type(edge) is bool and (not edge or previous is not None
+                                and int(row[1])==int(previous[1])+1 and Fraction(row[0])>Fraction(previous[0])))
+                        except (ValueError,TypeError,ZeroDivisionError): valid_edge=False
+                        if not valid_edge: raise InversionError('result_chunk_invalid')
+                    previous_evaluation[kind]=row
             counts[kind]+=len(block['rows'])
             if counts[kind]>32768: raise InversionError('result_size_limit')
         if counts['prediction']!=body['point_count']: raise InversionError('result_point_count_invalid')
@@ -107,6 +126,7 @@ def encode(prediction,comparison,snapshot)->PreparedResult:
             row=[str(e.time_ns),str(e.power_index),e.valid,list(e.reason_codes)]
             for ref in (e.load,e.displacement):
                 row.extend((exact(ref.value_si),exact(ref.indices),exact(ref.weights),source(ref.source),ref.reason))
+            row.append(e.reference_edge_from_previous)
             yield row
     def summary(report):
         if report is None: return None

@@ -293,6 +293,45 @@ class CodecTests(unittest.TestCase):
         self.assertLessEqual(encoded.result_bytes,16*1024**2)
         self.assertFalse(encoded.body['field_accuracy_certified'])
 
+    def test_reference_edges_round_trip_and_legacy_columns_remain_immutable(self):
+        import json,tempfile
+        from pathlib import Path
+        from backend.inversion.result_codec import encode,write,read,PreparedResult
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.comparison import compare
+        from tests.test_inversion_comparison import prediction,reference,policy
+        pred=prediction((0,3),(12.,12.))
+        result=encode(pred,compare(pred,reference((0,1,2,3),(10,None,10,10)),policy()),self.snapshot())
+        block=json.loads(result.chunks[1])
+        self.assertIn('reference_edge_from_previous',block['columns'])
+        self.assertEqual([row[-1] for row in block['rows']],[False,False])
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'result.bin'; write(result,path); reread=read(path,result.snapshot)
+            self.assertEqual((reread.content_sha256,reread.chunks),(result.content_sha256,result.chunks))
+        block['columns'].pop(); [row.pop() for row in block['rows']]
+        old_chunks=(result.chunks[0],canonical_bytes(block))
+        legacy=PreparedResult(result.snapshot,result.metadata,old_chunks)
+        self.assertEqual(legacy.chunks,old_chunks)
+        self.assertNotEqual(legacy.content_sha256,result.content_sha256)
+        for bad in (None,1,'true'):
+            block=json.loads(result.chunks[1]); block['rows'][1][-1]=bad
+            with self.assertRaises(RuntimeError):
+                PreparedResult(result.snapshot,result.metadata,(result.chunks[0],canonical_bytes(block)))
+
+    def test_reference_edge_predecessor_is_bound_across_chunks(self):
+        import json
+        from backend.inversion.result_codec import encode,PreparedResult
+        from backend.inversion.contracts import canonical_bytes
+        from backend.inversion.comparison import compare
+        from tests.test_inversion_comparison import prediction,reference,policy
+        times=tuple(range(258)); pred=prediction(times,(10.,)*258)
+        result=encode(pred,compare(pred,reference(times,(10,)*258),policy()),self.snapshot())
+        block=json.loads(result.chunks[-1])
+        self.assertEqual((block['kind'],block['rows'][0][1],block['rows'][0][-1]),('comparison','256',True))
+        block['rows'][0][1]='999'
+        with self.assertRaises(RuntimeError):
+            PreparedResult(result.snapshot,result.metadata,result.chunks[:-1]+(canonical_bytes(block),))
+
     def test_result_metadata_alone_is_subject_to_aggregate_limit(self):
         from backend.inversion.result_codec import encode
         from backend.inversion.comparison import compare

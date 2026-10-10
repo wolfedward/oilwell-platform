@@ -266,7 +266,8 @@ class RunService:
                 run=self._read(cur,identifier,for_update=True)
                 if run.state=='running': self._terminal(cur,run,'failed','deadline_expired')
 
-    def publish(self,attempt,prepared,authority)->ResultRecord:
+    def publish(self,attempt,prepared,authority)->ResultRecord | None:
+        """Publish an applicable result, or return None after durable blocking."""
         from .result_codec import PreparedResult
         if type(prepared) is not PreparedResult: raise ValueError('Validated prepared result required')
         before=self.get(attempt.run_id)
