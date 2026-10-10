@@ -1,0 +1,79 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href=STYLE_MODULE><div id="app"></div><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const mode='FIXTURE_MODE', PAGE=PAGE_MODULE, APP=APP_MODULE, API=API_MODULE;
+const checks=[];const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
+const wait=async(fn)=>{const end=Date.now()+4000;while(!fn()){if(Date.now()>end)throw Error('timeout');await new Promise(r=>setTimeout(r,10));}};
+const json=(value,status=200)=>new Response(JSON.stringify(status>=400?{code:'inversion.unavailable',message:'unavailable',details:{}}:{ok:true,data:value}),{status,headers:{'Content-Type':'application/json'}});
+const assembly='11111111-1111-4111-8111-111111111111', parameter='22222222-2222-4222-8222-222222222222', model='33333333-3333-4333-8333-333333333333';
+const base='/api/production-inversion';const calls=[];
+const physical={schema:'inversion.parameter-set/1',assembly_id:assembly,assembly_version:2,source_kind:'field_measurement',valid_from:'2026-01-01T00:00:00Z',valid_to:'2027-01-01T00:00:00Z',parent_version:null,
+ geometry:{pivot_x_m:'1.25',crank_radius_m:'0.75',evidence_refs:[{id:assembly,content_sha256:'a'.repeat(64),purpose:'geometry',source_description:'<img src=x onerror=alert(1)>'}]},
+ provenance:{source_organization:'Field Lab',coverage:{max_time_alignment_error_ns:'1250000',scopes:[{scope:'geometry_envelope',attachment_pin:{id:assembly,content_sha256:'a'.repeat(64),purpose:'geometry_envelope',source_description:'scope'},basis:'measured'}]}}};
+const detail={id:parameter,assembly_id:assembly,assembly_version:2,version:3,content_sha256:'b'.repeat(64),review_version:2,review_state:'submitted',valid_from:physical.valid_from,valid_to:physical.valid_to,body:physical};
+function response(path,options={}){calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null,signal:options.signal});
+ if(path===base+'/assemblies')return json({offset:0,limit:50,items:[{id:assembly,version:2,valid_from:physical.valid_from,valid_to:physical.valid_to,body:{assembly_id:assembly,manufacturer:'Maker',model:'Unit',asset_number:'A1',mechanism:'conventional_crank_balanced',source_kind:'field_measurement',source_organization:'Field Lab',valid_from:physical.valid_from,valid_to:physical.valid_to,installation_evidence:[{id:assembly,content_sha256:'a'.repeat(64),purpose:'installation',source_description:'installed'}]}}]});
+ if(path===base+'/parameters')return json({offset:0,limit:50,items:[{id:parameter,assembly_id:assembly,assembly_version:2,version:3,content_sha256:'b'.repeat(64),review_version:2,review_action:'submit'}]});
+ if(path===base+'/parameters/'+parameter)return json(detail);
+ if(path===base+'/models')return json({offset:0,limit:50,items:[{id:model,installed_id:'beam_energy_balance/1',version:1,content_sha256:'c'.repeat(64),review_version:2,review_action:'approve'}]});
+ if(path===base+'/assemblies/'+assembly+'/selections')return json({offset:0,limit:50,items:[]});
+ if(path.includes('/requests/'))return json({state:'unknown'});
+ return json({id:parameter,version:3,content_sha256:'b'.repeat(64)});
+}
+const perms=['inversion.read','inversion.parameters.manage','inversion.parameters.review','inversion.models.manage','inversion.models.review'];
+try{
+ if(mode==='shell-gate'||mode==='shell-enabled'){
+   location.hash='#/production-parameters';let granted=mode==='shell-enabled';
+   window.fetch=async(path,options={})=>{if(path==='/api/auth/me')return json({id:'77',username:'tester',role_code:'administrator',permissions:granted?perms:[],capabilities:{production_inversion:{enabled:granted,status:'ready'}}});if(path==='/api/auth/logout')return json({});return response(path,options)};
+   await import(APP);await wait(()=>document.querySelector('#workspace')?.getAttribute('aria-busy')==='false');
+   if(granted){check(Boolean(document.querySelector('#sidebar [data-page="production-parameters"]')),'sidebar shows available page');check(calls.some(c=>c.path===base+'/parameters'),'deep link loads parameter API');}
+   else{check(document.querySelector('#workspace').textContent.includes('权限'),'deep link denies before fetch');check(calls.length===0,'deep link makes zero inversion requests');check(!document.querySelector('#sidebar [data-page="production-parameters"]'),'sidebar hides denied page');}
+   document.querySelector('[data-module="production-inversion"]').click();await wait(()=>document.querySelector('#workspace')?.getAttribute('aria-busy')==='false');
+   check(granted?calls.filter(c=>c.path===base+'/parameters').length>=2:calls.length===0,'module click uses same gate');
+ }else{
+   const {renderProductionParameters}=await import(PAGE);const {api}=await import(API);const root=document.querySelector('#root');
+   window.fetch=async(path,options={})=>response(path,options);
+   const session={};const context=(permission=perms,enabled=true)=>({workspace:root,api,permissions:new Set(permission),actorId:'77',authSession:session,capabilities:{production_inversion:{enabled,status:'ready'}},page:{label:'机械参数'},pageHeader:()=>'<h1>机械参数</h1>',params:{},isCurrent:()=>true,registerDispose:()=>{}});
+   if(mode==='disabled-evidence'){
+     await renderProductionParameters(context(perms,false));check(calls.length===0,'disabled page makes no requests');check(root.textContent.includes('未配置'),'disabled state');
+     await renderProductionParameters(context());check(root.textContent.includes('缺少')&&root.textContent.includes('phase')&&root.textContent.includes('geometry.pitman_length_m')&&root.textContent.includes('provenance.coverage.scopes.loss_calibration'),'missing exact fields and evidence scopes are visible');
+     check(root.textContent.includes('geometry_envelope')&&root.textContent.includes('1250000'),'coverage scope and exact timing envelope shown');
+     check(!root.querySelector('img'),'source text cannot inject markup');
+   }else if(mode==='units-versions'){
+     await renderProductionParameters(context());check(root.textContent.includes('pivot_x_m')&&root.textContent.includes('m'),'physical units visible');
+     check(root.textContent.includes('声明')&&root.textContent.includes('生效'),'declared and effective validity shown separately');
+     check(root.textContent.includes('第 3 版')&&root.textContent.includes('复核版本 2'),'content and review versions separated');
+     check(root.textContent.includes('beam_energy_balance/1'),'actual registered model shown');
+   }else if(mode==='admin-review'){
+     await renderProductionParameters(context());check(root.querySelector('[data-inversion-action="parameters.review"]'),'administrator sees review capability');
+     check(root.textContent.includes('独立复核'),'review independence stated');
+     window.fetch=async(path,options={})=>path.endsWith('/review')?(calls.push({path,method:options.method,body:JSON.parse(options.body)}),json({},409)):response(path,options);
+     const form=root.querySelector('[data-inversion-action="parameters.review"]');form.querySelector('[name="reason"]').value='Independent review';form.requestSubmit();await wait(()=>calls.some(c=>c.path.endsWith('/review')));
+     const sent=calls.find(c=>c.path.endsWith('/review'));
+     check(sent.body.command.expected.kind==='match'&&sent.body.command.expected.version===2,'review sends strict revision');
+     check(!('actor' in sent.body)&&!('session' in sent.body),'identity stays outside request body');
+     await wait(()=>form.textContent.includes('独立复核条件不满足'));check(!form.textContent.includes('操作已提交'),'administrator self review is not shown as approved');
+   }else if(mode==='pending-recovery'){
+     let writes=0;window.fetch=async(path,options={})=>{if(path===base+'/parameter-versions'&&++writes===1){calls.push({path,method:options.method,body:JSON.parse(options.body)});throw Error('timeout')}return response(path,options)};
+     await renderProductionParameters(context());const form=root.querySelector('[data-inversion-action="parameters.create"]');
+     form.querySelector('[name="body"]').value=JSON.stringify({...physical,parent_version:3,geometry:{...physical.geometry,pivot_x_m:'1.26'}});
+     form.querySelector('[name="reason"]').value='Measured revision';form.requestSubmit();await wait(()=>root.textContent.includes('待确认'));
+     const original=calls.find(c=>c.path===base+'/parameter-versions');check(original.body.command.expected.kind==='match'&&original.body.command.expected.version===3,'create expected version is strict match');
+     form.querySelector('[data-inversion-recover]').click();await wait(()=>calls.some(c=>c.path.includes('/requests/')));
+     const lookup=calls.find(c=>c.path.includes('/requests/'));check(lookup.path.includes('action=parameters.create'),'unknown outcome queried before replay');
+     await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);form.querySelector('[data-inversion-replay]').click();await wait(()=>calls.filter(c=>c.path===base+'/parameter-versions').length===2);
+     const retry=calls.filter(c=>c.path===base+'/parameter-versions')[1];check(retry.body.command.key===original.body.command.key,'retry keeps original key');
+     check(JSON.stringify(retry.body)===JSON.stringify(original.body),'retry keeps immutable body and command');
+   }else if(mode==='denial-lifecycle'){
+     let denied=true;window.fetch=async(path,options={})=>{calls.push({path,signal:options.signal});return denied?json({},403):response(path,options)};
+     await Promise.race([renderProductionParameters(context()),new Promise((_,reject)=>setTimeout(()=>reject(Error('initial denial hung')),3000))]);const first=calls.length;check(root.textContent.includes('无权'),'first denial visible');
+     denied=false;await Promise.race([renderProductionParameters(context()),new Promise((_,reject)=>setTimeout(()=>reject(Error('sticky denial hung')),3000))]);check(calls.length===first,'fresh permissions Set cannot revive denied session');
+     const newSession={...context(),authSession:{}};await Promise.race([renderProductionParameters(newSession),new Promise((_,reject)=>setTimeout(()=>reject(Error('new session hung')),3000))]);check(calls.length>first,'new authenticated session may read');
+     const held=[];let aborted=false;window.fetch=async(path,options={})=>{options.signal.addEventListener('abort',()=>aborted=true);return new Promise(resolve=>held.push(resolve))};
+     let dispose;const pending=renderProductionParameters({...context(),authSession:{},registerDispose:fn=>dispose=fn});await wait(()=>held.length===3);
+     dispose();check(aborted,'leaving page aborts request');held.forEach(resolve=>resolve(json({offset:0,limit:50,items:[{id:'LATE-PRIVATE'}]})));await pending;
+     check(!root.textContent.includes('LATE-PRIVATE'),'late response cannot repaint disposed view');
+   }
+ }
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks});}
+</script></html>
