@@ -1,6 +1,6 @@
 import {createInversionClient} from './client.js';
 import {element,mountActionForm,errorText} from './forms.js';
-import {mountComparison,numeric,twoDecimals,cycleRate} from './charts.js';
+import {mountComparison,numeric,twoDecimals,cycleRate,referenceSupported} from './charts.js';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SOURCE_LABELS={synthetic:'合成数据',bench_measurement:'台架测量',field_measurement:'现场测量',unknown:'来源未确认'};
@@ -130,7 +130,7 @@ export function mountResultDetail(ctx,root,client,id) {
         ['复核状态',reviewLabel],['复核版本',detail.review.version],['现场验证状态',FIELD_LABELS[detail.field_validation.state]||'现场验证状态未确认'],['现场精度认证','未认证；数值比较与独立复核均不构成现场精度认证'],
         ['完整几何冲程','完整几何冲程未提供'],['本次物理周期折算冲次（次/分）',twoDecimals(cycleRate(detail.body.cycle))],['完整读取点数',loaded.total]]);
       const valid=loaded.points.prediction.filter(p=>p.status==='valid'),span=ranges(valid,'s_m'),loadRange=ranges(valid,'load_N');
-      const referenceRange=ranges(loaded.points.comparison.filter(p=>p.valid),'load_value_si');
+      const referenceRange=ranges(loaded.points.comparison.filter(referenceSupported),'load_value_si');
       metadataList(root,[['有效预测点位移跨度',span?`${twoDecimals(span[1]-span[0])} m`:'未知'],['有效预测载荷范围',loadRange?loadRange.map(value=>twoDecimals(value/1000)).join(' — ')+' kN':'未知'],
         ['已对齐参考载荷范围',referenceRange?referenceRange.map(value=>twoDecimals(value/1000)).join(' — ')+' kN':'未知']]);
       chart=mountComparison(root,{prediction:loaded.points.prediction,reference:loaded.points.comparison,filled:loaded.points.display_only_fills,metadata:{source:sourceLabel}});

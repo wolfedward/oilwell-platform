@@ -34,6 +34,11 @@ function kilonewtons(value) {
   return newtons===null?null:newtons/1000;
 }
 
+export function referenceSupported(point) {
+  return point.load_reason == null && point.displacement_reason == null
+    && numeric(point.load_value_si) !== null && numeric(point.displacement_value_si) !== null;
+}
+
 export function cycleRate(cycle) {
   try {
     const [an,ad]=fraction(cycle.start_ns),[bn,bd]=fraction(cycle.end_ns);
@@ -109,7 +114,10 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
     if(disposed||!points.length)return;
     selected=Math.max(0,Math.min(points.length-1,index));const point=points[selected];
     const detail=point.raw;
-    tooltip.textContent=`${point.trace} · ${xLabel} ${twoDecimals(point.x)} · ${yLabel} ${twoDecimals(point.y)} · 原始功率索引 ${point.power_index} · 时间 ${detail.time_ns} ns · 状态 ${detail.status ?? (detail.valid?'valid':'invalid')} ${(detail.reason_codes||detail.original_reason_codes||[]).join(', ')} · 来源 ${source || '未提供'}${detail.load_indices?' · 参考载荷索引 '+detail.load_indices.join(', '):''}${detail.displacement_indices?' · 参考位移索引 '+detail.displacement_indices.join(', '):''}${detail.periodic_assumption?' · periodic_assumption=true':''}`;
+    const support=Object.hasOwn(detail,'load_value_si')
+      ? `参考支撑 ${referenceSupported(detail)?'有效':'无效'} · 共同比较 ${detail.valid?'有效':'无效'} · 参考原因 ${[detail.load_reason,detail.displacement_reason].filter(Boolean).join(', ')||'无'}`
+      : detail.status ?? (detail.valid?'valid':'invalid');
+    tooltip.textContent=`${point.trace} · ${xLabel} ${twoDecimals(point.x)} · ${yLabel} ${twoDecimals(point.y)} · 原始功率索引 ${point.power_index} · 时间 ${detail.time_ns} ns · 状态 ${support} ${(detail.reason_codes||detail.original_reason_codes||[]).join(', ')} · 来源 ${source || '未提供'}${detail.load_indices?' · 参考载荷索引 '+detail.load_indices.join(', '):''}${detail.displacement_indices?' · 参考位移索引 '+detail.displacement_indices.join(', '):''}${detail.periodic_assumption?' · periodic_assumption=true':''}`;
     marker.setAttribute('visibility',point.valid&&point.x!==null&&point.y!==null?'visible':'hidden');
     if(point.x!==null&&point.y!==null){marker.setAttribute('cx',x(point.x));marker.setAttribute('cy',y(point.y));}
   }
@@ -136,7 +144,7 @@ export function mountComparison(elementRoot,{prediction,reference,filled,metadat
   const charts=[];
   const points=(rows,x,y,valid)=>rows.map(raw=>({raw,power_index:raw.power_index,x:x(raw),y:y(raw),valid:valid(raw)}));
   const pred=points(prediction,p=>numeric(p.s_m),p=>kilonewtons(p.load_N),p=>p.status==='valid');
-  const ref=points(reference,p=>numeric(p.displacement_value_si),p=>kilonewtons(p.load_value_si),p=>p.valid===true);
+  const ref=points(reference,p=>numeric(p.displacement_value_si),p=>kilonewtons(p.load_value_si),referenceSupported);
   const fillMap=new Map(filled.map(p=>[p.power_index,p]));
   const fillPoints=points(prediction.map(p=>fillMap.get(p.power_index)||p),p=>numeric(p.s_m),p=>kilonewtons(p.load_N),p=>fillMap.has(p.power_index)||p.status==='valid');
   // Only segments adjacent to an actual fill are display-only. Original trace

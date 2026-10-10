@@ -21,7 +21,7 @@ export function mountProductionInversion(ctx,client=createInversionClient(ctx)) 
   const commandRoot=element('section'),runRoot=element('section',undefined,'panel inversion-run'),resultRoot=element('section');
   runRoot.append(element('h2','未计算'),element('p','完成固定输入预检后，可提交单成员运行。'));
   setup.append(lineage,conditions,preflight,refresh,status,commandRoot);root.append(setup,runRoot,resultRoot);
-  let disposed=false,timer=null,runGeneration=0,runId=null,runVersion=null,pollBusy=false;
+  let disposed=false,timer=null,runGeneration=0,runId=null,runVersion=null,pollRequest=null;
   let selectedPins=null,frozenVersion=null,members=[],selectedPair=null,inputRevision=0,runForm=null,resultMount=null;
   const scopes=new Map(),runForms=[];
   const current=()=>!disposed&&(ctx.isCurrent?.()??true)&&ctx.workspace.contains(root);
@@ -100,37 +100,44 @@ export function mountProductionInversion(ctx,client=createInversionClient(ctx)) 
     }catch(error){showError(error);}finally{if(current())preflight.disabled=!canRun();}
   });
   function clearRunForms(){runForms.splice(0).forEach(form=>form.dispose());}
-  function showRun(run){
-    if(!current())return;
+  function showRun(run,own=runGeneration){
+    if(!current()||own!==runGeneration||run.run_id!==runId)return;
     const signature=run.version+':'+run.state+':'+run.reason_code;
     if(runVersion===signature)return;runVersion=signature;clearRunForms();
     runRoot.replaceChildren(element('h2',runStateText(run)),element('p',`运行 ${run.run_id} · ${run.reason_code||'无附加原因'}`));
     if(run.state==='blocked')runRoot.append(element('p','请核对角度通道、当前参数证据与配对复核；原输入不会被自动调相位或重新选用。'));
     const expected={kind:'match',version:run.version};
     if(['queued','running'].includes(run.state)&&!run.cancelling&&run.reason_code!=='cancel_requested'&&ctx.permissions.has('inversion.run')){
-      runForms.push(mountActionForm(runRoot,client,{action:'runs.cancel',path:`/runs/${run.run_id}/cancel`,permission:'inversion.run',expected,label:'取消运行'},value=>{showRun(value.run||value);}));
+      runForms.push(mountActionForm(runRoot,client,{action:'runs.cancel',path:`/runs/${run.run_id}/cancel`,permission:'inversion.run',expected,label:'取消运行'},value=>{showRun(value.run||value,own);}));
     }else if(['failed','blocked','cancelled'].includes(run.state)&&canRun()){
       runForms.push(mountActionForm(runRoot,client,{action:'runs.retry',path:`/runs/${run.run_id}/retry`,permission:'inversion.run',expected,label:'按原冻结输入重试'},value=>monitor((value.run||value).run_id,value.run||value)));
     }
     if(run.result_id){
       const link=element('button','打开结果与版本复核','button');link.onclick=()=>ctx.navigate?.('production-results',{result_id:run.result_id});runRoot.append(link);
-      resultMount?.dispose();resultRoot.replaceChildren();resultMount=mountResultDetail(ctx,resultRoot,client,run.result_id);
+      resultMount?.dispose();resultRoot.replaceChildren();
+      resultMount=mountResultDetail({...ctx,isCurrent:()=>current()&&own===runGeneration&&run.run_id===runId},resultRoot,client,run.result_id);
     }
   }
   async function monitor(id,initial){
     if(!UUID.test(id)){status.textContent='无效运行标识。';return;}
     clearTimeout(timer);const own=++runGeneration;runId=id;runVersion=null;
-    if(initial)showRun(initial);
+    resultMount?.dispose();resultMount=null;resultRoot.replaceChildren();delete resultRoot.dataset.loadedPoints;
+    clearRunForms();runRoot.replaceChildren();
+    const previousRequest=pollRequest,monitorClient=scope('run-monitor');
+    if(initial)showRun(initial,own);
     async function poll(){
-      if(!current()||own!==runGeneration||pollBusy)return;
-      pollBusy=true;
+      if(!current()||own!==runGeneration)return;
+      const request=monitorClient.get('/runs/'+id);pollRequest=request;
       try{
-        const run=await client.get('/runs/'+runId);if(!run||!current()||own!==runGeneration)return;
-        showRun(run);
+        const run=await request;if(!run||!current()||own!==runGeneration)return;
+        showRun(run,own);
         if(['queued','running'].includes(run.state))timer=setTimeout(poll,1500);
-      }catch(error){if(current())runRoot.append(element('p',errorText(error)));}
-      finally{pollBusy=false;}
+      }catch(error){if(current()&&own===runGeneration)runRoot.append(element('p',errorText(error)));}
+      finally{if(pollRequest===request)pollRequest=null;}
     }
+    // Abort the old generation via its scoped client, then wait for it to
+    // settle before starting the next request. Late responses cannot paint.
+    if(previousRequest)await previousRequest.catch(()=>null);
     await poll();
   }
   assembly.onchange=loadAssembly;dataset.onchange=loadDataset;member.onchange=loadPair;

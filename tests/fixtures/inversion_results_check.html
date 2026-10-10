@@ -8,6 +8,14 @@ const metric=(value,unit='N',reason=null)=>({value,unit,reason});
 const comparison={scope:'original_valid_support',prediction_status:'applicable',prediction_reason_codes:[],primary:{load_mae:metric('1.234'),load_correlation:metric(null,'1','constant_reference'),load_relative_mae_percent:metric(null,'%','reference_denominator_below_threshold')},by_stroke:{up:{load_mae:metric('1.25')},down:{load_mae:metric(null,'N','no_valid_duration')}},coverage:{joint_fraction:metric('1/2','1'),prediction_numerical_fraction:metric('3/4','1')},work:{prediction_complete_cycle:metric(null,'J','incomplete_cycle_support')},invalid_reasons:{power_quality:1},independence:{status:'unknown',reason:'external_evidence_admission_required'}};
 let review={state:'unreviewed',version:0},restricted=false,runState='completed',mismatch=false,hold=false,held,aborted=false,metadataInvalid=false;
 const row=(kind,i)=>kind==='prediction'?{kind,columns:['time_ns','power_index','s_m','load_N','status','reason_codes','power_W','theta_rad','drive_Nm'],values:[String(1000000000000000000n+BigInt(i)*1000n),String(9007199254741001n+BigInt(i)),String(1.234+i/100000),'32.456','valid',[],'-120.456','1.234','32.456']}:{kind,columns:['time_ns','power_index','valid','reason_codes','load_value_si','load_indices','load_source','displacement_value_si','displacement_indices','displacement_source'],values:[String(1000000000000000000n+BigInt(i)*1000n),String(9007199254741001n+BigInt(i)),true,[],'32.456',[String(9007199254741001n+BigInt(i))],0,'1.234',[String(9007199254741001n+BigInt(i))],0]};
+function codecRow(kind,i){
+ const value=row(kind,i);
+ if(mode!=='reference-support')return value;
+ if(kind==='prediction'){value.values[4]='unobservable';value.values[3]=null;value.values[5]=['deadpoint'];return value;}
+ value.values[2]=false;value.values[3]=['deadpoint'];value.values[4]=String([10000,40000,90000,99000][i]);
+ value.columns.push('load_reason','displacement_reason','load_weights','displacement_weights');
+ value.values.push(i===2?'load_quality':null,i===3?'displacement_quality':null,['1'],['1']);return value;
+}
 let total=mode==='paging'?65536:mode==='bounds'?32769:8;
 const json=(data,status=200)=>new Response(JSON.stringify({ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
 window.fetch=async(path,options={})=>{
@@ -27,7 +35,7 @@ window.fetch=async(path,options={})=>{
  if(route.endsWith('/points')){
   if(hold){options.signal.addEventListener('abort',()=>{aborted=true;held?.(json({result_id:id,content_sha256:digest,offset:0,limit:1000,total:0,rows:[]}))});return new Promise(resolve=>held=resolve)}
   const offset=Number(url.searchParams.get('offset')),limit=Number(url.searchParams.get('limit'));
-  return json({result_id:id,content_sha256:mismatch&&offset>0?'WRONG':digest,offset,limit,total,rows:Array.from({length:Math.min(limit,total-offset)},(_,j)=>{const n=offset+j;return row(mode==='bounds'||n<total/2?'prediction':'comparison',mode==='bounds'?n:n%(total/2))})});
+  return json({result_id:id,content_sha256:mismatch&&offset>0?'WRONG':digest,offset,limit,total,rows:Array.from({length:Math.min(limit,total-offset)},(_,j)=>{const n=offset+j;return codecRow(mode==='bounds'||n<total/2?'prediction':'comparison',mode==='bounds'?n:n%(total/2))})});
  }
  if(route.endsWith('/review')){review={state:body.body.decision==='approve'?'approved':'rejected',version:1};return json({id,version:1})}
  if(route.endsWith('/revoke')){review={state:'revoked',version:2};return json({id,version:2})}
@@ -50,7 +58,12 @@ try {
  check(root.querySelector('[data-chart-kind="comparison"]'),'actual result draws server rows');
  check(root.textContent.includes('完整几何冲程未提供'),'no invented geometric stroke');
  check(root.textContent.includes('有效预测点位移跨度'),'span correctly named');
- if(mode==='unknown-metrics'){
+ if(mode==='reference-support'){
+  const label=[...root.querySelectorAll('dt')].find(node=>node.textContent==='已对齐参考载荷范围');
+  check(label.nextElementSibling.textContent==='10.00 — 40.00 kN','reference range survives rejected prediction and excludes own quality failures');
+  check(root.querySelector('[data-series="prediction"]').childElementCount===0,'unobservable prediction not fabricated');
+  check(root.querySelector('[data-series="reference"] path'),'valid measured reference remains visible');
+ }else if(mode==='unknown-metrics'){
   check(!root.querySelector('.inversion-metadata').textContent.includes('"state"'),'primary status summary uses human labels');
   check(root.querySelector('.inversion-metadata').textContent.includes('合成数据'),'source label is translated without relabeling provenance');
   check(root.textContent.includes('kN'),'display load ranges use kN');

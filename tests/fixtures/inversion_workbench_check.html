@@ -9,12 +9,41 @@ const pins={assembly_id:assembly,parameter_id:parameter,parameter_sha256:'a'.rep
 const permissions=['inversion.read','inversion.run','waveform.read','waveform.raw.read','waveform.export'];
 const json=(data,status=200,code='inversion.selection_changed')=>new Response(JSON.stringify(status>=400?{code,message:'Refused',details:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
 let refusePreflight=true,deny=false,holdPoll=false,held,aborted=false,runState='running';
+const replacing=mode.startsWith('replace-'),runB=id(8),resultA=id(9),digest='e'.repeat(64);
+let submissions=0,pollsA=0,pollsB=0,activePolls=0,maxActivePolls=0,releaseA,releasePage,pageAborted=false;
+const completedA=()=>({run_id:run,version:2,state:'completed',result_id:resultA});
+function resultPage(offset){
+ const total=mode==='replace-pages'?1002:2;
+ return {result_id:resultA,content_sha256:digest,offset,limit:1000,total,rows:Array.from({length:Math.min(1000,total-offset)},(_,i)=>({kind:'prediction',columns:['time_ns','power_index','s_m','load_N','status','reason_codes'],values:[String(offset+i),String(offset+i),'1','1000','valid',[]]}))};
+}
 window.fetch=async(path,options={})=>{
  const url=new URL(path,'http://fixture'),route=url.pathname;
  calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
  if(path==='/api/auth/me')return json({id:'77',username:'tester',permissions,role_code:'administrator',capabilities:{production_inversion:{enabled:mode!=='shell-disabled',status:mode==='shell-unavailable'?'degraded':'ready'}}});
  if(path==='/api/auth/logout')return json({});
  if(deny)return json({},403);
+ if(replacing){
+  if(route===base+'/runs'&&options.method==='POST')return json({run_id:++submissions===1?run:runB,version:1,state:'queued',result_id:null},202);
+  if(route===base+'/runs/'+run||route===base+'/runs/'+runB){
+   activePolls++;maxActivePolls=Math.max(maxActivePolls,activePolls);
+   try{
+    if(route.endsWith(runB)){pollsB++;return json({run_id:runB,version:pollsB,state:mode==='replace-poll'&&pollsB===1?'running':'failed',reason_code:'worker_failed',result_id:null});}
+    pollsA++;
+    if(mode==='replace-poll'&&pollsA===2)return await new Promise(resolve=>releaseA=()=>resolve(json({run_id:run,version:2,state:'running',result_id:null})));
+    return json(mode==='replace-poll'?{run_id:run,version:1,state:'running',result_id:null}:completedA());
+   }finally{activePolls--;}
+  }
+  if(route===base+'/results/'+resultA){
+   if(url.searchParams.has('include_input_metadata'))return json({},409);
+   return json({id:resultA,run_id:run,content_sha256:digest,snapshot_sha256:'f'.repeat(64),execution:'completed',source:'synthetic',review:{state:'unreviewed',version:0},current_applicability:{state:'applicable',reasons:[]},field_validation:{state:'not_field_validated'},body:{point_count:mode==='replace-pages'?1002:2,cycle:{start_ns:'0',end_ns:'1000000000'}}});
+  }
+  if(route===base+'/results/'+resultA+'/comparison')return json({result_id:resultA,content_sha256:digest,comparison:null});
+  if(route===base+'/results/'+resultA+'/points'){
+   const offset=Number(url.searchParams.get('offset'));
+   if(mode==='replace-pages'&&offset===1000){options.signal.addEventListener('abort',()=>pageAborted=true);return new Promise(resolve=>releasePage=()=>resolve(json(resultPage(offset))));}
+   return json(resultPage(offset));
+  }
+ }
  if(route===base+'/assemblies')return json({offset:0,limit:100,items:[{id:assembly,version:1,body:{asset_number:'Assembly A'}}]});
  if(route.endsWith('/selections'))return json({offset:0,limit:1,items:[{id:assembly,version:3,body:pins}]});
  if(route===base+'/parameters/'+parameter)return json({id:parameter,content_sha256:pins.parameter_sha256,body:{provenance:{operating_conditions:[{id:'approved-condition',valid_from:'2026-01-01T00:00:00Z',valid_to:'2027-01-01T00:00:00Z'}]}}});
@@ -40,7 +69,38 @@ try {
  const {renderProductionInversion,mountProductionInversion}=await import(WORKBENCH_MODULE);
  const {api}=await import(API_MODULE),root=document.querySelector('#root'),session={};
  const ctx=()=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession:session,capabilities:{production_inversion:{enabled:true,status:'ready'}},params:{},page:{},pageHeader:()=>'<h1>反演与双图验证</h1>',isCurrent:()=>true,registerDispose:()=>{}});
- if(mode==='client-methods'){
+ if(replacing){
+  refusePreflight=false;
+  const handle=mountProductionInversion({...ctx(),permissions:new Set([...permissions,'inversion.review','inversion.export'])});await handle.ready;
+  root.querySelector('[name="operating_condition_ids"]').click();root.querySelector('[data-inversion-preflight]').click();
+  await wait(()=>root.querySelector('[data-inversion-action="runs.create"]'));
+  const form=root.querySelector('[data-inversion-action="runs.create"]');
+  form.querySelector('[name="reason"]').value='Run A';form.requestSubmit();
+  if(mode==='replace-poll')await wait(()=>releaseA);
+  else if(mode==='replace-pages')await wait(()=>releasePage);
+  else await wait(()=>root.querySelector('[data-inversion-action="exports.create"]'));
+  const oldReview=root.querySelector('[data-inversion-action="results.review"]');
+  if(mode==='replace-rendered')check(root.querySelector('[data-chart-kind]')&&oldReview,'A has rendered charts and active review before replacement');
+  await wait(()=>!form.querySelector('[type="submit"]').disabled);
+  form.querySelector('[name="reason"]').value='Run B';form.requestSubmit();await wait(()=>submissions===2);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  if(mode==='replace-poll'){
+   releaseA();await wait(()=>pollsB>=2);
+   check(root.querySelector('.inversion-run').textContent.includes('计算失败'),'B continues polling through terminal state');
+   check(maxActivePolls===1,'run replacement keeps polls serialized including delayed A');
+  }else{
+   check(!root.querySelector('[data-chart-kind]')&&!root.querySelector('.inversion-result-actions'),'starting B immediately removes A charts and actions');
+   await wait(()=>root.querySelector('.inversion-run').textContent.includes('计算失败'));
+   if(mode==='replace-pages'){
+    check(pageAborted,'replacing run aborts A result pagination');releasePage();await new Promise(resolve=>setTimeout(resolve,50));
+    check(!root.querySelector('[data-chart-kind]')&&!root.querySelector('.inversion-result-actions'),'late A page cannot paint into failed B');
+   }else{
+    const count=calls.length;oldReview.querySelector('[name="reason"]').value='Stale action';oldReview.requestSubmit();await new Promise(resolve=>setTimeout(resolve,30));
+    check(calls.length===count,'detached A review is disposed');
+   }
+  }
+  handle.dispose();
+ }else if(mode==='client-methods'){
   const {createInversionClient}=await import(CLIENT_MODULE);
   for(const method of ['preflight','waveformGet','downloadExport']){
    const authority={...ctx(),authSession:{},permissions:new Set([...permissions,'inversion.export'])};

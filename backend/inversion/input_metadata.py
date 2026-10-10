@@ -48,6 +48,10 @@ def bounded_rows(value, maximum):
     return value
 
 
+def mapping_rows(value, maximum):
+    return [mapping(row) for row in bounded_rows(value, maximum)]
+
+
 def endpoint(value):
     return fields(value, ('gateway_id', 'device_id'), 128)
 
@@ -73,7 +77,7 @@ def observation_metadata(value):
     if relative is not None:
         relative = mapping(relative)
         terms = {key: exact(relative.get(key)) for key in ('mapping_and_calibration_ns', 'noncommon_capture_utc_ns', 'total_bound_ns')}
-        rows = bounded_rows(relative.get('capture_utc_bounds'), 2)
+        rows = mapping_rows(relative.get('capture_utc_bounds'), 2)
         terms['capture_utc_bounds'] = [dict(capture=capture(row['capture']), utc_uncertainty_ns=exact(row.get('utc_uncertainty_ns'))) for row in rows]
         identities = [canonical_bytes(row['capture']) for row in terms['capture_utc_bounds']]
         if not rows or len(set(identities)) != len(identities): refuse()
@@ -81,7 +85,7 @@ def observation_metadata(value):
     absolute = source.get('absolute_timing_terms')
     result['absolute_timing_terms'] = None
     if absolute is not None:
-        rows = bounded_rows(absolute, 4)
+        rows = mapping_rows(absolute, 4)
         if len(rows) != 4 or {row.get('role') for row in rows} != set(ROLES): refuse()
         result['absolute_timing_terms'] = [dict(role=row['role'], **{key: exact(row.get(key)) for key in ABSOLUTE_TERMS}) for row in rows]
     return result
@@ -90,11 +94,14 @@ def observation_metadata(value):
 def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, request_sha256):
     """Caller supplies the SAME hash-verified StoredResult snapshot and identities."""
     try:
+        body = mapping(body)
         request = json.loads(canonical_bytes(body['request']))
         parse_run_request(canonical_bytes(request))
         if sha256(canonical_bytes(request)).hexdigest() != request_sha256: refuse()
         applicability = mapping(body['applicability'])
-        bindings = bounded_rows(applicability['parameter_body']['provenance']['channel_bindings'], 4)
+        parameter = mapping(applicability['parameter_body'])
+        provenance = mapping(parameter['provenance'])
+        bindings = mapping_rows(provenance['channel_bindings'], 4)
         if len(bindings) != 4 or {row.get('role') for row in bindings} != set(ROLES): refuse()
         sources = {row['role']: row['source'] for row in bindings}
         pins = mapping(body['channel_pins'])
@@ -116,11 +123,12 @@ def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, 
             channels[role] = row
             captures.add((row['gateway_id'],row['device_id'],row['capture_id']))
         if len(captures) > 2: refuse()
-        selected = applicability['selection']
+        selected = mapping(applicability['selection'])
+        selected_body = mapping(selected['body'])
         if selected['version'] != request['selection_version']: refuse()
         for key in ('assembly_id','parameter_id','parameter_sha256','parameter_review_version','model_id','model_sha256','model_review_version'):
-            if selected['body'].get(key) != request[key]: refuse()
-        conditions = bounded_rows(applicability['operating_conditions'], 64)
+            if selected_body.get(key) != request[key]: refuse()
+        conditions = mapping_rows(applicability['operating_conditions'], 64)
         if len(conditions) != len(request['operating_condition_ids']) or {row['id'] for row in conditions} != set(request['operating_condition_ids']): refuse()
         approved = []
         for item in conditions:
@@ -134,13 +142,15 @@ def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, 
             actual = {tuple(row['capture'][key] for key in ('gateway_id','device_id','capture_id'))
                 for row in observation['relative_timing_terms']['capture_utc_bounds']}
             if actual != captures: refuse()
+        registry = mapping(applicability.get('registry', {}))
+        well = mapping(registry.get('well', {}))
         result = dict(result_id=result_id,content_sha256=content_sha256,snapshot_sha256=snapshot_sha256,
             hash_scope='original_full_artifacts', request=request, observation=observation,
             channel_pins=channels, applicability=dict(
                 assignment=fields(applicability['assignment'],('id','well_id','valid_from','valid_to','version','content_sha256'),128),
                 mechanical=fields(applicability['mechanical'],('id','revision','valid_from','valid_to'),128),
-                selection=dict(id=scalar(selected['id'],128),version=selected['version'],rollback_selection_id=scalar(selected['body'].get('rollback_selection_id'),128)),
-                well_id=scalar((applicability.get('registry',{}).get('well') or {}).get('id'),128),
+                selection=dict(id=scalar(selected['id'],128),version=selected['version'],rollback_selection_id=scalar(selected_body.get('rollback_selection_id'),128)),
+                well_id=scalar(well.get('id'),128),
                 operating_conditions=approved))
         if len(canonical_bytes(result)) > MAX_METADATA_BYTES: refuse('input_metadata_size_limit')
         # Defense in depth only AFTER construction of the finite nested allowlist.

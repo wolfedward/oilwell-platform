@@ -66,6 +66,18 @@ class InversionWorkbenchBrowserTests(BrowserFixtureCase):
         self.fixture = 'inversion_workbench_check.html'
         self.run_fixture('stale-retry')
 
+    def test_replaced_run_continues_serialized_polling(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('replace-poll')
+
+    def test_replaced_run_disposes_rendered_result_and_actions(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('replace-rendered')
+
+    def test_replaced_run_aborts_late_result_pagination(self):
+        self.fixture = 'inversion_workbench_check.html'
+        self.run_fixture('replace-pages')
+
     def test_logout_stops_poll_and_denial_is_sticky(self):
         self.fixture = 'inversion_workbench_check.html'
         self.run_fixture('shell-logout')
@@ -86,6 +98,9 @@ class InversionResultsBrowserTests(BrowserFixtureCase):
 
     def test_unknown_metrics_show_reason_not_zero(self):
         self.run_fixture('unknown-metrics', 760)
+
+    def test_reference_range_uses_independent_measured_support(self):
+        self.run_fixture('reference-support')
 
     def test_result_states_not_collapsed_into_success(self):
         self.run_fixture('result-states')

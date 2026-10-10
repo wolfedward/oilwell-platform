@@ -24,6 +24,66 @@ class InputMetadataRouteTests(unittest.TestCase):
             with self.assertRaises(InversionContractError): query(raw, action)
 
 
+class InputMetadataShapeTests(unittest.TestCase):
+    """Pure historical-shape checks: no DB fixture or service acquisition."""
+    def valid_body(self):
+        from backend.inversion.input_metadata import ROLES, ABSOLUTE_TERMS
+        identifier='11111111-1111-4111-8111-111111111111'
+        request={key:identifier for key in ('dataset_version_id','pair_id','assembly_id','parameter_id','model_id')}
+        request.update({key:'a'*64 for key in ('dataset_sha256','pair_sha256','parameter_sha256','model_sha256')})
+        request.update(member_ordinal=0,pair_review_version=1,parameter_review_version=1,model_review_version=1,selection_version=1,operating_condition_ids=['condition'])
+        locator=dict(gateway_id='gateway',device_id='device',capture_id=identifier)
+        pin=dict(**locator,stream_id='stream',channel_id='channel',manifest_sha256='b'*64,first_index=0,last_index=1,
+            producer_endpoint=dict(gateway_id='physical',device_id='sensor'),calibration_pin=dict(id=identifier,content_sha256='c'*64,review_version=1))
+        condition=dict(id='condition',valid_from='2026-01-01',valid_to='2027-01-01')
+        for key in ('temperature_K','supply_voltage_V','supply_frequency_Hz'):condition[key]=dict(min='1',max='2')
+        return dict(request=request,channel_pins={role:deepcopy(pin) for role in ROLES},
+            observation=dict(relative_timing_terms=dict(mapping_and_calibration_ns='1',noncommon_capture_utc_ns='2',total_bound_ns='3',capture_utc_bounds=[dict(capture=locator,utc_uncertainty_ns='2')]),
+                absolute_timing_terms=[dict(role=role,**{key:'1' for key in ABSOLUTE_TERMS}) for role in ROLES]),
+            applicability=dict(parameter_body=dict(provenance=dict(channel_bindings=[dict(role=role,source='native_waveform') for role in ROLES])),
+                selection=dict(id=identifier,version=1,body=deepcopy(request)),registry=dict(well=dict(id='historical-well')),
+                operating_conditions=[condition],assignment={},mechanical={}))
+
+    def project(self,body):
+        from backend.inversion.input_metadata import project_input_metadata
+        return project_input_metadata(body,result_id='result',content_sha256='d'*64,snapshot_sha256='e'*64,
+            request_sha256=sha256(canonical_bytes(self.valid_body()['request'])).hexdigest())
+
+    def test_valid_pure_fixture_and_optional_historical_absence(self):
+        body=self.valid_body()
+        self.assertEqual(self.project(body)['applicability']['well_id'],'historical-well')
+        body['applicability'].pop('registry')
+        body['observation'].pop('relative_timing_terms');body['observation'].pop('absolute_timing_terms')
+        metadata=self.project(body)
+        self.assertIsNone(metadata['applicability']['well_id'])
+        self.assertIsNone(metadata['observation']['relative_timing_terms'])
+
+    def test_malformed_present_nested_shapes_are_controlled_409(self):
+        paths=[(),('request',),('applicability',),('applicability','parameter_body'),
+            ('applicability','parameter_body','provenance'),('applicability','parameter_body','provenance','channel_bindings'),
+            ('applicability','parameter_body','provenance','channel_bindings',0),('channel_pins',),('channel_pins','load'),
+            ('channel_pins','load','producer_endpoint'),('channel_pins','load','calibration_pin'),
+            ('applicability','selection'),('applicability','selection','body'),('applicability','registry'),('applicability','registry','well'),
+            ('applicability','assignment'),('applicability','mechanical'),('applicability','operating_conditions'),('applicability','operating_conditions',0),
+            ('applicability','operating_conditions',0,'temperature_K'),('applicability','operating_conditions',0,'supply_voltage_V'),('applicability','operating_conditions',0,'supply_frequency_Hz'),
+            ('observation',),('observation','relative_timing_terms'),('observation','relative_timing_terms','capture_utc_bounds'),
+            ('observation','relative_timing_terms','capture_utc_bounds',0),('observation','relative_timing_terms','capture_utc_bounds',0,'capture'),
+            ('observation','absolute_timing_terms'),('observation','absolute_timing_terms',0)]
+        nullable={'producer_endpoint','calibration_pin','relative_timing_terms','absolute_timing_terms'}
+        for path in paths:
+            for malformed in (None,[],1,'bad'):
+                if path and path[-1] in nullable and malformed is None:continue
+                with self.subTest(path=path,malformed=malformed):
+                    body=self.valid_body()
+                    if not path:body=malformed
+                    else:
+                        target=body
+                        for key in path[:-1]:target=target[key]
+                        target[path[-1]]=malformed
+                    with self.assertRaises(InversionError) as error:self.project(body)
+                    self.assertEqual((error.exception.code,error.exception.status),('inversion.input_metadata_invalid',409))
+
+
 class InputMetadataTests(ResultCase):
     def metadata(self):
         return result_view(self.results.get(self.published.id, actor=ACTOR, include_input_metadata=True))
