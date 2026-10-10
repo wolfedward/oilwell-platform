@@ -40,7 +40,9 @@ def qualify(report):
                 and 0<=item['duration_seconds']<float('inf') for item in terminal) and
             report['loader_errors']==0 and report['unittest_ok'] is True and
             report['categories']=={} and report['source_before'] and
-            report['source_before']==report['source_after'] and report['security_ok'] is True and
+            report['source_before']==report['source_after']==report['parent_source_before']==report['parent_source_after'] and
+            report['source_sha256']==sha256(encoded(report['parent_source_before'])).hexdigest() and
+            report['security_ok'] is True and
             report['cleanup_ok'] is True and report['interrupted'] is False)
     except (KeyError,TypeError,ValueError): return False
 
@@ -309,7 +311,9 @@ def supervise(args,*,selected_names=None):
             if not isinstance(report,dict): raise ValueError('Invalid child evidence')
         except (OSError,ValueError):
             report={}; clean=False; failure=failure or 'InvalidChildEvidence'
-        report.update(source_after=source_inventory(),security_ok=security_ok and report.get('security_ok') is True,
+        # Keep both child observations: a later reversion cannot erase drift.
+        report.update(parent_source_before=before,parent_source_after=source_inventory(),
+            security_ok=security_ok and report.get('security_ok') is True,
             cleanup_ok=clean,interrupted=bool(failure or exitcode!=0 or report.get('interrupted',True)),
             supervisor=dict(exit_code=exitcode,residual_owned_processes=residual,failure_category=failure,
                 elapsed_seconds=time.monotonic()-started),

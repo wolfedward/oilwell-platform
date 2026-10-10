@@ -12,6 +12,88 @@ from tools import verify_inversion as verifier
 
 
 class VerificationTests(unittest.TestCase):
+    def _supervise_source_evidence(self,child_before,child_after,parent_after):
+        """Exercise real report finalization with offline process/environment seams."""
+        from tests.inversion_verification_security import Snapshot
+        parent_before={'file':'original'}
+        evidence=dict(discovered=['case.a'],started=['case.a'],terminal=[
+            dict(id='case.a',outcome='success',duration_seconds=0.01)],
+            tests_run=1,loader_errors=0,unittest_ok=True,categories={},
+            source_before=child_before,source_after=child_after,
+            security_ok=True,cleanup_ok=False,interrupted=False)
+        class Channel:
+            def send(self,value): pass
+            def close(self): pass
+        class Process:
+            pid=123; exitcode=0
+            def __init__(self,**kwargs): self.folder=Path(kwargs['args'][1])
+            def start(self): verifier.write_fresh(self.folder/'child-result.json',evidence)
+            def is_alive(self): return False
+            def join(self,timeout): pass
+            def close(self): pass
+        class Job:
+            def attach(self,process): pass
+            def active(self): return 0
+            def close(self): pass
+        class Provider:
+            def snapshot(self): return Snapshot({'fixture':'stable'})
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root=Path(directory); baseline=root/'baseline.json'
+            baseline.write_bytes(verifier.encoded({'fixture':'stable'}))
+            config=root/'config.json'; config.write_bytes(verifier.encoded(dict(schema='inversion.verification/1',
+                security_baseline_path=str(baseline),security_baseline_sha256=verifier.sha256(baseline.read_bytes()).hexdigest())))
+            for name,value in [('ROOT',root),('_environment',lambda:(None,Provider())),
+                ('_set_opt_ins',lambda _:None),('protect_directory',lambda _:None),
+                ('resource_state_clean',lambda *_:True)]:
+                stack.enter_context(patch.object(verifier,name,value))
+            inventory=stack.enter_context(patch.object(verifier,'source_inventory',side_effect=[parent_before,parent_after]))
+            stack.enter_context(patch.dict('os.environ',{'OILWELL_INVERSION_VERIFIER_CHILD':'0'}))
+            stack.enter_context(patch('multiprocessing.get_context',return_value=SimpleNamespace(Pipe=lambda:(Channel(),Channel()))))
+            stack.enter_context(patch('backend.inversion.worker.OwnedJob',Job))
+            stack.enter_context(patch('backend.inversion.worker._OwnedSpawnProcess',Process))
+            stack.enter_context(patch.object(verifier.subprocess,'run',return_value=SimpleNamespace(returncode=0)))
+            stack.enter_context(patch.object(verifier.subprocess,'check_output',return_value='revision'))
+            stack.enter_context(patch('builtins.print'))
+            code=verifier.supervise(SimpleNamespace(config=config,output=root,include_existing_regression=False))
+            folder=next(root.glob('run-*'))
+            report=json.loads((folder/'report.json').read_bytes())
+            self.assertEqual(json.loads((folder/'child-result.json').read_bytes()),evidence)
+            self.assertEqual(json.loads((folder/'source.json').read_bytes()),parent_before)
+            self.assertEqual(report['source_sha256'],verifier.sha256(verifier.encoded(parent_before)).hexdigest())
+            self.assertEqual(inventory.call_count,2)
+            self.assertTrue(report['security_ok']); self.assertTrue(report['cleanup_ok'])
+            self.assertFalse(report['interrupted'])
+            return code,report
+
+    def test_supervisor_retains_reverted_child_after_drift(self):
+        original={'file':'original'}; changed={'file':'changed'}
+        code,report=self._supervise_source_evidence(original,changed,original)
+        self.assertEqual(code,1)
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['source_after'],changed)
+        self.assertEqual(report['parent_source_before'],original)
+        self.assertEqual(report['parent_source_after'],original)
+
+    def test_supervisor_refuses_child_before_unbound_to_parent(self):
+        original={'file':'original'}; changed={'file':'changed'}
+        for after in (changed,original):
+            with self.subTest(after=after):
+                code,report=self._supervise_source_evidence(changed,after,after)
+                self.assertEqual(code,1)
+                self.assertFalse(report['ok'])
+                self.assertEqual(report['source_before'],changed)
+                self.assertEqual(report['source_after'],after)
+                self.assertEqual(report['parent_source_before'],original)
+                self.assertEqual(report['parent_source_after'],after)
+
+    def test_supervisor_accepts_only_stable_bound_source_maps(self):
+        original={'file':'original'}
+        code,report=self._supervise_source_evidence(original,original,original)
+        self.assertEqual(code,0)
+        self.assertTrue(report['ok'])
+        for field in ('source_before','source_after','parent_source_before','parent_source_after'):
+            self.assertEqual(report[field],original)
+
     def test_internal_selection_loads_exact_names_once_without_discovery(self):
         names=('tests.test_fixture.Example.test_one',)
         calls=[]
@@ -128,6 +210,8 @@ class VerificationTests(unittest.TestCase):
             report=verifier.run_suite(unittest.TestSuite([Example()]),Provider(),
                 Snapshot({'fixture':'stable'}),sink=lambda _:None,source_before={'file':'hash'})
         report['cleanup_ok']=True
+        report.update(parent_source_before={'file':'hash'},parent_source_after={'file':'hash'},
+            source_sha256=verifier.sha256(verifier.encoded({'file':'hash'})).hexdigest())
         self.assertEqual(report['terminal'][0]['outcome'],'success')
         self.assertEqual(report['categories'],{'error':1})
         self.assertFalse(verifier.qualify(report))
@@ -137,10 +221,14 @@ class VerificationTests(unittest.TestCase):
             dict(id='case.a', outcome='success', duration_seconds=0.01)],
             tests_run=1, loader_errors=0, source_before={'a':'123'},
             source_after={'a':'123'}, security_ok=True, cleanup_ok=True,
-            interrupted=False,unittest_ok=True,categories={})
+            interrupted=False,unittest_ok=True,categories={},
+            parent_source_before={'a':'123'},parent_source_after={'a':'123'},
+            source_sha256=verifier.sha256(verifier.encoded({'a':'123'})).hexdigest())
         self.assertTrue(verifier.qualify(good))
         for field, value in [('started', []), ('terminal', []),
                              ('source_after', {'a':'456'}), ('tests_run', 0),
+                             ('parent_source_before', {'a':'456'}),
+                             ('parent_source_after', {'a':'456'}), ('source_sha256','unbound'),
                              ('security_ok', False), ('cleanup_ok', False),
                              ('loader_errors', 1), ('interrupted', True),
                              ('unittest_ok',False),('categories',{'error':1})]:
@@ -182,6 +270,9 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(len(result['discovered']),1)
         self.assertFalse(verifier.qualify(result)) # External cleanup still required.
         result['cleanup_ok']=True
+        self.assertFalse(verifier.qualify(result)) # Parent source binding still required.
+        result.update(parent_source_before={'file':'hash'},parent_source_after={'file':'hash'},
+            source_sha256=verifier.sha256(verifier.encoded({'file':'hash'})).hexdigest())
         self.assertTrue(verifier.qualify(result))
 
     def test_partial_duplicate_or_loader_error_never_runs_cases(self):
