@@ -118,7 +118,8 @@ def three_phase_case(*,signal='instantaneous',missing_phase=False,wiring=True):
     return replace(context,streams=tuple(channels),sampling_configs=configs,calibrations=calibrations,sync_evidence=sync),ProfileVersion(evidence('profile',body))
 
 
-def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=False):
+def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=False,
+              inversion=False,reuse_evidence=None,utc_start='2026-09-29T00:00:00.000000Z'):
     """Actual intake, assembly and independent evidence approval; synthetic only."""
     import base64
     from backend.waveforms.evidence import EvidenceService
@@ -137,9 +138,18 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
         value=service.create(kind,body,command('create',kind=kind,body=body))
         return service.review(value.id,decision='approve',command=command('review',value.id,1,REVIEWER,decision='approve'))
     def ref(item): return dict(id=str(item.id),content_sha256=item.content_sha256,version=str(item.version))
-    profile=approved('profile',profile_body()); selected=[]; captures=[]; frames=[]; raws=[]; wire_captures=[]; endpoints=[]; cycle_ref=None
+    profile_data=profile_body()
+    if inversion:
+        profile_data['required_quantities'][0].update(role='active_power',signal_kind='window_mean')
+        profile_data['min_rates'][0]['role']='active_power'; profile_data['ranges'][0]['role']='active_power'
+        profile_data['required_quantities'].append(dict(role='crank_angle',quantity='crank_angle',unit='rad',signal_kind='instantaneous',measurement_source='synthetic'))
+        profile_data['min_rates'].append(dict(role='crank_angle',rate=dict(num=1,den=1)))
+        profile_data['ranges'].append(dict(role='crank_angle',range=dict(min='-10',max='10',unit='rad')))
+    profile=approved('profile',profile_data); selected=[]; captures=[]; frames=[]; raws=[]; wire_captures=[]; endpoints=[]; cycle_ref=None; channel_evidence={}
     repo=WaveformRepository(case.connect,limits=LIMITS,prefix='oil',ingress_gateway_id='GW')
     layouts=((('electrical',(('power','total_active_power','W'),)),('sensor',(('load','load','kN'),('displacement','displacement','m')))),)
+    if inversion:
+        layouts=((('electrical',(('active_power','total_active_power','W'),)),('sensor',(('load','load','kN'),('displacement','displacement','m'),('crank_angle','crank_angle','rad')))),)
     if two: layouts=((layouts[0][0],),(layouts[0][1],))
     rate=max(1,(count-1)//2); shared_boot=uuid4()
     for n,layout in enumerate(layouts):
@@ -148,19 +158,37 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
         for name,quantities in layout:
             channels=[]
             for role,quantity,unit in quantities:
-                config=approved('sampling_config',config_body(quantity,unit,stream=name,device=device,rate=rate))
-                calibration=approved('calibration',calibration_body(config))
+                config_data=config_body(quantity,unit,stream=name,device=device,rate=rate)
+                if inversion:
+                    config_data['valid_from']='2026-01-01T00:00:00.000000Z'
+                    if role=='crank_angle': config_data['input_range']=dict(min='-10000000',max='10000000',unit=unit)
+                    if role=='active_power':
+                        config_data.update(signal_kind='window_mean',
+                            wiring=dict(connection='motor_terminal_three_phase',voltage_reference='line_to_line',phase='total',phase_sequence='ABC',current_direction='positive_into_motor'),
+                            window=dict(definition='centered arithmetic mean',averaging_window_ns='1000000',timestamp_convention='center'))
+                        config_data['power'].update(averaging_window_ns='1000000',timestamp_convention='center',bandwidth_hz='100')
+                if reuse_evidence:
+                    config,calibration=reuse_evidence[role]
+                else:
+                    config=approved('sampling_config',config_data)
+                    calibration_data=calibration_body(config)
+                    if inversion:
+                        calibration_data.update(valid_from='2026-01-01T00:00:00.000000Z',time_correction_ns='17')
+                        if role=='crank_angle': calibration_data['scale']='0.000001'
+                        if role=='active_power': calibration_data.update(scale='2',offset='1')
+                    calibration=approved('calibration',calibration_data)
+                channel_evidence[role]=(config,calibration)
                 channels.append(dict(channel_id=quantity,quantity=quantity,unit=unit,encoding='i32le',measurement_source='synthetic',
-                    signal_kind='instantaneous',config_id='vendor-label',calibration_id=str(calibration.id)))
+                    signal_kind=config.body['signal_kind'],config_id='vendor-label',calibration_id=str(calibration.id)))
                 selected.append(dict(role=role,capture=key,stream_id=name,channel_id=quantity,first_index='0',last_index=str(count-1),
                     sampling_config=ref(config),calibration=ref(calibration)))
             raw=bytearray()
             for i in range(count):
                 for role,quantity,unit in quantities:
                     flag=quality if role=='load' and i==bad_index else 0
-                    value=(-3+i*6//(count-1)) if role=='power' else (10 if role=='load' else min(i,count-1-i)*4//max(1,(count-1)//2))
+                    value=(-3+i*6//(count-1)) if role in ('power','active_power') else (round(i*6283185/(count-1)) if role=='crank_angle' else 10 if role=='load' else min(i,count-1-i)*4//max(1,(count-1)//2))
                     raw.extend(struct.pack('<iB',0 if flag==1 else value,flag))
-            data=bytes(raw); chunk_frames=min(count,4096)
+            data=bytes(raw); chunk_frames=min(count,32 if inversion else 4096)
             streams.append(dict(stream_id=name,source=source,clock_domain_id='clock',rate_num=rate,rate_den=1,first_sample_index='0',offset_ns='0',
                 frame_count=count,frame_bytes=5*len(channels),chunk_frames=chunk_frames,chunk_count=(count+chunk_frames-1)//chunk_frames,
                 decoded_bytes=len(data),data_sha256=sha256(data).hexdigest(),channels=channels)); payloads.append(data)
@@ -169,7 +197,7 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
             reference_channel='displacement',reference_events=[dict(event=event,stream_id='sensor',sample_index=str(index))
                 for event,index in (('start',0),('turn',(count-1)//2),('end',count-1))]) if has_sensor else None
         body=dict(key,schema='OWP-WAVE/1.0',kind='manifest',boot_id=str(boot),capture_kind='cycle' if cycle else 'event',source_kind='synthetic',
-            producer=dict(manufacturer='Synthetic fixture',recorder_version='1'),source_evidence=None,utc_start='2026-09-29T00:00:00.000000Z',utc_uncertainty_ns='0',
+            producer=dict(manufacturer='Synthetic fixture',recorder_version='1'),source_evidence=None,utc_start=utc_start,utc_uncertainty_ns='0',
             clock_domain_id='clock',sync_evidence_id=None,window_ns='2000000000',cycle=cycle,streams=streams)
         manifest=encoded(body); observed=observation(manifest,topic=f'oil/v2/GW/{device}/waveform'); stored=repo.ingest(observed)
         wire=[manifest]
@@ -199,4 +227,4 @@ def seed_pair(case,*,two=False,count=3,bad_index=None,quality=0,same_source=Fals
     attachment=service.upload_attachment(payload,media_type='application/pdf',command=command('upload',attachment=metadata))
     sync=approved('sync',dict(COMMON,attachment_ids=[str(attachment.id)],method='verified_linear_mapping',reference=endpoints[0]['endpoint'],endpoints=endpoints))
     selection=dict(purpose='software_pair_test',profile=ref(profile),captures=captures,channels=selected,cycle=cycle_ref,sync=ref(sync))
-    return dict(selection=selection,frames=frames,raws=raws,wire_captures=wire_captures,evidence_service=service,evidence_command=command,profile=profile,sync=sync)
+    return dict(selection=selection,frames=frames,raws=raws,wire_captures=wire_captures,evidence_service=service,evidence_command=command,profile=profile,sync=sync,channel_evidence=channel_evidence)

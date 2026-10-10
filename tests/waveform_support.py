@@ -28,7 +28,7 @@ LIMITS = CapacityLimits(
     gateways={"GW": Quota(raw_bytes=268435456,facts=25000,attachment_bytes=33554432,
         incomplete_captures=4,orphan_bytes=2097152,quarantine_bytes=4194304,
         metadata_rows=250000,orphan_bytes_per_capture=524288)})
-RESET_TABLES = "dataset_exports dataset_manifest_chunks dataset_files dataset_members dataset_events dataset_versions dataset_revisions dataset_drafts pair_reviews pair_versions quality_runs restrictions evidence_events evidence_versions attachments business_audit business_receipts observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
+RESET_TABLES = "member_research_exports dataset_exports dataset_manifest_chunks dataset_files dataset_members dataset_events dataset_versions dataset_revisions dataset_drafts pair_reviews pair_versions quality_runs restrictions evidence_events evidence_versions attachments business_audit business_receipts observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
 
 
 class WaveformDatabaseCase(unittest.TestCase):
@@ -63,6 +63,16 @@ class WaveformDatabaseCase(unittest.TestCase):
         self.guard.execute("SET statement_timeout='30s'")
         self.guard.execute("SELECT pg_advisory_lock(%s)",(TEST_LOCK,))
     def _migrate_and_grant_waveform_under_lock(self):
+        # Explicit registry-owner prerequisite for additive metadata projections.
+        # Runs only after the pinned database identity and session reset lock.
+        from tools.provision_waveform_registry_test import owner_settings,sidecar_identity
+        from backend.waveforms.registry_dependency import grant_registry_history_prerequisites
+        settings=owner_settings(); expected=sidecar_identity(self.manifest)
+        self.assertEqual(settings['user'],expected['role'])
+        with psycopg.connect(**settings) as conn:
+            self._check_endpoint(conn)
+            grant_registry_history_prerequisites(conn,registry_owner=expected['role'],
+                                                waveform_owner=self.settings['migration_owner']['user'])
         migrate(self.settings["migration_owner"],expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
         with self.connect("migration_owner") as conn:
             grant_roles(conn,roles={role:self.settings[role]["user"] for role in ROLES})

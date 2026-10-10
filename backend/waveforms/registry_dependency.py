@@ -10,6 +10,8 @@ PROJECTIONS = {
     'registry_well_bindings':('well_bindings',('id','device_id','well_id','valid_from','valid_to','audit_event_id')),
     'registry_wells':('wells',('id','area_code','well_code','created_at')),
     'registry_head':('registry_head',('singleton','revision')),
+    'registry_point_maps':('point_map_versions',('device_id','version','transport','canonical_rule','content','sha256','status','created_at','reviewed_at','created_event_id','review_event_id')),
+    'registry_map_assignments':('point_map_assignments',('id','device_id','map_version','valid_from','valid_to','audit_event_id')),
 }
 
 

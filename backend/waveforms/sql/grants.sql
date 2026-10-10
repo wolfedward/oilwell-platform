@@ -50,7 +50,8 @@ GRANT INSERT ON waveforms.attachments,waveforms.evidence_versions,waveforms.evid
     waveforms.restrictions,waveforms.quality_runs,waveforms.pair_versions,waveforms.pair_reviews,
     waveforms.business_audit,waveforms.business_receipts TO {operator};
 GRANT SELECT ON waveforms.registry_devices,waveforms.registry_device_states,waveforms.registry_well_bindings,
-    waveforms.registry_wells,waveforms.registry_head TO {reader};
+    waveforms.registry_wells,waveforms.registry_head,waveforms.registry_point_maps,
+    waveforms.registry_map_assignments TO {reader},{operator};
 GRANT EXECUTE ON FUNCTION waveforms.lock_business_capacity(TEXT),waveforms.lock_business_captures(UUID[]) TO {operator};
 GRANT EXECUTE ON FUNCTION waveforms.audited_attachment(UUID,JSONB,TEXT) TO {reader};
 GRANT SELECT(capture_pk,stream_id,chunk_index,fact_id) ON waveforms.chunk_slots TO {reader};
@@ -64,3 +65,5 @@ GRANT SELECT ON waveforms.dataset_drafts,waveforms.dataset_revisions,waveforms.d
 GRANT INSERT ON waveforms.dataset_drafts,waveforms.dataset_revisions,waveforms.dataset_events,
     waveforms.dataset_versions,waveforms.dataset_members,waveforms.dataset_files,
     waveforms.dataset_manifest_chunks,waveforms.dataset_exports TO {operator};
+GRANT SELECT ON waveforms.member_research_exports,waveforms.archive_channel_metadata TO {reader},{operator};
+GRANT INSERT ON waveforms.member_research_exports TO {operator};

@@ -222,6 +222,16 @@ class ParameterService(GovernanceService):
             refuse('evidence_interval')
         return body
 
+    def _sync_evidence(self,cur,pin,source):
+        """Optional archived sync pins are real approval identities, not flags."""
+        cur.execute('SELECT kind,content_sha256,body,accounting_bucket FROM waveforms.evidence_versions WHERE evidence_id=%s',(pin.id,))
+        saved=cur.fetchone()
+        cur.execute('SELECT version,state FROM waveforms.evidence_events WHERE evidence_id=%s ORDER BY version DESC LIMIT 1',(pin.id,))
+        if (saved is None or saved[0]!='sync' or saved[1]!=pin.content_sha256 or saved[3]!=self.bucket
+            or cur.fetchone()!=(pin.review_version,'approved')): refuse('archive_sync_unapproved')
+        if saved[2]['source_kind']!=source: refuse('archive_sync_source')
+        return saved[2]
+
     def _validate(self, cur, record, *, start=None, end=None, uncertainty_ns=0):
         parameter=parse_parameter_set(canonical_bytes(record.body))
         if parameter.source_kind=='unknown': refuse('source_ineligible')
@@ -261,6 +271,7 @@ class ParameterService(GovernanceService):
         for binding in provenance.channel_bindings:
             self._attachments(cur,binding.installation_evidence_refs,'installation')
             pin=binding.channel_pin
+            if pin.sync_pin is not None: self._sync_evidence(cur,pin.sync_pin,parameter.source_kind)
             endpoint={key:getattr(pin,key) for key in ('gateway_id','device_id','stream_id','channel_id')}
             sampling=self._evidence(cur,pin.sampling_pin,'sampling_config',endpoint,parameter.source_kind,start,end,observation,uncertainty_ns)
             calibration=self._evidence(cur,pin.calibration_pin,'calibration',endpoint,parameter.source_kind,start,end,observation,uncertainty_ns)

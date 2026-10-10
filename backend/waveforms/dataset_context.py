@@ -4,6 +4,7 @@ No decoded capture buffers survive a raw chunk. Guarded methods only reread
 mutable metadata and fresh registry projections, never raw bytes or sample scans.
 """
 from collections import defaultdict
+from dataclasses import dataclass
 from fractions import Fraction
 from hashlib import sha256
 import json
@@ -15,13 +16,23 @@ from .dataset_contracts import fail,snapshot_hash,reason_codes
 from .evidence_contracts import canonical_bytes,thaw
 from .pair_contracts import capture_key,key_dict,pair_content,public,bounded
 from .quality_context import ContextBuilder
-from .registry_context import RegistryContext
+from .registry_context import RegistryContext,resolve_with_cursor
 from .samples import iter_samples
 from .wire import parse_frame
 
 
 def applicable(snapshot):
     return {k:v for k,v in snapshot.items() if k!='revision'} if snapshot else None
+
+
+@dataclass(frozen=True)
+class PreparedMember:
+    version_id: UUID
+    ordinal: int
+    certificate: dict
+    captures: dict
+    files: dict
+    applicability: tuple[str,...]
 
 
 class DatasetContext(ContextBuilder):
@@ -70,12 +81,14 @@ class DatasetContext(ContextBuilder):
                       registry=dict(historical=first['registry_snapshot'],freeze=None),physical_cycles=first['parameters']['physical_cycles'],payload_fingerprints=[],restrictions=[])
         return dict(member=dict(member),selection=selection,refs=refs,snapshot=snapshot,status=first['status'],purpose=first['purpose'],historical_reasons=first['result']['reasons'])
 
-    def registry_now(self,certificate):
+    def registry_now(self,certificate,cur=None):
         old=certificate['snapshot']['registry']['historical']
         if not old or not old['sources']: return old
         sources=tuple(dict.fromkeys(capture_key(source['capture']) for source in old['sources']))
-        return public(RegistryContext(self._read_connect).resolve(sources,utc_start=old['utc_start'],start_ns=Fraction(old['start_ns']),
-            end_ns=Fraction(old['end_ns']),uncertainty_ns=Fraction(old['uncertainty_ns']) if old['uncertainty_ns'] is not None else None,revision=None))
+        kwargs=dict(utc_start=old['utc_start'],start_ns=Fraction(old['start_ns']),
+            end_ns=Fraction(old['end_ns']),uncertainty_ns=Fraction(old['uncertainty_ns']) if old['uncertainty_ns'] is not None else None)
+        return public(resolve_with_cursor(cur,sources,**kwargs) if cur is not None else
+                      RegistryContext(self._read_connect).resolve(sources,**kwargs,revision=None))
 
     def current(self,cur,certificate,captures,*,registry,metadata=None):
         reasons=[]; snap=certificate['snapshot']; member=certificate['member']
@@ -158,7 +171,7 @@ class DatasetContext(ContextBuilder):
         # Call-local metadata is read only after all existing capture locks.
         metadata=self.capture_rows(cur,prepared['captures'],current=True)
         for certificate in prepared['certificates']:
-            registry=self.registry_now(certificate)
+            registry=self.registry_now(certificate,cur)
             if strict and registry!=certificate['snapshot']['registry']['freeze']: fail('stale_preparation','Registry changed after manifest preparation')
             current=self.current(cur,certificate,prepared['captures'],registry=registry,metadata=metadata)
             if strict: self.restriction_snapshot(cur,certificate,prepared['captures'],current,expected=certificate['snapshot']['restrictions'])
@@ -294,3 +307,37 @@ class DatasetContext(ContextBuilder):
         captures=self.capture_rows(cur,keys)
         if set(captures)!=keys: fail('member_missing','Frozen capture absent')
         return dict(certificates=certificates,captures=captures)
+
+    def load_member_prepared(self,cur,version_id: UUID,ordinal: int) -> PreparedMember:
+        """One indexed member lookup, one pair, at most two file plans."""
+        if type(version_id) is not UUID or type(ordinal) is not int or not 0<=ordinal<=999:
+            fail('member_identity','Invalid frozen member identity')
+        cur.execute('SELECT kind,reference_id,quality_run_id,split,snapshot FROM waveforms.dataset_members WHERE version_id=%s AND ordinal=%s',(version_id,ordinal))
+        member=cur.fetchone()
+        if member is None: fail('member_missing','Frozen member does not exist')
+        kind,reference,quality,split,snapshot=member
+        if kind!='pair': fail('member_identity','Research input requires one pair')
+        certificate=self.certificate(cur,dict(kind=kind,reference_id=str(reference),quality_run_id=str(quality),split=split))
+        certificate['snapshot']=snapshot
+        keys={capture_key(chosen['key']) for chosen in certificate['selection']['captures']}
+        if not 1<=len(keys)<=2: fail('member_limit','One pair may read at most two captures')
+        captures=self.capture_rows(cur,keys,current=True)
+        if set(captures)!=keys: fail('member_missing','Frozen capture absent')
+        files={}
+        for key in sorted(keys,key=lambda k:(k.gateway_id,k.device_id,str(k.capture_id))):
+            cur.execute('SELECT descriptor,plan FROM waveforms.dataset_files WHERE version_id=%s AND capture_pk=%s',(version_id,captures[key]['capture_pk']))
+            found=cur.fetchone()
+            if found is None or capture_key(found[0]['key'])!=key or found[0]['file_plan_sha256']!=snapshot_hash('file_plan',found[1]):
+                fail('file_identity','Frozen member file plan differs')
+            if not 1<=found[0]['content_length']<=33554432 or sum(fact['raw_length']+1 for fact in found[1])!=found[0]['content_length']:
+                fail('file_limit','Frozen file exceeds the original byte bound')
+            files[key]=dict(descriptor=found[0],plan=found[1])
+        registry=self.registry_now(certificate,cur)
+        reasons=self.current(cur,certificate,captures,registry=registry,metadata=captures)
+        return PreparedMember(version_id,ordinal,certificate,captures,files,reasons)
+
+    def recheck_member(self,cur,prepared):
+        self.lock_captures(cur,prepared.captures)
+        metadata=self.capture_rows(cur,prepared.captures,current=True)
+        return self.current(cur,prepared.certificate,prepared.captures,
+                            registry=self.registry_now(prepared.certificate,cur),metadata=metadata)

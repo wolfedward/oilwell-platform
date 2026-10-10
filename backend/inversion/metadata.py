@@ -8,6 +8,14 @@ WAVEFORM_COLUMNS = {
     'evidence_events': {'evidence_id','version','state'},
 }
 REGISTRY_COLUMNS = {'wells': {'id','status'}}
+from backend.waveforms.registry_dependency import PROJECTIONS
+WAVEFORM_COLUMNS.update({view:set(columns) for view,(_,columns) in PROJECTIONS.items()})
+WAVEFORM_COLUMNS.update({
+    'archive_channel_metadata':set('capture_pk gateway_id device_id capture_id manifest_sha256 state completion_status restricted utc_start utc_uncertainty_ns source_kind cycle stream_id specification'.split()),
+    'dataset_versions':{'version_id','content_sha256','purpose'},
+    'dataset_members':{'version_id','ordinal','kind','reference_id','snapshot'},
+    'pair_reviews':{'pair_version_id','version','decision'},
+})
 
 
 def _grant(conn, roles, schema, tables):
@@ -36,6 +44,7 @@ def _grant(conn, roles, schema, tables):
 def grant_metadata(conn, *, roles):
     """Run explicitly as waveform schema owner, never at service startup."""
     _grant(conn,roles,'waveforms',WAVEFORM_COLUMNS)
+    conn.execute(sql.SQL('GRANT EXECUTE ON FUNCTION waveforms.lock_business_capacity(text),waveforms.lock_business_captures(uuid[]) TO {}').format(sql.Identifier(roles['operator'])))
 
 
 def grant_registry_metadata(conn, *, roles):
@@ -63,5 +72,9 @@ def probe_metadata(connect):
                         actual=conn.execute('SELECT has_column_privilege(current_user,%s,%s,%s)',(oid,number,privilege)).fetchone()[0]
                         grant=conn.execute('SELECT has_column_privilege(current_user,%s,%s,%s)',(oid,number,privilege+' WITH GRANT OPTION')).fetchone()[0]
                         if actual != expected or grant: raise InversionError('unsafe_metadata_privileges')
-            if conn.execute('SELECT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=%s AND has_function_privilege(current_user,p.oid,\'EXECUTE\'))',(schema,)).fetchone()[0]:
-                raise InversionError('unsafe_metadata_privileges')
+            operator=conn.execute("SELECT has_table_privilege(current_user,'inversion.assemblies','INSERT')").fetchone()[0]
+            allowed_functions={('lock_business_capacity','p_bucket text'),('lock_business_captures','p_ids uuid[]')} if schema=='waveforms' and operator else set()
+            functions=conn.execute("SELECT p.oid,p.proname,pg_get_function_identity_arguments(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=%s",(schema,)).fetchall()
+            for oid,name,args in functions:
+                actual,grant=conn.execute('SELECT has_function_privilege(current_user,%s,\'EXECUTE\'),has_function_privilege(current_user,%s,\'EXECUTE WITH GRANT OPTION\')',(oid,oid)).fetchone()
+                if actual!=((name,args) in allowed_functions) or grant: raise InversionError('unsafe_metadata_privileges')

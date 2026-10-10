@@ -125,3 +125,87 @@ def parameter_body():
 def parameter_wire(body=None):
     return json.dumps(parameter_body() if body is None else body, sort_keys=True,
                       separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def acquired_case(case,*,count=129,later=False,angle=True,archive_sync=True):
+    """Genuine WP04 intake/evidence/pair/freeze and independently approved governance."""
+    from copy import deepcopy
+    from dataclasses import replace
+    from uuid import uuid4
+    from backend.waveforms.commands import Command,pair_request_hash
+    from backend.waveforms.pairing import PairService
+    from backend.waveforms.member_exports import MemberResearchExporter
+    from backend.inversion.models import ModelService
+    from backend.inversion.selections import SelectionService
+    from backend.inversion.contracts import canonical_bytes
+    from backend.waveforms.registry_context import datetime_ns
+    from backend.inversion.contracts import utc
+    from tests.waveform_dataset_support import DatasetCase
+    from tests.waveform_pairing_support import seed_pair,CREATOR,REVIEWER
+    from tests.waveform_support import LIMITS
+    from tests.inversion_governance_support import command,AUTHOR,REVIEWER as INV_REVIEWER
+    archive=seed_pair(case,count=count,inversion=True)
+    vector=seed_pair(case,count=count,inversion=True,reuse_evidence=archive['channel_evidence'],
+                     utc_start='2026-09-29T00:01:00.000000Z') if later else archive
+    if not angle:
+        vector=dict(vector); vector['selection']=deepcopy(vector['selection'])
+        profile=__import__('backend.waveforms.evidence_contracts',fromlist=['thaw']).thaw(vector['profile'].body)
+        for key in ('required_quantities','min_rates','ranges'):
+            profile[key]=[item for item in profile[key] if item['role']!='crank_angle']
+        profile=case.approved_evidence('profile',profile)
+        vector['selection']['profile']=dict(id=str(profile.id),content_sha256=profile.content_sha256,version=str(profile.version))
+        vector['selection']['channels']=[c for c in vector['selection']['channels'] if c['role']!='crank_angle']
+    pairs=PairService(lambda:case.connect('operator'),limits=LIMITS,shared_accounting_bucket='GW',read_connect=lambda:case.connect('reader'))
+    body=dict(selection=vector['selection'],method_version='linear_adjacent/1')
+    cmd=Command(CREATOR,uuid4(),0,'Real inversion synthetic pair','0'*64)
+    pair=pairs.propose(body,replace(cmd,request_hash=pair_request_hash('propose',None,cmd,body=body)))
+    cmd=Command(REVIEWER,uuid4(),1,'Independent pair approval','0'*64)
+    pairs.review(pair.id,decision='approve',command=replace(cmd,request_hash=pair_request_hash('review',pair.id,cmd,decision='approve')))
+    service,draft=DatasetCase.submitted(case,pair)
+    body=dict(target_id=str(draft.id)); frozen=service.freeze(body,case.command('freeze',draft.id,draft.revision,REVIEWER,body=body))
+    assembly=case.create_assembly()[0].subject_id
+    parameters=case.body(assembly)
+    parameters['provenance']['operating_conditions'][0].update(
+        valid_from='2025-01-01T00:00:00.000000Z',valid_to='2028-01-01T00:00:00.000000Z')
+    # Replace every provenance pin with actual archived immutable channel identity.
+    for binding in parameters['provenance']['channel_bindings']:
+        chosen=next((c for c in archive['selection']['channels'] if c['role']==binding['role']),None)
+        if chosen is None: continue  # Missing-angle case must fail the frozen-selection gate.
+        capture=next(c for c in archive['selection']['captures'] if c['key']==chosen['capture'])
+        binding['channel_pin']={**chosen['capture'],'stream_id':chosen['stream_id'],'channel_id':chosen['channel_id'],
+            'manifest_sha256':capture['manifest_sha256'],'first_index':int(chosen['first_index']),'last_index':int(chosen['last_index']),
+            'sampling_pin':dict(id=chosen['sampling_config']['id'],content_sha256=chosen['sampling_config']['content_sha256'],review_version=int(chosen['sampling_config']['version'])),
+            'sync_pin':dict(id=str(archive['sync'].id),content_sha256=archive['sync'].content_sha256,review_version=archive['sync'].version),
+            'calibration_pin':dict(id=chosen['calibration']['id'],content_sha256=chosen['calibration']['content_sha256'],review_version=int(chosen['calibration']['version']))}
+        if not archive_sync: binding['channel_pin'].pop('sync_pin')
+    parameters['phase']['channel_pin']=deepcopy(parameters['provenance']['channel_bindings'][1]['channel_pin'])
+    parameters['phase']['unwrap_kind']='unwrapped'
+    for key,lo,hi in (('power_W','-100','100'),('speed_rad_s','0.1','10'),('acceleration_rad_s2','-10','10'),
+                      ('bandwidth_Hz','1','1000'),('window_ns','1','10000000'),('load_N','0','100000')):
+        parameters['domain'][key]=dict(min=lo,max=hi)
+    parameters['drive']['loss_grid'].update(power_W=['-100','100'],motor_speed_rad_s=['1','100'])
+    policy=parameters['policy']['body']; policy['motion_max_time_span_ns']='1000000000'; policy['motion_max_angle_span_rad']='0.5'
+    parameters['policy']['content_sha256']=sha256(canonical_bytes(policy)).hexdigest()
+    coverage=parameters['provenance']['coverage']; coverage['policy_sha256']=parameters['policy']['content_sha256']
+    coverage['domain_sha256']=sha256(canonical_bytes(parameters['domain'])).hexdigest()
+    frame=archive['frames'][-1]; declaration=frame.body['cycle']
+    stream=next(s for s in frame.streams if s.stream_id=='sensor')
+    identities=[dict(source=dict(stream.source),stream_id='sensor',channel_id='displacement',index=e['sample_index']) for e in declaration['reference_events']]
+    anchor=datetime_ns(utc(frame.body['utc_start']))
+    parameters['provenance']['calibration_cycles']=[dict(start_ns=str(anchor+17),end_ns=str(anchor+2000000017),
+        physical_cycle_id=sha256(canonical_bytes(identities)).hexdigest())]
+    approved=case.approved_parameter(assembly,parameters)
+    case.parameters.assign(dict(assembly_id=str(assembly),well_id='test:synthetic-inversion',valid_from='2026-01-01T00:00:00.000000Z',
+        valid_to=None,close_assignment_id=None),command())
+    models=ModelService(case.inversion_fixture.connect,read_connect=lambda:case.inversion_fixture.connect('reader'),authorize=case.authorize)
+    model=models.register('beam_energy_balance/1',command()); models.review(model.subject_id,'approve',command(INV_REVIEWER,1)); model=models.get(model.subject_id)
+    selection=SelectionService(case.inversion_fixture.connect,read_connect=lambda:case.inversion_fixture.connect('reader'),
+                              authorize=case.authorize,parameters=case.parameters,models=models)
+    selection.select(dict(assembly_id=str(assembly),parameter_id=str(approved.id),parameter_sha256=approved.content_sha256,
+        parameter_review_version=approved.review_version,model_id=str(model.id),model_sha256=model.content_sha256,model_review_version=model.review_version),command())
+    request=dict(dataset_version_id=str(frozen.id),dataset_sha256=frozen.content_sha256,member_ordinal=0,pair_id=str(pair.id),
+        pair_sha256=pair.content_sha256,pair_review_version=2,assembly_id=str(assembly),parameter_id=str(approved.id),
+        parameter_sha256=approved.content_sha256,parameter_review_version=approved.review_version,model_id=str(model.id),
+        model_sha256=model.content_sha256,model_review_version=model.review_version,selection_version=1,operating_condition_ids=['condition-1'])
+    exporter=MemberResearchExporter(lambda:case.connect('operator'),limits=LIMITS,shared_accounting_bucket='GW',read_connect=lambda:case.connect('reader'))
+    return dict(request=request,vector=vector,archive=archive,exporter=exporter,parameters=approved)

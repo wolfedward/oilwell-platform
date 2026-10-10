@@ -35,19 +35,23 @@ class ChannelPin:
     sampling_pin: EvidencePin
     first_index: int
     last_index: int
+    sync_pin: EvidencePin | None = None
 
     @classmethod
     def from_wire(cls, value):
-        fields(value, cls.__dataclass_fields__)
+        if type(value) is not dict: fail()
+        fields(value, (set(cls.__dataclass_fields__)-{'sync_pin'}) | ({'sync_pin'} if 'sync_pin' in value else set()))
         return cls(name(value["gateway_id"]), name(value["device_id"]), identity(value["capture_id"]),
                    name(value["stream_id"]), name(value["channel_id"]), digest(value["manifest_sha256"]),
                    EvidencePin.from_wire(value["calibration_pin"]), EvidencePin.from_wire(value["sampling_pin"]),
-                   integer(value["first_index"]), integer(value["last_index"]))
+                   integer(value["first_index"]), integer(value["last_index"]),
+                   EvidencePin.from_wire(value['sync_pin']) if value.get('sync_pin') is not None else None)
 
     def __post_init__(self):
         name(self.gateway_id); name(self.device_id); name(self.stream_id); name(self.channel_id)
         if type(self.capture_id) is not UUID or type(self.calibration_pin) is not EvidencePin or type(self.sampling_pin) is not EvidencePin: fail()
         digest(self.manifest_sha256)
+        if self.sync_pin is not None and type(self.sync_pin) is not EvidencePin: fail()
         integer(self.first_index); integer(self.last_index, minimum=self.first_index)
 
 

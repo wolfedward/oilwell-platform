@@ -108,11 +108,22 @@ class WaveformSchemaTests(WaveformDatabaseCase):
             self.assertEqual(before[-1][2],migration.structure_digest(conn))
             with self.assertRaises(WaveformError): migration.check_schema(conn,expected_database=TEST_DATABASE)
             self.assertTrue(migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')['applied'])
-            self.assertEqual(migration.check_schema(conn,expected_database=TEST_DATABASE)['version'],'5')
+            self.assertEqual(migration.check_schema(conn,expected_database=TEST_DATABASE)['version'],'6')
             self.assertEqual(conn.execute('SELECT * FROM waveforms.schema_migrations WHERE version<=4 ORDER BY version').fetchall(),before)
             self.assertEqual(conn.execute('SELECT * FROM waveforms.facts').fetchall(),facts)
             self.assertFalse(migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')['applied'])
-            self.assertEqual(conn.execute('SELECT structure_sha256 FROM waveforms.schema_migrations WHERE version=5').fetchone()[0],migration.structure_digest(conn,migration_version=5))
+            self.assertEqual(conn.execute('SELECT structure_sha256 FROM waveforms.schema_migrations WHERE version=6').fetchone()[0],migration.structure_digest(conn,migration_version=6))
+
+    def test_populated_v5_member_upgrade_preserves_history_and_originals(self):
+        with self.migration_sandbox(version=5) as conn:
+            payload=b'Preserved v5 original bytes'; fact=uuid4()
+            conn.execute("INSERT INTO waveforms.facts(fact_id,intake_gateway_id,raw_payload,payload_sha256,payload_bytes,received_at) VALUES(%s,'GW',%s,%s,%s,CURRENT_TIMESTAMP)",(fact,payload,sha256(payload).hexdigest(),len(payload)))
+            history=conn.execute('SELECT * FROM waveforms.schema_migrations ORDER BY version').fetchall()
+            self.assertTrue(migrate({},expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')['applied'])
+            self.assertEqual(migration.check_schema(conn,expected_database=TEST_DATABASE)['version'],'6')
+            self.assertEqual(conn.execute('SELECT * FROM waveforms.schema_migrations WHERE version<=5 ORDER BY version').fetchall(),history)
+            self.assertEqual(bytes(conn.execute('SELECT raw_payload FROM waveforms.facts WHERE fact_id=%s',(fact,)).fetchone()[0]),payload)
+            self.assertEqual(conn.execute('SELECT count(*) FROM waveforms.member_research_exports').fetchone()[0],0)
 
     def test_tampered_v4_refuses_append5_and_failed_append5_rolls_back(self):
         with self.migration_sandbox(version=4) as conn:
@@ -147,7 +158,7 @@ class WaveformSchemaTests(WaveformDatabaseCase):
                     outcomes = conn.execute("SELECT * FROM waveforms.message_outcomes").fetchall()
                     with self.assertRaises(WaveformError): migration.check_schema(conn, expected_database=TEST_DATABASE)
                 self.assertTrue(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
-                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "5")
+                self.assertEqual(migration.check_schema(conn, expected_database=TEST_DATABASE)["version"], "6")
                 self.assertFalse(migrate({}, expected_database=TEST_DATABASE, limits=LIMITS, shared_accounting_bucket='GW')["applied"])
                 if v1:
                     self.assertEqual(conn.execute("SELECT * FROM waveforms.schema_migrations WHERE version=1").fetchall(), history)
