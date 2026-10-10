@@ -31,6 +31,7 @@ export function mountActionForm(root, client, spec, onChanged) {
   const send = element('button', spec.label, 'button primary'); send.type = 'submit'; form.append(send);
   const recover = element('button','查询原操作','button'); recover.type='button'; recover.dataset.inversionRecover=''; form.append(recover);
   const replay = element('button','使用原请求重试','button'); replay.type='button'; replay.dataset.inversionReplay=''; form.append(replay);
+  const savedView = element('pre', '', 'inversion-saved'); savedView.dataset.inversionSaved=''; form.append(savedView);
   const status = element('p', '', 'inversion-command-status'); status.setAttribute('role','status'); form.append(status); root.append(form);
   let disposed = false, busy = false;
   const slot = spec.slot || spec.action + ':' + spec.path;
@@ -39,7 +40,15 @@ export function mountActionForm(root, client, spec, onChanged) {
     if (disposed) return;
     const saved = pending(); body && (body.disabled = !!saved); reason.disabled = !!saved; decision && (decision.disabled = !!saved);
     send.disabled = busy || !!saved; recover.hidden = !saved; replay.hidden = !saved; recover.disabled = replay.disabled = busy || !saved;
-    if (saved) {reason.value=saved.envelope.command.reason; status.textContent ||= '待确认原操作；先查询其提交结果。';}
+    if (saved) {
+      reason.value = saved.envelope.command.reason;
+      if (body) body.value = JSON.stringify(saved.envelope.body, null, 2);
+      if (decision) decision.value = saved.envelope.body?.decision || '';
+      savedView.hidden = false;
+      savedView.textContent = JSON.stringify({action:saved.action,target:saved.path,
+        command:saved.envelope.command,body:saved.envelope.body},null,2);
+      status.textContent ||= '待确认原操作；先查询其提交结果。';
+    } else savedView.hidden = true;
   }
   async function execute(retry = false) {
     if (disposed || busy) return;

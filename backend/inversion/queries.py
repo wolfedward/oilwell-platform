@@ -106,6 +106,14 @@ class InversionQueries:
                 rows=conn.execute('SELECT id,action,subject_id,reason,created_at FROM inversion.audit WHERE (%s::text IS NULL OR action=%s) AND (%s::uuid IS NULL OR subject_id=%s) ORDER BY created_at DESC,id LIMIT %s OFFSET %s',
                     (filters.get('action'),filters.get('action'),filters.get('subject_id'),filters.get('subject_id'),limit,offset)).fetchall()
                 columns=('id','action','subject_id','reason','created_at')
+            elif action == 'parameters.list' and filters.get('assembly_id') is not None:
+                assembly_id=filters['assembly_id']
+                statement=('SELECT p.id,p.assembly_id,p.assembly_version,p.version,p.content_sha256,r.version,r.action '
+                    'FROM inversion.parameter_versions p LEFT JOIN LATERAL '
+                    '(SELECT version,action FROM inversion.reviews WHERE subject_id=p.id ORDER BY version DESC LIMIT 1) r ON true '
+                    'WHERE p.assembly_id=%s ORDER BY p.version DESC LIMIT %s OFFSET %s')
+                columns=statements['parameters.list'][1]
+                rows=conn.execute(statement,(assembly_id,limit,offset)).fetchall()
             else:
                 statement,columns=statements[action]
                 args=(identifier,limit,offset) if action=='selections.list' else (limit,offset)

@@ -7,13 +7,20 @@ const freeze = value => {
   return value;
 };
 const deniedError = () => Object.assign(new Error('当前登录会话无权继续此操作'), {status: 403, code: 'session_denied'});
+// These codes are raised before the transaction commits. A post-commit read
+// can also return 409 (notably export_manifest_corrupt), so status alone is
+// insufficient evidence that a command is safe to replace.
+const DEFINITE_PRECOMMIT_REJECTIONS = new Set([
+  'inversion.self_review', 'inversion.version_conflict', 'inversion.parent_conflict',
+  'inversion.review_transition',
+]);
 
 export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.api)} = {}) {
   const token = ctx.authSession && typeof ctx.authSession === 'object' ? ctx.authSession : ctx;
   let actors = sessions.get(token);
   if (!actors) {actors = new Map(); sessions.set(token, actors);}
   const actor = String(ctx.actorId ?? '');
-  if (!actors.has(actor)) actors.set(actor, {denied: false, pending: new Map()});
+  if (!actors.has(actor)) actors.set(actor, {denied: false, pending: new Map(), uncertain: new Set()});
   const session = actors.get(actor);
   const controllers = new Set();
   let disposed = false;
@@ -48,7 +55,10 @@ export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.a
     const query = new URLSearchParams({action: saved.action});
     if (saved.intent) query.set('intent', saved.intent);
     const value = await call(`/requests/${saved.envelope.command.key}?${query}`, 'GET', undefined, saved.permission);
-    if (value?.state === 'committed') session.pending.delete(slot);
+    if (value?.state === 'committed') {
+      session.pending.delete(slot);
+      session.uncertain.delete(slot);
+    }
     return value;
   }
   async function submit(input) {
@@ -63,9 +73,20 @@ export function createInversionClient(ctx, {request = ctx.api.request.bind(ctx.a
       saved = prepare({...input, slot});
       session.pending.set(slot, saved);
     }
-    const value = await call(saved.path, 'POST', saved.envelope, saved.permission);
-    if (value) session.pending.delete(slot);
-    return value;
+    try {
+      const value = await call(saved.path, 'POST', saved.envelope, saved.permission);
+      if (value) {
+        session.pending.delete(slot);
+        session.uncertain.delete(slot);
+      } else session.uncertain.add(slot);
+      return value;
+    } catch (error) {
+      const definite = error?.status === 400 && error?.code === 'inversion.contract_invalid'
+        || error?.status === 409 && DEFINITE_PRECOMMIT_REJECTIONS.has(error?.code);
+      if (definite && !session.uncertain.has(slot)) session.pending.delete(slot);
+      else session.uncertain.add(slot);
+      throw error;
+    }
   }
   return {
     get(path, permission = 'inversion.read') {return call(path, 'GET', undefined, permission);},

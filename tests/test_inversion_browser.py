@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class InversionParametersBrowserTests(unittest.TestCase):
     def run_fixture(self, mode, width=1120):
-        source = (ROOT / 'tests/fixtures/inversion_parameters_check.html').read_text(encoding='utf-8')
+        fixture = 'inversion_review_check.html' if mode.startswith('round1-') else 'inversion_parameters_check.html'
+        source = (ROOT / 'tests/fixtures' / fixture).read_text(encoding='utf-8')
         for marker, path in {
             'STYLE_MODULE': 'styles.css', 'APP_MODULE': 'app.js',
             'PAGE_MODULE': 'frontend/pages/production-parameters.js',
@@ -59,6 +60,24 @@ class InversionParametersBrowserTests(unittest.TestCase):
 
     def test_denial_sticks_to_actor_session_and_disposal_blocks_late_data(self):
         self.run_fixture('denial-lifecycle')
+
+    def test_rejected_draft_can_be_corrected_without_new_login(self):
+        self.run_fixture('round1-rejection')
+
+    def test_assembly_parameter_and_other_histories_page_without_guessing_head(self):
+        self.run_fixture('round1-pagination')
+
+    def test_actual_parameter_difference_and_read_only_mechanical_selection_history(self):
+        self.run_fixture('round1-difference')
+
+    def test_timeout_remount_displays_original_command_and_replays_it(self):
+        self.run_fixture('round1-pending')
+
+    def test_postcommit_conflict_keeps_original_command_for_lookup(self):
+        self.run_fixture('round1-postcommit')
+
+    def test_pending_review_remount_shows_original_decision_and_replays_it(self):
+        self.run_fixture('round1-decision-pending')
 
 
 if __name__ == '__main__':

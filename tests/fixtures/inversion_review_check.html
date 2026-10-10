@@ -1,0 +1,138 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href=STYLE_MODULE><div id="root"></div><pre id="result">pending</pre>
+<script type="module">
+const mode='FIXTURE_MODE',PAGE=PAGE_MODULE,API=API_MODULE,checks=[];
+const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
+const wait=async(fn)=>{const end=Date.now()+5000;while(!fn()){if(Date.now()>end)throw Error('timeout '+checks.at(-1));await new Promise(resolve=>setTimeout(resolve,10))}};
+const base='/api/production-inversion',A='11111111-1111-4111-8111-111111111111',B='22222222-2222-4222-8222-222222222222',C='33333333-3333-4333-8333-333333333333';
+const P1='44444444-4444-4444-8444-444444444444',P2='55555555-5555-4555-8555-555555555555',M='66666666-6666-4666-8666-666666666666';
+const calls=[],session={},root=document.querySelector('#root');let status409=false,mutations=0;
+const answer=(data,status=200,code='inversion.contract_invalid')=>new Response(JSON.stringify(status>=400?{code,message:'refused',details:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
+const assembly=(id,version=1)=>({id,version,valid_from:'2026-01-01T00:00:00Z',valid_to:null,body:{assembly_id:id,manufacturer:'Maker',model:'Beam',asset_number:'ASSET',mechanism:'conventional_crank_balanced',source_kind:'field_measurement',source_organization:'Field Lab',valid_from:'2026-01-01T00:00:00Z',valid_to:null,parent_version:version===1?null:version-1,installation_evidence:[]}});
+const body1={schema:'inversion.parameter-set/1',assembly_id:A,assembly_version:1,source_kind:'field_measurement',valid_from:'2026-01-01T00:00:00Z',valid_to:null,parent_version:null,geometry:{pivot_x_m:'1.250000000000000001',crank_radius_m:'0.75',evidence_refs:[{id:C,content_sha256:'a'.repeat(64),purpose:'geometry',source_description:'original report'}]},provenance:{coverage:{max_time_alignment_error_ns:'1250000',scopes:[]}}};
+const body2=structuredClone(body1);body2.parent_version=1;body2.geometry.pivot_x_m='1.260000000000000001';body2.geometry.evidence_refs[0].content_sha256='b'.repeat(64);body2.valid_to='2027-01-01T00:00:00Z';
+const details={
+ [P1]:{id:P1,assembly_id:A,assembly_version:1,version:1,content_sha256:'a'.repeat(64),review_version:3,review_state:'approved',valid_from:body1.valid_from,valid_to:body1.valid_to,body:body1},
+ [P2]:{id:P2,assembly_id:A,assembly_version:1,version:2,content_sha256:'b'.repeat(64),review_version:1,review_state:'draft',valid_from:body2.valid_from,valid_to:body2.valid_to,body:body2},
+};
+const metadata=(id,version,assemblyId=A)=>({id,assembly_id:assemblyId,assembly_version:1,version,content_sha256:'a'.repeat(64),review_version:version===1?3:1,review_action:version===1?'approve':null});
+const many=Array.from({length:55},(_,index)=>metadata(index===0?P1:index===54?P2:`${(index+7).toString(16).padStart(8,'0')}-7777-4777-8777-777777777777`,index+1));
+const selection=(n)=>({id:`${(n+100).toString(16).padStart(8,'0')}-8888-4888-8888-888888888888`,version:n,parameter_id:P1,model_id:M,body:{assembly_id:A,parameter_id:P1,parameter_sha256:'a'.repeat(64),parameter_review_version:3,model_id:M,model_sha256:'c'.repeat(64),model_review_version:2,policy_sha256:'d'.repeat(64),rollback_selection_id:null}});
+const versions=[{assembly_id:A,version_id:C,version:2,content_sha256:'b'.repeat(64),declared:{interval_known:true,valid_from:'2026-07-01T00:00:00Z',valid_to:null,body:{asset_number:'NEW',installation_evidence:[]}},effective:{revision:1,valid_from:'2026-07-01T00:00:00+00:00',valid_to:null}},
+ {assembly_id:A,version_id:B,version:1,content_sha256:'a'.repeat(64),declared:{interval_known:true,valid_from:'2026-01-01T00:00:00Z',valid_to:null,body:{asset_number:'OLD',installation_evidence:[]}},effective:{revision:2,valid_from:'2026-01-01T00:00:00+00:00',valid_to:'2026-07-01T00:00:00+00:00'}}];
+function page(items,url){const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||50);return {offset,limit,items:items.slice(offset,offset+limit)}};
+async function http(path,options={}){
+ const url=new URL(path,'http://local'),route=url.pathname.slice(base.length),entry={path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(entry);
+ if(route==='/assemblies')return answer(page(mode==='round1-pagination'?Array.from({length:22},(_,i)=>assembly(i===0?A:i===21?B:`${(i+10).toString(16).padStart(8,'0')}-9999-4999-8999-999999999999`)): [assembly(A,2)],url));
+ if(route==='/assemblies/'+A)return answer(assembly(A,2));if(route==='/assemblies/'+B)return answer(assembly(B));
+ if(route.endsWith('/versions'))return answer({assembly_id:route.split('/')[2],...page(route.includes(A)?versions:[],url)});
+ if(route==='/parameters'){
+   const id=url.searchParams.get('assembly_id');
+   const items=mode==='round1-pagination'?id===A?[...many].reverse():[]:id===A?[metadata(P2,2),metadata(P1,1)]:[];
+   return answer(page(items,url));
+ }
+ if(route.startsWith('/parameters/')&&options.method!=='POST')return answer(details[route.split('/')[2]]||details[P2]);
+ if(route==='/models')return answer(page(Array.from({length:22},(_,i)=>({id:M,installed_id:'beam_energy_balance/1',version:i+1,content_sha256:'c'.repeat(64),review_version:2,review_action:'approve'})),url));
+ if(route.endsWith('/selections'))return answer(page(Array.from({length:22},(_,i)=>selection(22-i)),url));
+ if(route.startsWith('/requests/'))return answer({state:'unknown'});
+ if(options.method==='POST'){
+   mutations++;
+   if(mode==='round1-rejection'&&route==='/parameter-versions'&&mutations===1)return answer({},400,'inversion.contract_invalid');
+   if(mode==='round1-rejection'&&route.endsWith('/review')&&status409)return answer({},409,'inversion.self_review');
+   if(mode==='round1-postcommit'&&route==='/parameter-versions'&&mutations===1)return answer({},409,'inversion.export_manifest_corrupt');
+   if(mode==='round1-pending'&&route==='/parameter-versions'&&mutations===1)throw Error('lost response');
+   if(mode==='round1-pending'&&route==='/parameter-versions'&&mutations===2)return answer({},409,'inversion.self_review');
+   if(mode==='round1-decision-pending'&&route.endsWith('/review')&&mutations===1)throw Error('lost response');
+   return answer({id:P2,version:2,content_sha256:'b'.repeat(64)});
+ }
+ throw Error('unexpected '+path);
+}
+const all=['inversion.read','inversion.parameters.manage','inversion.parameters.review','inversion.models.manage','inversion.models.review'];
+try{
+ const {renderProductionParameters}=await import(PAGE),{api}=await import(API);window.fetch=http;
+ const ctx=(permissions=all,params={},authSession=session)=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession,capabilities:{production_inversion:{enabled:true,status:'ready'}},page:{label:'机械参数'},pageHeader:()=>'<h1>机械参数</h1>',params,isCurrent:()=>true,registerDispose:()=>{},navigate:async(_,next)=>renderProductionParameters(ctx(permissions,next,authSession))});
+ if(mode==='round1-rejection'){
+   await renderProductionParameters(ctx());const form=root.querySelector('[data-inversion-action="parameters.create"]');
+   form.querySelector('[name=body]').value=JSON.stringify({...body2,assembly_id:A,parent_version:2});form.querySelector('[name=reason]').value='Draft correction';form.requestSubmit();
+   await wait(()=>form.textContent.includes('核对字段'));check(!form.querySelector('[name=body]').disabled,'definite 400 restores editable draft');
+   const first=calls.find(c=>c.path===base+'/parameter-versions');form.querySelector('[name=body]').value=JSON.stringify({...body2,assembly_id:A,parent_version:2,geometry:{...body2.geometry,pivot_x_m:'1.27'}});form.requestSubmit();
+   await wait(()=>calls.filter(c=>c.path===base+'/parameter-versions').length===2);const second=calls.filter(c=>c.path===base+'/parameter-versions')[1];
+   check(second.body.command.key!==first.body.command.key&&second.body.body.geometry.pivot_x_m==='1.27','corrected draft uses new explicit key/body');
+   await wait(()=>form.textContent.includes('操作已提交'));check(true,'corrected draft succeeds in same session');
+   details[P2].review_state='submitted';details[P2].review_version=2;status409=true;
+   await renderProductionParameters(ctx());const review=root.querySelector('[data-inversion-action="parameters.review"]');
+   review.querySelector('[name=decision]').value='reject';review.querySelector('[name=reason]').value='Independent rejection';review.requestSubmit();
+   await wait(()=>review.textContent.includes('版本、证据'));check(!review.querySelector('[name=decision]').disabled,'known precommit 409 restores decision editor');
+   const rejected=calls.filter(c=>c.path.endsWith('/review')).at(-1);status409=false;review.querySelector('[name=reason]').value='Corrected review';review.requestSubmit();
+   await wait(()=>calls.filter(c=>c.path.endsWith('/review')).length===2);
+   check(calls.filter(c=>c.path.endsWith('/review')).at(-1).body.command.key!==rejected.body.command.key,'corrected known rejection receives new key');
+   await wait(()=>review.textContent.includes('操作已提交'));check(true,'corrected review succeeds in same session');
+ }else if(mode==='round1-pagination'){
+   await renderProductionParameters(ctx());check(root.querySelector('[data-inversion-assembly="'+A+'"]'),'first assembly selectable');
+   root.querySelector('[data-inversion-page="assemblies-next"]').click();await wait(()=>root.querySelector('[data-inversion-assembly="'+B+'"]'));
+   root.querySelector('[data-inversion-assembly="'+B+'"]').click();await wait(()=>root.textContent.includes('尚无参数版本'));
+   check(root.textContent.includes(B)&&root.textContent.includes('尚无参数草稿'),'empty assembly selected independently of global parameter');
+   const draft=root.querySelector('[data-inversion-action="parameters.create"]');check(draft,'empty assembly can start first draft');
+   draft.querySelector('[name=body]').value=JSON.stringify({...body1,assembly_id:B,parent_version:null});draft.querySelector('[name=reason]').value='First draft';draft.requestSubmit();
+   await wait(()=>calls.some(c=>c.path===base+'/parameter-versions'));check(calls.find(c=>c.path===base+'/parameter-versions').body.command.expected.kind==='absent','empty assembly uses absent precondition');
+   await wait(()=>draft.textContent.includes('操作已提交'));
+   await renderProductionParameters(ctx(all,{assembly_id:A}));check(root.textContent.includes('第 55 版'),'assembly deep link loads version DESC head');
+   root.querySelector('[data-inversion-page="parameters-next"]').click();await wait(()=>root.textContent.includes('第 35 版'));
+   root.querySelector('[data-inversion-page="parameters-next"]').click();await wait(()=>root.textContent.includes('第 15 版'));
+   check(calls.some(c=>c.path.includes('assembly_id='+A)&&c.path.includes('offset=40')),'history crosses row 50 through bounded pages');
+   const laterDraft=root.querySelector('[data-inversion-action="parameters.create"]');
+   laterDraft.querySelector('[name=body]').value=JSON.stringify({...body2,parent_version:55});laterDraft.querySelector('[name=reason]').value='Successor after later history page';laterDraft.requestSubmit();
+   await wait(()=>calls.filter(c=>c.path===base+'/parameter-versions').length===2);
+   check(calls.filter(c=>c.path===base+'/parameter-versions')[1].body.command.expected.version===55,'draft predecessor comes from explicit assembly head, not history page');
+   root.querySelector('[data-inversion-page="models-next"]').click();await wait(()=>root.querySelector('[data-inversion-page="selections-next"]'));
+   root.querySelector('[data-inversion-page="selections-next"]').click();await wait(()=>calls.some(c=>c.path.includes('/selections?')&&c.path.includes('offset=20')));
+   const rollback=root.querySelector('[data-inversion-action="selections.rollback"]');
+   check(rollback,'older selection page offers actual historical rollback target');
+   rollback.querySelector('[name=reason]').value='Return to reviewed selection';rollback.requestSubmit();
+   await wait(()=>calls.some(c=>c.path.endsWith('/rollback')));
+   check(calls.find(c=>c.path.endsWith('/rollback')).body.command.expected.version===22,'selection rollback precondition comes from explicit head, not viewed page');
+   await renderProductionParameters(ctx(all,{assembly_id:B}));check(!calls.at(-1).path.includes('/parameters/'+P1),'assembly-only deep link never selects global first parameter');
+ }else if(mode==='round1-difference'){
+   await renderProductionParameters(ctx(['inversion.read'],{assembly_id:A,id:P2}));
+   check(root.textContent.includes('选用历史')&&root.textContent.includes('声明')&&root.textContent.includes('生效'),'read-only viewer sees selection and mechanical history');
+   check(root.textContent.includes('OLD')&&root.textContent.includes('2026-07-01T00:00:00+00:00'),'prior mechanical declaration and appended effective end shown');
+   check(!root.querySelector('[data-inversion-action="selections.rollback"]'),'read-only history cannot rollback');
+   root.querySelector('[data-inversion-compare="'+P1+'"]').click();await wait(()=>root.querySelector('[data-inversion-difference]'));
+   const diff=root.querySelector('[data-inversion-difference]').textContent;
+   check(diff.includes('1.250000000000000001')&&diff.includes('1.260000000000000001'),'actual changed physical values retain exact decimal strings');
+   check(diff.includes('0.75')&&diff.includes('未变化'),'unchanged physical value explicit');
+   check(diff.includes('a'.repeat(64))&&diff.includes('b'.repeat(64)),'changed evidence hashes both visible');
+   check(diff.includes('复核')&&diff.includes('有效期'),'review and validity separated in diff');
+ }else if(mode==='round1-pending'){
+   await renderProductionParameters(ctx());let form=root.querySelector('[data-inversion-action="parameters.create"]');
+   const draft={...body2,parent_version:2,geometry:{...body2.geometry,pivot_x_m:'1.99'}};form.querySelector('[name=body]').value=JSON.stringify(draft);form.querySelector('[name=reason]').value='Lost first response';form.requestSubmit();
+   await wait(()=>form.textContent.includes('待确认'));const first=calls.find(c=>c.path===base+'/parameter-versions');
+   await renderProductionParameters(ctx());form=root.querySelector('[data-inversion-action="parameters.create"]');
+   check(form.querySelector('[name=body]').disabled&&JSON.parse(form.querySelector('[name=body]').value).geometry.pivot_x_m==='1.99','remount shows original frozen body');
+   check(form.querySelector('[data-inversion-saved]').textContent.includes(first.body.command.key)&&form.querySelector('[data-inversion-saved]').textContent.includes('/parameter-versions')&&form.querySelector('[data-inversion-saved]').textContent.includes('"version": 2'),'saved action target and precondition visible');
+   form.querySelector('[data-inversion-recover]').click();await wait(()=>calls.some(c=>c.path.includes('/requests/')));await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);
+   form.querySelector('[data-inversion-replay]').click();await wait(()=>calls.filter(c=>c.path===base+'/parameter-versions').length===2);
+   check(form.querySelector('[name=body]').disabled,'409 after uncertain replay does not unlock editing');
+   await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);form.querySelector('[data-inversion-replay]').click();await wait(()=>calls.filter(c=>c.path===base+'/parameter-versions').length===3);
+   const retry=calls.filter(c=>c.path===base+'/parameter-versions')[2];check(JSON.stringify(retry.body)===JSON.stringify(first.body),'later replay retains exact original body/key after 409');
+ }else if(mode==='round1-postcommit'){
+   await renderProductionParameters(ctx());let form=root.querySelector('[data-inversion-action="parameters.create"]');
+   form.querySelector('[name=body]').value=JSON.stringify({...body2,parent_version:2});form.querySelector('[name=reason]').value='Potential postcommit';form.requestSubmit();
+   await wait(()=>form.textContent.includes('版本、证据'));check(form.querySelector('[name=body]').disabled,'postcommit 409 cannot release original command');
+   const original=calls.find(c=>c.path===base+'/parameter-versions');
+   form.querySelector('[data-inversion-recover]').click();await wait(()=>calls.some(c=>c.path.includes('/requests/'+original.body.command.key)));
+   check(calls.filter(c=>c.path===base+'/parameter-versions').length===1,'postcommit 409 queries original key before any replay');
+ }else if(mode==='round1-decision-pending'){
+   details[P2].review_state='submitted';details[P2].review_version=2;
+   await renderProductionParameters(ctx());let form=root.querySelector('[data-inversion-action="parameters.review"]');
+   form.querySelector('[name=decision]').value='reject';form.querySelector('[name=reason]').value='Physical evidence incomplete';form.requestSubmit();
+   await wait(()=>form.textContent.includes('待确认'));const original=calls.find(c=>c.path.endsWith('/review'));
+   await renderProductionParameters(ctx());form=root.querySelector('[data-inversion-action="parameters.review"]');
+   check(form.querySelector('[name=decision]').value==='reject'&&form.querySelector('[name=decision]').disabled,'remount shows frozen review decision');
+   check(form.querySelector('[data-inversion-saved]').textContent.includes('parameters.review')&&form.querySelector('[data-inversion-saved]').textContent.includes(P2)&&form.querySelector('[data-inversion-saved]').textContent.includes('"version": 2'),'review action target and precondition visible');
+   form.querySelector('[data-inversion-recover]').click();await wait(()=>calls.some(c=>c.path.includes('/requests/')));await wait(()=>!form.querySelector('[data-inversion-replay]').disabled);
+   form.querySelector('[data-inversion-replay]').click();await wait(()=>calls.filter(c=>c.path.endsWith('/review')).length===2);
+   check(JSON.stringify(calls.filter(c=>c.path.endsWith('/review'))[1].body)===JSON.stringify(original.body),'review replay uses exact original decision and key');
+ }
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks,calls:calls.map(c=>c.path),view:root.textContent.slice(-1200)});}
+</script></html>

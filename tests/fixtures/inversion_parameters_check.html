@@ -10,12 +10,15 @@ const physical={schema:'inversion.parameter-set/1',assembly_id:assembly,assembly
  geometry:{pivot_x_m:'1.25',crank_radius_m:'0.75',evidence_refs:[{id:assembly,content_sha256:'a'.repeat(64),purpose:'geometry',source_description:'<img src=x onerror=alert(1)>'}]},
  provenance:{source_organization:'Field Lab',coverage:{max_time_alignment_error_ns:'1250000',scopes:[{scope:'geometry_envelope',attachment_pin:{id:assembly,content_sha256:'a'.repeat(64),purpose:'geometry_envelope',source_description:'scope'},basis:'measured'}]}}};
 const detail={id:parameter,assembly_id:assembly,assembly_version:2,version:3,content_sha256:'b'.repeat(64),review_version:2,review_state:'submitted',valid_from:physical.valid_from,valid_to:physical.valid_to,body:physical};
-function response(path,options={}){calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null,signal:options.signal});
- if(path===base+'/assemblies')return json({offset:0,limit:50,items:[{id:assembly,version:2,valid_from:physical.valid_from,valid_to:physical.valid_to,body:{assembly_id:assembly,manufacturer:'Maker',model:'Unit',asset_number:'A1',mechanism:'conventional_crank_balanced',source_kind:'field_measurement',source_organization:'Field Lab',valid_from:physical.valid_from,valid_to:physical.valid_to,installation_evidence:[{id:assembly,content_sha256:'a'.repeat(64),purpose:'installation',source_description:'installed'}]}}]});
- if(path===base+'/parameters')return json({offset:0,limit:50,items:[{id:parameter,assembly_id:assembly,assembly_version:2,version:3,content_sha256:'b'.repeat(64),review_version:2,review_action:'submit'}]});
+function response(path,options={}){calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null,signal:options.signal});const route=path.split('?')[0];
+ const mechanical={id:assembly,version:2,valid_from:physical.valid_from,valid_to:physical.valid_to,body:{assembly_id:assembly,manufacturer:'Maker',model:'Unit',asset_number:'A1',mechanism:'conventional_crank_balanced',source_kind:'field_measurement',source_organization:'Field Lab',valid_from:physical.valid_from,valid_to:physical.valid_to,installation_evidence:[{id:assembly,content_sha256:'a'.repeat(64),purpose:'installation',source_description:'installed'}]}};
+ if(route===base+'/assemblies')return json({offset:0,limit:20,items:[mechanical]});
+ if(route===base+'/assemblies/'+assembly)return json(mechanical);
+ if(route===base+'/assemblies/'+assembly+'/versions')return json({assembly_id:assembly,offset:0,limit:20,items:[{assembly_id:assembly,version_id:assembly,version:2,content_sha256:'a'.repeat(64),declared:{interval_known:true,valid_from:physical.valid_from,valid_to:physical.valid_to,body:mechanical.body},effective:{revision:1,valid_from:physical.valid_from,valid_to:physical.valid_to}}]});
+ if(route===base+'/parameters')return json({offset:0,limit:path.includes('limit=1')?1:20,items:[{id:parameter,assembly_id:assembly,assembly_version:2,version:3,content_sha256:'b'.repeat(64),review_version:2,review_action:'submit'}]});
  if(path===base+'/parameters/'+parameter)return json(detail);
- if(path===base+'/models')return json({offset:0,limit:50,items:[{id:model,installed_id:'beam_energy_balance/1',version:1,content_sha256:'c'.repeat(64),review_version:2,review_action:'approve'}]});
- if(path===base+'/assemblies/'+assembly+'/selections')return json({offset:0,limit:50,items:[]});
+ if(route===base+'/models')return json({offset:0,limit:20,items:[{id:model,installed_id:'beam_energy_balance/1',version:1,content_sha256:'c'.repeat(64),review_version:2,review_action:'approve'}]});
+ if(route===base+'/assemblies/'+assembly+'/selections')return json({offset:0,limit:path.includes('limit=1')?1:20,items:[]});
  if(path.includes('/requests/'))return json({state:'unknown'});
  return json({id:parameter,version:3,content_sha256:'b'.repeat(64)});
 }
@@ -25,10 +28,10 @@ try{
    location.hash='#/production-parameters';let granted=mode==='shell-enabled';
    window.fetch=async(path,options={})=>{if(path==='/api/auth/me')return json({id:'77',username:'tester',role_code:'administrator',permissions:granted?perms:[],capabilities:{production_inversion:{enabled:granted,status:'ready'}}});if(path==='/api/auth/logout')return json({});return response(path,options)};
    await import(APP);await wait(()=>document.querySelector('#workspace')?.getAttribute('aria-busy')==='false');
-   if(granted){check(Boolean(document.querySelector('#sidebar [data-page="production-parameters"]')),'sidebar shows available page');check(calls.some(c=>c.path===base+'/parameters'),'deep link loads parameter API');}
+   if(granted){check(Boolean(document.querySelector('#sidebar [data-page="production-parameters"]')),'sidebar shows available page');check(calls.some(c=>c.path.startsWith(base+'/parameters?')),'deep link loads parameter API');}
    else{check(document.querySelector('#workspace').textContent.includes('权限'),'deep link denies before fetch');check(calls.length===0,'deep link makes zero inversion requests');check(!document.querySelector('#sidebar [data-page="production-parameters"]'),'sidebar hides denied page');}
    document.querySelector('[data-module="production-inversion"]').click();await wait(()=>document.querySelector('#workspace')?.getAttribute('aria-busy')==='false');
-   check(granted?calls.filter(c=>c.path===base+'/parameters').length>=2:calls.length===0,'module click uses same gate');
+   check(granted?calls.filter(c=>c.path.startsWith(base+'/parameters?')).length>=2:calls.length===0,'module click uses same gate');
  }else{
    const {renderProductionParameters}=await import(PAGE);const {api}=await import(API);const root=document.querySelector('#root');
    window.fetch=async(path,options={})=>response(path,options);
@@ -69,7 +72,7 @@ try{
      denied=false;await Promise.race([renderProductionParameters(context()),new Promise((_,reject)=>setTimeout(()=>reject(Error('sticky denial hung')),3000))]);check(calls.length===first,'fresh permissions Set cannot revive denied session');
      const newSession={...context(),authSession:{}};await Promise.race([renderProductionParameters(newSession),new Promise((_,reject)=>setTimeout(()=>reject(Error('new session hung')),3000))]);check(calls.length>first,'new authenticated session may read');
      const held=[];let aborted=false;window.fetch=async(path,options={})=>{options.signal.addEventListener('abort',()=>aborted=true);return new Promise(resolve=>held.push(resolve))};
-     let dispose;const pending=renderProductionParameters({...context(),authSession:{},registerDispose:fn=>dispose=fn});await wait(()=>held.length===3);
+     let dispose;const pending=renderProductionParameters({...context(),authSession:{},registerDispose:fn=>dispose=fn});await wait(()=>held.length===2);
      dispose();check(aborted,'leaving page aborts request');held.forEach(resolve=>resolve(json({offset:0,limit:50,items:[{id:'LATE-PRIVATE'}]})));await pending;
      check(!root.textContent.includes('LATE-PRIVATE'),'late response cannot repaint disposed view');
    }

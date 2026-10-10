@@ -52,6 +52,7 @@ def route(method, path):
 
 def query(raw, action):
     allowed = {'offset','limit'} if action.endswith('.list') or action in ('audit','results.points') else set()
+    if action == 'parameters.list': allowed |= {'assembly_id'}
     if action == 'audit': allowed |= {'action','subject_id'}
     if action == 'requests.get': allowed = {'action','intent'}
     if len(raw) > 4096 or re.search(r'%(?![0-9a-fA-F]{2})', raw): raise InversionContractError()
@@ -69,5 +70,9 @@ def query(raw, action):
         out['offset'] = integer_text(out.get('offset','0'), maximum=131072 if action=='results.points' else 100000)
         out['limit'] = integer_text(out.get('limit','50'), minimum=1, maximum=1000 if action=='results.points' else 100)
     if 'subject_id' in out: out['subject_id'] = identity(out['subject_id'])
+    if 'assembly_id' in out:
+        parsed = identity(out['assembly_id'])
+        if str(parsed) != out['assembly_id']: raise InversionContractError()
+        out['assembly_id'] = parsed
     if 'action' in out: text(out['action'], maximum=128)
     return out

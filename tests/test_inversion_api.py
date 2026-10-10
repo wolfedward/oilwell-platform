@@ -85,6 +85,15 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.request('GET',path+query)[0],400)
         self.assertEqual(self.request('POST',path,{})[0],405)
 
+    def test_parameter_assembly_filter_requires_canonical_uuid(self):
+        from uuid import uuid4
+        identifier=str(uuid4())
+        self.assertEqual(self.request('GET','/parameters?assembly_id='+identifier+'&limit=1')[0],503)
+        for query in ('?assembly_id=bad','?assembly_id='+identifier.upper(),
+                      '?assembly_id='+identifier+'&assembly_id='+identifier,
+                      '?assembly_id='+identifier+'&unknown=1'):
+            self.assertEqual(self.request('GET','/parameters'+query)[0],400,query)
+
     def test_body_limit_before_json_parse(self):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         conn.request('POST', PREFIX+'/runs', b'{', {'Authorization':'Bearer '+self.token, 'Content-Type':'application/json','Content-Length':'262145'})
@@ -239,6 +248,33 @@ class LiveApiTests(RunCase):
         result={'command':{'key':str(key or uuid4()),'expected':{'kind':'absent'} if version is None else {'kind':'match','version':version},'reason':'Explicit isolated HTTP validation'}}
         if body is not None: result['body']=body
         return result
+
+    def test_filtered_parameters_latest_lineage_and_assembly_isolation(self):
+        from backend.inversion.contracts import canonical_bytes, strict_json
+        from tests.inversion_governance_support import command
+        assembly=self.case['request']['assembly_id']
+        original=self.case['parameters']
+        body=strict_json(canonical_bytes(original.body))
+        body['parent_version']=original.version
+        body['geometry']['pivot_x_m']='2.25'
+        created=self.parameters.create_version(body,command(version=original.version))
+        other=self.create_assembly()[0].subject_id
+        other_parameter=self.parameters.create_version(self.body(other),command())
+        for subject,want in ((assembly,[created.subject_id,original.id]),
+                             (str(other),[other_parameter.subject_id])):
+            path='/parameters?assembly_id='+subject
+            status,payload=self.http('GET',path+'&offset=0&limit=1')
+            self.assertEqual(status,200,payload)
+            self.assertEqual(payload['data']['items'][0]['id'],str(want[0]))
+            self.assertEqual(payload['data']['items'][0]['version'],len(want))
+            status,next_page=self.http('GET',path+'&offset=1&limit=1')
+            self.assertEqual(status,200,next_page)
+            self.assertEqual([item['id'] for item in next_page['data']['items']],[str(item) for item in want[1:]])
+        empty=self.create_assembly()[0].subject_id
+        self.assertEqual(self.http('GET','/parameters?assembly_id='+str(empty)+'&limit=1')[1]['data']['items'],[])
+        self.assertEqual((self.scalar('SELECT queued FROM inversion.capacity'),
+                          self.scalar('SELECT running FROM inversion.capacity'),
+                          self.scalar('SELECT reserved_bytes FROM inversion.capacity')),(0,0,0))
 
     def test_engineer_reads_exact_selection_pins_and_mechanical_history(self):
         from uuid import uuid4

@@ -36,3 +36,13 @@ class ReadQueryTests(unittest.TestCase):
         with self.assertRaises(InversionError) as error:
             InversionQueries(lambda:conn).fetch('assembly_versions.list',UUID(int=1),offset=100000)
         self.assertEqual((error.exception.code,error.exception.status),('inversion.assembly_missing',404))
+
+    def test_parameter_filter_uses_bounded_descending_version_sql(self):
+        assembly=UUID(int=1); parameter=UUID(int=2)
+        conn=self.connection([(parameter,assembly,1,7,'a'*64,2,'submit')])
+        result=InversionQueries(lambda:conn).fetch('parameters.list',offset=0,limit=1,assembly_id=assembly)
+        self.assertEqual(result['items'][0]['version'],7)
+        statement,args=conn.execute.call_args_list[-1].args
+        self.assertIn('WHERE p.assembly_id=%s',statement)
+        self.assertIn('ORDER BY p.version DESC',statement)
+        self.assertEqual(args,(assembly,1,0))
