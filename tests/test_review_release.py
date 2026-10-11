@@ -49,6 +49,13 @@ class ReviewReleaseTests(unittest.TestCase):
                 self.assertEqual(set(report['records']), set(vectors()))
                 self.assertGreaterEqual(len(report['checks']), 15)
                 self.assertFalse(report['control_enabled'])
+                for kind in ('condition_prediction', 'energy_schedule'):
+                    renewed = client.get('/api/production-studies/' + report['renewed_records'][kind]['id'])
+                    self.assertTrue(renewed['dependency_current'])
+                    self.assertTrue(renewed['eligible'])
+                self.assertTrue(client.get('/api/production-studies/' + report['records']['condition_training']['id'])['is_selected'])
+                old_prediction = client.get('/api/production-studies/' + report['records']['condition_prediction']['id'])
+                self.assertFalse(old_prediction['dependency_current'])
                 self.assertGreater(server.database.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='studies.export'"), 0)
                 hashes = {kind: row['result_sha256'] for kind, row in report['records'].items()}
             finally:

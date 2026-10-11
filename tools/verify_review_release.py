@@ -191,9 +191,27 @@ def verify_workflows(client, vectors):
     checks.extend(['anonymous_read_refused', 'legacy_control_route_absent'])
     listing = client.get(PREFIX + '?limit=100')
     check('list_is_metadata_only', all('result' not in row and 'payload' not in row for row in listing))
+    # Leave usable shadow examples, without changing historical dependency hashes.
+    # Reapproval has a new review version, so affected calculations must run again.
+    review(training)
+    select(training)
+    review(recovery)
+    renewed = {}
+    for kind, payload in (('condition_prediction', prediction_payload), ('energy_schedule', schedule_payload)):
+        record = client.post(PREFIX, body(kind, payload), expected=201)
+        review(record)
+        if kind == 'energy_schedule':
+            select(record)
+        renewed[kind] = record
+        current = client.get(PREFIX + '/' + record['id'])
+        check(kind + '_new_dependency_version_usable', current['eligible'] and current['dependency_current'])
+    old_prediction = client.get(PREFIX + '/' + prediction['id'])
+    check('reapproval_does_not_rewrite_old_dependencies', not old_prediction['dependency_current']
+          and old_prediction['result_sha256'] == prediction['result_sha256'])
     return {'status': 'passed', 'verified_at': datetime.now(timezone.utc).isoformat(),
             'checks': checks, 'records': records, 'negative_record_id': rejected['id'],
-            'vector_sha256': _hash(vectors), 'control_enabled': False, 'field_validation': False}
+            'renewed_records': renewed, 'vector_sha256': _hash(vectors),
+            'control_enabled': False, 'field_validation': False}
 
 
 def main():
