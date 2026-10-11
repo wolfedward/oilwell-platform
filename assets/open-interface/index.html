@@ -12,7 +12,7 @@
       <p class="eyebrow">OPEN FIELD DEVICE INTERFACE</p>
       <h1>设备开放接入</h1>
       <p class="lead">让不同厂家的井场终端使用同一套可验证接口接入平台。</p>
-      <p>OWP-EDGE/1.0 + OWP-INGEST-ACK/1.0 + OWP-WAVE/1.0 · 2026-10-01 · 软件接口 / R1 硬件参考</p>
+      <p>OWP-EDGE/1.0 + OWP-INGEST-ACK/1.0 + OWP-WAVE/1.0 · 2026-10-11 · 软件接口 / R1 硬件参考</p>
       <div class="actions"><a class="primary" href="open-interface-r1.zip" download>下载厂家接入包</a><a href="INTERFACE.md" download>接口标准</a><a href="HARDWARE.md" download>硬件设计说明</a><a href="LICENSE.txt">开放许可</a></div>
     </section>
     <nav class="sections" aria-label="章节"><a href="#capabilities">可用接口</a><a href="#onboarding">厂家联调</a><a href="#hardware">设备参考图</a><a href="#downloads">文件下载</a><a href="#limits">安全与版本边界</a></nav>
@@ -41,6 +41,9 @@
       <div class="warning"><strong>参考设计，未经制板与实物验证。</strong> 本包不是元件级原理图、PCB 或 Gerber；不构成防爆、功能安全或电气认证。</div>
       <figure><a href="hardware-overview.svg"><img src="hardware-overview.svg" alt="三相采样、载荷位移、DSP 和 MCU、持久缓存及独立保护的系统参考图" width="1480" height="960"></a><figcaption>图 1 · 系统分层与安全边界。点击查看原尺寸。 <a href="hardware-overview.svg" download>下载 SVG</a></figcaption></figure>
       <figure><a href="terminal-interfaces.svg"><img src="terminal-interfaces.svg" alt="低压电源、隔离串口、以太网、载荷桥、模拟输入和状态接口的端子参考图" width="1480" height="990" loading="lazy"></a><figcaption>图 2 · 低压端子功能与信号约束。 <a href="terminal-interfaces.svg" download>下载 SVG</a></figcaption></figure>
+      <h3>MCU / DSP 保护逻辑的软件参考</h3>
+      <p>新增可独立运行的状态机与持久化适配器，覆盖启动禁止、采样失效、连续延时、锁存、本地复核和异常恢复。仅供厂家设计、联调与软件一致性测试，不驱动继电器，不代替独立硬件保护。</p>
+      <figure><a href="edge-reference-state.svg"><img src="edge-reference-state.svg" alt="边缘参考启动禁止、有效输入、故障锁存及存储异常的状态与硬件安全边界" width="1280" height="720" loading="lazy"></a><figcaption>图 3 · 边缘软件状态参考。 <a href="edge-reference-state.svg" download>下载 SVG</a> · <a href="EDGE-CONTROL-REFERENCE.md" download>接口、运行方法与验证责任</a></figcaption></figure>
       <p>选型依据：<a href="https://www.ti.com/product/ADS131M08">TI 同步 ADC</a>、<a href="https://www.ti.com/product/TMS320F280049C">TI 实时控制器</a>、<a href="https://www.st.com/en/microcontrollers-microprocessors/stm32h563-573.html">ST 通信 MCU</a>、<a href="https://www.analog.com/en/resources/reference-designs/circuits-from-the-lab/cn0102.html">ADI 载荷桥测量参考</a>。候选器件参数不是整机性能保证。</p>
     </section>
 
@@ -57,12 +60,15 @@
       <tr><td>waveform-example.owpwave</td><td>小于 32 KiB 的 synthetic 原字节文件</td><td><a href="waveform-example.owpwave" download>示例</a></td></tr>
       <tr><td>validate_waveform.py + 五个 waveform_*.py</td><td>独立 Python 原字节文件校验</td><td><a href="validate_waveform.py" download>入口</a> · <a href="waveform_files.py" download>文件内核</a></td></tr>
       <tr><td>HARDWARE.md + 两张 SVG</td><td>硬件模块、端子、同步采样及存储预算</td><td><a href="HARDWARE.md" download>设计说明</a></td></tr>
+      <tr><td>EDGE-CONTROL-REFERENCE.md + edge-reference-state.svg</td><td>DSP/MCU 分工、持久化与本地安全复核边界</td><td><a href="EDGE-CONTROL-REFERENCE.md" download>说明</a> · <a href="edge-reference-state.svg" download>状态图</a></td></tr>
+      <tr><td>edge_protection_reference.py + 两个纯模块</td><td>Python 标准库软件参考；须同时下载三个文件</td><td><a href="edge_protection_reference.py" download>适配器</a> · <a href="protection_replay.py" download>状态机</a> · <a href="protection_contracts.py" download>约束</a></td></tr>
+      <tr><td>check_edge_reference.py</td><td>随包运行的离线软件对照测试；不连接设备</td><td><a href="check_edge_reference.py" download>对照测试</a></td></tr>
       <tr><td>ROADMAP.md</td><td>已实现波形边界与配置下发、控制的后续草案</td><td><a href="ROADMAP.md" download>草案</a></td></tr>
       <tr><td>LICENSE.txt</td><td>本目录原创资料 MIT 许可；不改变主平台许可</td><td><a href="LICENSE.txt" download>许可</a></td></tr>
     </tbody></table></div></section>
 
     <section id="limits"><p class="eyebrow">BOUNDARIES</p><h2>版本、安全与真实性</h2><ul><li>本包允许厂家复制和修改原创参考材料；第三方芯片图纸、标准文本和商标不在本许可中。</li><li>当前标量协议不是同步功图协议，不是 Sparkplug，不是远程控制协议。</li><li>MQTT PUBACK 不等于中心业务入库回执；Broker 持久状态丢失或会话过期仍有数据风险。</li><li>时间同步、传感器标定与物理安装必须验证，不能靠报文格式正确推断采样准确。</li><li>当前平台文档在本机开放；没有自动发布到互联网，没有公开任何现场地址和实际凭据。</li></ul></section>
-    <footer>OWP-EDGE/1.0 + OWP-INGEST-ACK/1.0 + OWP-WAVE/1.0 · 原创开放接入资料 · 2026-10-01 · <a href="/#/acquisition">返回平台</a></footer>
+    <footer>OWP-EDGE/1.0 + OWP-INGEST-ACK/1.0 + OWP-WAVE/1.0 · 原创开放接入资料 · 2026-10-11 · <a href="/#/acquisition">返回平台</a></footer>
   </main>
 </body>
 </html>

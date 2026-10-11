@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+<title id="title">DSP MCU 本地证据参考设计</title><desc id="desc">未经实物验证的状态参考：启动禁用、有效观测、本地确认、影子运行、故障锁定与不确定存储。独立硬件保护不依赖网络，所有输出禁用。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#51708e"/></marker></defs>
+<rect width="1280" height="720" fill="#f2f6fa"/>
+<g font-family="Microsoft YaHei, sans-serif" fill="#18344d">
+<text x="48" y="57" font-size="26" font-weight="700">DSP / MCU 本地证据与保护回放 · 参考设计</text>
+<text x="48" y="92" font-size="16" fill="#8b421e">未经制板与实物验证；非保护继电器，非硬实时固件，所有执行输出始终禁用。</text>
+<g fill="#fff" stroke="#b8cadd" stroke-width="2">
+<rect x="48" y="150" width="250" height="108" rx="12"/><rect x="370" y="150" width="250" height="108" rx="12"/><rect x="700" y="150" width="250" height="108" rx="12"/>
+<rect x="370" y="353" width="250" height="110" rx="12" stroke="#d68b39"/><rect x="700" y="353" width="250" height="110" rx="12" stroke="#c96161"/>
+<rect x="48" y="541" width="1184" height="126" rx="12" fill="#e8eef5"/>
+</g>
+<g font-size="20" font-weight="700"><text x="73" y="186">启动 / 重启禁用</text><text x="395" y="186">有效安全观测</text><text x="725" y="186">本地影子就绪</text><text x="395" y="391">输入不可用</text><text x="725" y="391">锁定 / 存储不确定</text></g>
+<g font-size="15"><text x="73" y="218">校验设置、摘要、独占锁</text><text x="73" y="241">保留原锁定，计时重新开始</text><text x="395" y="218">连续有效时间与质量判定</text><text x="395" y="241">尚未获得物理输出授权</text><text x="725" y="218">逐帧计算并持久化证据</text><text x="725" y="241">control_enabled = false</text>
+<text x="395" y="423">间断 / 坏质量 / 看门狗</text><text x="395" y="446">旧安全证据与计时失效</text><text x="725" y="423">硬件输入 / would_trip / 写失败</text><text x="725" y="446">不能通过重启或网页确认解除</text></g>
+<g fill="none" stroke="#51708e" stroke-width="2.5" marker-end="url(#arrow)"><path d="M298 203 H369"/><path d="M620 203 H699"/><path d="M492 258 V352"/><path d="M824 258 V352"/><path d="M370 412 H324 V227 H299"/></g>
+<g font-size="14"><text x="306" y="182">新观测</text><text x="638" y="182">本地确认</text><text x="508" y="309">证据中断</text><text x="843" y="309">故障 / 写失败</text></g>
+<text x="705" y="493" font-size="14">锁存解除需持续安全 + 本地复位；存储异常另行核验</text>
+<text x="985" y="177" font-size="16" font-weight="700">持久顺序</text><text x="985" y="212" font-size="15">写前 pending 标记</text><text x="985" y="242" font-size="15">同步检查点 + 摘要</text><text x="985" y="272" font-size="15">原子替换后清标记</text><text x="985" y="321" font-size="15">残留标记 → 拒绝启动</text><text x="985" y="351" font-size="15">保留文件，人工核对</text>
+<text x="73" y="580" font-size="21" font-weight="700">独立硬件保护链：任何通信、MCU、软件或存储故障均不得屏蔽</text>
+<text x="73" y="616" font-size="16">网络上行只传证据与原始数据；Broker ACK、平台复核及软件影子状态均不证明接触器动作。</text>
+<text x="73" y="645" font-size="16">厂家负责定值、联锁、BSP、ADC / DMA、断电测试、动作回读及现场安全验证。</text>
+</g></svg>

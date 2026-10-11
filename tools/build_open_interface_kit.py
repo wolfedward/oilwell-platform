@@ -14,7 +14,9 @@ PUBLIC_FILES = ('index.html', 'portal.css', 'INTERFACE.md', 'HARDWARE.md', 'ROAD
                 'WAVEFORM.md', 'waveform.schema.json', 'waveform-ack.schema.json',
                 'validate_waveform.py', 'waveform-example.owpwave', 'waveform_errors.py',
                 'waveform_contracts.py', 'waveform_wire.py', 'waveform_samples.py',
-                'waveform_files.py')
+                'waveform_files.py', 'EDGE-CONTROL-REFERENCE.md', 'edge-reference-state.svg',
+                'edge_protection_reference.py', 'protection_replay.py', 'protection_contracts.py',
+                'check_edge_reference.py')
 KIT = Path(__file__).resolve().parents[1] / 'assets/open-interface'
 PURE_SOURCE = Path(__file__).resolve().parents[1] / 'backend/waveforms'
 PURE_MODULES = {'waveform_errors.py': 'errors.py',
@@ -26,6 +28,14 @@ IMPORT_REWRITES = {b'from .errors import ': b'from waveform_errors import ',
                    b'from .contracts import ': b'from waveform_contracts import ',
                    b'from .wire import ': b'from waveform_wire import ',
                    b'from .samples import ': b'from waveform_samples import '}
+EDGE_MODULES = {
+    'edge_protection_reference.py': ('gateway/protection_reference.py', {
+        b'from backend.studies.protection import ': b'from protection_replay import ',
+        b'from backend.studies.contracts import ': b'from protection_contracts import '}),
+    'protection_replay.py': ('studies/protection.py', {
+        b'from .contracts import ': b'from protection_contracts import '}),
+    'protection_contracts.py': ('studies/contracts.py', {}),
+}
 
 
 def prepare_waveform_modules(root):
@@ -53,6 +63,20 @@ def prepare_waveform_modules(root):
 def build(root=KIT):
     root = Path(root).resolve(strict=True)
     source_digests = prepare_waveform_modules(root)
+    for public, (source_path, rewrites) in EDGE_MODULES.items():
+        raw = (PURE_SOURCE.parent / source_path).read_bytes()
+        converted = raw
+        for before, after in rewrites.items():
+            converted = converted.replace(before, after)
+        if b'from backend.' in converted or b'from .' in converted:
+            raise ValueError(f'unreviewed platform import in {source_path}')
+        target = root / public
+        if target.is_symlink() or (target.exists() and target.stat().st_nlink != 1):
+            raise ValueError(f'nonlocal edge reference target: {public}')
+        if not target.is_file() or target.read_bytes() != converted:
+            target.write_bytes(converted)
+        source_digests[public] = {'source_sha256': sha256(raw).hexdigest(),
+                                  'public_sha256': sha256(converted).hexdigest()}
     payloads = {}
     for name in PUBLIC_FILES:
         source = root / name

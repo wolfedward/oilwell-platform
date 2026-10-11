@@ -21,7 +21,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Scope: only the original documentation, SVG reference drawings, schemas,
-examples and validator inside assets/open-interface. This notice does not
+examples, validators and the published pure reference Python modules inside
+assets/open-interface (including edge_protection_reference.py,
+protection_replay.py and protection_contracts.py). This notice does not
 relicense the platform outside this directory or any third-party material.
 Reference drawings are unverified conceptual documentation, not certified
 schematics, PCB/Gerber manufacturing files, or a grant of third-party patent

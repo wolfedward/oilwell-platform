@@ -105,7 +105,7 @@ class OpenInterfaceTests(unittest.TestCase):
                 self.assertTrue(self.validate(TOPIC, self.payload.replace(b'5.8', token))["valid"])
 
     def test_drawings_are_editable_svg_with_explicit_reference_status(self):
-        for name in ("hardware-overview.svg", "terminal-interfaces.svg"):
+        for name in ("hardware-overview.svg", "terminal-interfaces.svg", "edge-reference-state.svg"):
             root = ElementTree.parse(KIT / name).getroot()
             self.assertEqual(root.tag, "{http://www.w3.org/2000/svg}svg")
             self.assertIn("参考设计", "".join(root.itertext()))
@@ -122,11 +122,26 @@ class OpenInterfaceTests(unittest.TestCase):
                     "ingest-ack.schema.json", "ingest-ack-example.json", "validate_ingest_ack.py",
                     "WAVEFORM.md", "waveform.schema.json", "waveform-ack.schema.json",
                     "validate_waveform.py", "waveform-example.owpwave", "waveform_errors.py",
-                    "waveform_contracts.py", "waveform_wire.py", "waveform_samples.py", "waveform_files.py"}
+                    "waveform_contracts.py", "waveform_wire.py", "waveform_samples.py", "waveform_files.py",
+                    "EDGE-CONTROL-REFERENCE.md", "edge-reference-state.svg", "edge_protection_reference.py",
+                    "protection_replay.py", "protection_contracts.py", "check_edge_reference.py"}
         with ZipFile(KIT / "open-interface-r1.zip") as archive:
             self.assertEqual(set(archive.namelist()), expected)
             for path in expected:
                 self.assertEqual(archive.read(path), (KIT / path).read_bytes(), path)
+
+    def test_public_edge_reference_runs_without_platform_imports(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ('edge_protection_reference.py', 'protection_replay.py', 'protection_contracts.py'):
+                self.assertTrue((KIT / name).is_file(), name)
+                raw = (KIT / name).read_bytes()
+                self.assertNotIn(b'from backend.', raw)
+                (root / name).write_bytes(raw)
+            command = [sys.executable, '-B', '-c', 'from edge_protection_reference import EdgeProtectionReference; from protection_replay import ProtectionReplay; print("ok")']
+            result = subprocess.run(command, cwd=root, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), b'ok')
 
     def test_downloadable_cli_has_documented_exit_codes(self):
         command = [sys.executable, str(KIT / "validate_telemetry.py"), "--topic", TOPIC, "--file"]
@@ -139,6 +154,20 @@ class OpenInterfaceTests(unittest.TestCase):
             failure = subprocess.run(command + [str(invalid)], capture_output=True, timeout=10)
         self.assertEqual(failure.returncode, 2, failure.stderr)
         self.assertFalse(json.loads(failure.stdout)["valid"])
+
+    def test_public_edge_conformance_vectors_run_without_platform(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ('edge_protection_reference.py', 'protection_replay.py', 'protection_contracts.py', 'check_edge_reference.py'):
+                self.assertTrue((KIT / name).is_file(), name)
+                (root / name).write_bytes((KIT / name).read_bytes())
+            result = subprocess.run([sys.executable, '-B', str(root / 'check_edge_reference.py')],
+                                    cwd=root, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report['status'], 'passed')
+            self.assertGreaterEqual(len(report['checks']), 5)
+            self.assertFalse(report['hardware_execution'])
 
 
 if __name__ == "__main__":
