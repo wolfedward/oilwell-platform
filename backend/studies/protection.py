@@ -125,7 +125,7 @@ def _metric(name, measurements):
 
 
 class ProtectionReplay:
-    """Stateful pure replay adapter. Persist `final_state` at the integration boundary."""
+    """Stateful pure replay adapter. Persist `snapshot()` at the integration boundary."""
 
     def __init__(self, settings):
         self.start, self.end = _validate_settings(settings)
@@ -206,7 +206,8 @@ class ProtectionReplay:
         _measurements(measurements)
         values = {name: _metric(rule["metric"], measurements) for name, rule in self.rules.items()}
         reasons = []
-        ordered = self.cursor_at is None or (at > self.cursor_at and sequence > self.cursor_sequence)
+        ordered = self.cursor_at is None or (
+            at > self.cursor_at and (boot != self.cursor_boot or sequence > self.cursor_sequence))
         gap = self.cursor_at is not None and ordered and (at - self.cursor_at).total_seconds() * 1000 > self.settings["maximum_frame_gap_ms"]
         boot_changed = self.cursor_boot is not None and boot != self.cursor_boot
         if not ordered:

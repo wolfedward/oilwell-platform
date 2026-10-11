@@ -79,6 +79,49 @@ class ProtectionTests(unittest.TestCase):
         result = replay([frame(0, 11), frame(1000, 11), frame(1200, 11, boot_id="boot-2")])
         self.assertEqual(result["final_state"]["rules"]["overcurrent"]["state"], "would_trip_latched")
 
+    def test_new_boot_sequence_zero_starts_fresh_pickup_timing(self):
+        result = replay([frame(0, 11, seq=100), frame(500, 11, seq=101),
+                         frame(700, 11, seq=0, boot_id="boot-2"),
+                         frame(1200, 11, seq=1, boot_id="boot-2"),
+                         frame(1700, 11, seq=2, boot_id="boot-2")])
+        self.assertEqual([row["qualification"] for row in result["timeline"]],
+                         ["valid", "valid", "stale", "valid", "valid"])
+        self.assertEqual([row["rules"]["overcurrent"]["state"] for row in result["timeline"]],
+                         ["pickup", "pickup", "pickup", "pickup", "would_trip_latched"])
+
+    def test_new_boot_retains_latch_and_requires_new_safe_reset_interval(self):
+        result = replay([frame(0, 11, seq=100), frame(1000, 11, seq=101),
+                         frame(1200, 8, seq=0, boot_id="boot-2", reset_request="local"),
+                         frame(1500, 8, seq=1, boot_id="boot-2", reset_request="local"),
+                         frame(1700, 8, seq=2, boot_id="boot-2", reset_request="local")])
+        self.assertEqual([row["qualification"] for row in result["timeline"][2:]],
+                         ["stale", "valid", "valid"])
+        self.assertEqual([row["reset_decision"] for row in result["timeline"][2:]],
+                         ["denied", "denied", "accepted"])
+        self.assertEqual(result["timeline"][3]["rules"]["overcurrent"]["state"],
+                         "would_trip_latched")
+        self.assertEqual(result["final_state"]["rules"]["overcurrent"]["state"], "normal")
+
+    def test_old_boot_timestamp_cannot_regress_new_boot_cursor_or_resume_timer(self):
+        engine = ProtectionReplay(settings())
+        rows = [engine.step(frame(0, 11, seq=100)),
+                engine.step(frame(400, 11, seq=0, boot_id="boot-2")),
+                engine.step(frame(300, 11, seq=101))]
+        cursor_after_replay = engine.snapshot()
+        rows.extend([engine.step(frame(900, 11, seq=1, boot_id="boot-2")),
+                     engine.step(frame(1400, 11, seq=2, boot_id="boot-2")),
+                     engine.step(frame(1900, 11, seq=3, boot_id="boot-2"))])
+        self.assertEqual([row["qualification"] for row in rows],
+                         ["valid", "stale", "invalid", "valid", "valid", "valid"])
+        self.assertIn("reordered_frame", rows[2]["reasons"])
+        self.assertEqual(cursor_after_replay["cursor_boot"], "boot-2")
+        self.assertEqual(cursor_after_replay["cursor_sequence"], 0)
+        self.assertEqual(cursor_after_replay["cursor_at"], "2026-10-11T00:00:00.400000+00:00")
+        self.assertEqual([row["rules"]["overcurrent"]["state"] for row in rows[3:]],
+                         ["pickup", "pickup", "would_trip_latched"])
+        self.assertEqual(engine.snapshot()["cursor_boot"], "boot-2")
+        self.assertEqual(engine.snapshot()["cursor_sequence"], 3)
+
     def test_revoked_and_expired_settings_are_unavailable(self):
         result = replay([frame(0, 11), frame(1000, 11, configuration_valid=False), frame(2000, 11)])
         self.assertEqual(result["timeline"][1]["qualification"], "config_revoked")
