@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS study_records (
     source_json TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     result_json TEXT NOT NULL,
+    result_status TEXT NOT NULL,
     dependencies_json TEXT NOT NULL,
     input_sha256 TEXT NOT NULL,
     result_sha256 TEXT NOT NULL,

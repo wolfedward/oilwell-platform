@@ -5,8 +5,10 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from backend.auth import AuthService
@@ -99,6 +101,9 @@ class StudiesStoreTests(unittest.TestCase):
         approved = self.service.review(self.tokens["reviewer"], record["id"], review)
         self.assertEqual(approved["review_status"], "approved")
         self.assertEqual(approved["version"], 2)
+        projection = self.service.get(self.tokens["author"], record["id"])
+        self.assertIs(projection["field_validation"], False)
+        self.assertIs(projection["control_eligible"], False)
         self.assertEqual(self.service.review(self.tokens["reviewer"], record["id"], review)["version"], 2)
         with self.assertRaises(StudyError):
             self.service.review(self.tokens["reviewer"], record["id"], {**review, "request_id": str(uuid4())})
@@ -109,6 +114,7 @@ class StudiesStoreTests(unittest.TestCase):
         self.service.review(self.tokens["reviewer"], record["id"], {"request_id": str(uuid4()), "expected_version": 1, "decision": "approved", "comment": "ok"})
         selected = self.service.select(self.tokens["reviewer"], "protection_replay", {"request_id": str(uuid4()), "expected_version": 0, "record_id": record["id"], "comment": "shadow"})
         self.assertEqual(selected["record_id"], record["id"])
+        self.assertEqual(selected["selection_scope"], "shadow_only")
         exported = self.service.export(self.tokens["author"], record["id"])
         self.assertEqual(json.loads(exported)["id"], record["id"])
         self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM audit_logs WHERE action='studies.export'"), 1)
@@ -209,6 +215,18 @@ class StudiesStoreTests(unittest.TestCase):
         result = service.create(self.tokens["author"], prediction)
         self.assertEqual(result["dependencies"][0]["record_id"], model["id"])
         self.assertEqual(service.get(self.tokens["author"], result["id"])["result"]["echo"]["artifact"], {"weights": [1]})
+        traced = []
+        original_connection = self.db.connection
+        @contextmanager
+        def trace_connection():
+            with original_connection() as conn:
+                conn.set_trace_callback(traced.append)
+                yield conn
+        with patch.object(self.db, "connection", trace_connection):
+            service.list(self.tokens["author"])
+        queries = [sql.lower() for sql in traced if "from study_records" in sql.lower()]
+        self.assertTrue(all("select *" not in sql and "result_json" not in sql and "payload_json" not in sql
+                            for sql in queries), queries)
         with self.assertRaises(StudyError):
             service.create(self.tokens["author"], envelope("condition_prediction", {**prediction["payload"], "artifact": {}}))
 
@@ -240,6 +258,76 @@ class StudiesStoreTests(unittest.TestCase):
         service.review(self.tokens["reviewer"], schedule["id"], {"request_id": str(uuid4()), "expected_version": 1, "decision": "approved", "comment": "ok"})
         selected = service.select(self.tokens["reviewer"], "energy_schedule", {"request_id": str(uuid4()), "expected_version": 0, "record_id": schedule["id"], "comment": "shadow"})
         self.assertEqual(selected["record_id"], schedule["id"])
+        service.review(self.tokens["reviewer"], recovery["id"],
+                       {"request_id": str(uuid4()), "expected_version": 2, "decision": "revoked", "comment": "fit withdrawn"})
+        current = service.get(self.tokens["author"], schedule["id"])
+        self.assertFalse(current["dependency_current"])
+        self.assertFalse(current["is_selected"])
+        self.assertEqual(current["selection_history"][-1]["record_id"], schedule["id"])
+
+    def test_result_status_is_specific_to_kind_and_approval(self):
+        wrong = {"condition_training": "fitted", "recovery_fit": "completed",
+                 "energy_schedule": "completed", "energy_effects": "completed",
+                 "motor_spectrum": "feasible", "protection_replay": "fitted"}
+        for kind, status in wrong.items():
+            service = StudyService(self.db, self.auth, {kind: ("v1", lambda payload, status=status: {"status": status})})
+            if kind == "energy_schedule":
+                # A schedule must resolve a recovery first; test the result-status gate directly.
+                continue
+            with self.subTest(kind=kind):
+                with self.assertRaises(StudyError) as error:
+                    service.create(self.tokens["author"], envelope(kind))
+                self.assertEqual(error.exception.code, "invalid_result")
+
+    def test_effects_descriptive_result_is_approvable_as_study_only(self):
+        service = StudyService(self.db, self.auth, {"energy_effects": ("v1", lambda payload: {"status": "descriptive"})})
+        record = service.create(self.tokens["author"], envelope("energy_effects"))
+        reviewed = service.review(self.tokens["reviewer"], record["id"],
+                                  {"request_id": str(uuid4()), "expected_version": 1, "decision": "approved", "comment": "method checked"})
+        self.assertEqual(reviewed["review_status"], "approved")
+        self.assertEqual(reviewed["review_scope"], "software_study_only")
+
+    def test_engine_cannot_claim_field_validation_or_control(self):
+        for unsafe in ({"field_validation": True}, {"control_eligible": True},
+                       {"fault_confirmation": True}, {"hardware_execution": True},
+                       {"dispatch_allowed": True}, {"shadow_only": False}):
+            service = StudyService(self.db, self.auth,
+                                   {"motor_spectrum": ("v1", lambda payload, unsafe=unsafe: {"status": "completed", **unsafe})})
+            with self.subTest(unsafe=unsafe), self.assertRaises(StudyError):
+                service.create(self.tokens["author"], envelope())
+
+    def test_list_queries_only_bounded_metadata_even_for_large_result(self):
+        large = "x" * (1024 * 1024)
+        service = StudyService(self.db, self.auth,
+                               {"motor_spectrum": ("v1", lambda payload: {"status": "completed", "bins": large})})
+        record = service.create(self.tokens["author"], envelope(payload={"samples": large}))
+        traced = []
+        original_connection = self.db.connection
+        @contextmanager
+        def trace_connection():
+            with original_connection() as conn:
+                conn.set_trace_callback(traced.append)
+                yield conn
+        with patch.object(self.db, "connection", trace_connection):
+            page = service.list(self.tokens["author"])
+        self.assertEqual(page[0]["id"], record["id"])
+        self.assertEqual(page[0]["status"], "completed")
+        self.assertNotIn("payload", page[0])
+        self.assertNotIn("result", page[0])
+        record_queries = [sql.lower() for sql in traced if "from study_records" in sql.lower()]
+        self.assertTrue(record_queries)
+        self.assertTrue(all("select *" not in sql and "payload_json" not in sql and "result_json" not in sql
+                            for sql in record_queries), record_queries)
+
+    def test_schema_migration_rolls_back_partial_ddl(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fresh = Database(Path(temporary.name) / "partial.sqlite")
+        fresh.migrate()
+        with patch("backend.studies.storage.Path.read_text", return_value="CREATE TABLE partial_study(id); BAD SQL;"):
+            with self.assertRaises(sqlite3.Error):
+                migrate_studies(fresh)
+        self.assertNotIn("partial_study", fresh.table_names())
 
 
 if __name__ == "__main__":
