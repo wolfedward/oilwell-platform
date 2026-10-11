@@ -692,26 +692,34 @@ def create_server(
         reject_review_identity_in_demo(database.path)
         database.migrate()
         seed_database(database)
-    server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
-    server.runtime_mode = runtime_mode
-    server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
-    server.central_telemetry = central_repository
-    server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
-    server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
-    server.waveform_runtime = build_waveform_runtime(waveform_config_path)
-    server.inversion_runtime = build_inversion_runtime(inversion_config_path, auth=server.auth)
-    waveform_hosts = ('127.0.0.1', 'localhost') if host in ('127.0.0.1', 'localhost') else (host,)
-    server.waveform_runtime.allowed_origins = tuple(_origin(f'http://{name}:{server.server_port}') for name in waveform_hosts)
-    server.inversion_runtime.allowed_origins = server.waveform_runtime.allowed_origins
-    if runtime_mode == 'review':
-        server.simulator = server.acquisition = server.acquisition_worker = server.workflow_worker = None
+    server = PlatformHTTPServer((host, port), PlatformRequestHandler)
+    try:
+        server.database = database
+        server.auth = AuthService(database)
+        server.audit = AuditService(database)
+        server.runtime_mode = runtime_mode
+        server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
+        server.central_telemetry = central_repository
+        server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
+        server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
+        server.waveform_runtime = build_waveform_runtime(waveform_config_path)
+        server.inversion_runtime = build_inversion_runtime(inversion_config_path, auth=server.auth)
+        waveform_hosts = ('127.0.0.1', 'localhost') if host in ('127.0.0.1', 'localhost') else (host,)
+        server.waveform_runtime.allowed_origins = tuple(_origin(f'http://{name}:{server.server_port}') for name in waveform_hosts)
+        server.inversion_runtime.allowed_origins = server.waveform_runtime.allowed_origins
+        if runtime_mode == 'review':
+            server.simulator = server.acquisition = server.acquisition_worker = server.workflow_worker = None
+            return server
+        from backend.simulator import SimulatorRegistry
+        from backend.services.acquisition import AcquisitionService, AcquisitionWorker
+        from backend.services.workflows import WorkflowService, WorkflowWorker
+        server.simulator = SimulatorRegistry(database)
+        server.acquisition = AcquisitionService(database, server.simulator)
+        server.acquisition_worker = AcquisitionWorker(server.acquisition, server.simulator)
+        server.workflow_worker = WorkflowWorker(WorkflowService(database, server.audit))
+        server.simulator.acquisition_worker = server.acquisition_worker
         return server
-    from backend.simulator import SimulatorRegistry
-    from backend.services.acquisition import AcquisitionService, AcquisitionWorker
-    from backend.services.workflows import WorkflowService, WorkflowWorker
-    server.simulator = SimulatorRegistry(database)
-    server.acquisition = AcquisitionService(database, server.simulator)
-    server.acquisition_worker = AcquisitionWorker(server.acquisition, server.simulator)
-    server.workflow_worker = WorkflowWorker(WorkflowService(database, server.audit))
-    server.simulator.acquisition_worker = server.acquisition_worker
-    return server
+    except BaseException:
+        # No caller receives the server on failure, so this factory owns cleanup.
+        server.server_close()
+        raise

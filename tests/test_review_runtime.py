@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from backend.auth import AuthService, InvalidCredentials
 from backend.database import Database
-from backend.http_server import create_server
+from backend.http_server import create_server, PlatformHTTPServer
 from backend.review_runtime import initialize_identity, check_identity
 
 
@@ -172,6 +172,24 @@ class ReviewRuntimeTests(unittest.TestCase):
         response = connection.getresponse()
         response.read()
         self.assertEqual(response.status, 400)
+
+    def test_unexpected_module_construction_failure_closes_bound_socket(self):
+        self.initialize()
+        created = []
+        def capture(*args, **kwargs):
+            server = PlatformHTTPServer(*args, **kwargs)
+            created.append(server)
+            return server
+        try:
+            with patch('backend.http_server.PlatformHTTPServer', side_effect=capture), \
+                 patch('backend.http_server.build_inversion_runtime', side_effect=RuntimeError('constructor failed')):
+                with self.assertRaisesRegex(RuntimeError, 'constructor failed'):
+                    create_server('127.0.0.1', 0, self.path, runtime_mode='review')
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created[0].socket.fileno(), -1)
+        finally:
+            for server in created:
+                server.server_close()
 
 
 if __name__ == '__main__':
