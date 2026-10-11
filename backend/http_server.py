@@ -29,6 +29,7 @@ from backend.waveforms.runtime import build_waveform_runtime
 from backend.inversion.api import InversionApi
 from backend.inversion.runtime import build_inversion_runtime
 from backend.ingest_reliability.config import _origin
+from backend.studies.api import StudyApi
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -46,19 +47,22 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if self._review_gate(): return
+        if self.server.studies is not None and StudyApi(self).dispatch(): return
         if InversionApi(self).dispatch(): return
         if WaveformApi(self).get(self.path): return
         if IngestReliabilityApi(self).get(self.path): return
         if RegistryApi(self).get(self.path): return
         if CentralTelemetryApi(self).get(self.path): return
-        if ReportApi(self).get(self.path): return
-        if WorkflowApi(self).get(self.path): return
-        if CommandApi(self).get(self.path): return
-        if StrategyApi(self).get(self.path): return
-        if AnalysisApi(self).get(self.path): return
-        if AcquisitionApi(self).get(self.path): return
-        if DeviceApi(self).get(self.path): return
-        if WellApi(self).get(self.path): return
+        if self.server.runtime_mode == 'demo':
+            if ReportApi(self).get(self.path): return
+            if WorkflowApi(self).get(self.path): return
+            if CommandApi(self).get(self.path): return
+            if StrategyApi(self).get(self.path): return
+            if AnalysisApi(self).get(self.path): return
+            if AcquisitionApi(self).get(self.path): return
+            if DeviceApi(self).get(self.path): return
+            if WellApi(self).get(self.path): return
         path = urlsplit(self.path).path
         if path == "/api/health": return self._health()
         if path == "/api/audit": return self._audit_get()
@@ -70,17 +74,20 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self):
+        if self._review_gate(): return
+        if self.server.studies is not None and StudyApi(self).dispatch(): return
         if InversionApi(self).dispatch(): return
         if WaveformApi(self).post(self.path): return
         if IngestReliabilityApi(self).post(self.path): return
         if RegistryApi(self).post(self.path): return
         path = urlsplit(self.path).path
-        if WorkflowApi(self).post(self.path): return
-        if CommandApi(self).post(self.path): return
-        if StrategyApi(self).post(self.path): return
-        if AnalysisApi(self).post(self.path): return
-        if AcquisitionApi(self).post(self.path): return
-        if DeviceApi(self).post(self.path): return
+        if self.server.runtime_mode == 'demo':
+            if WorkflowApi(self).post(self.path): return
+            if CommandApi(self).post(self.path): return
+            if StrategyApi(self).post(self.path): return
+            if AnalysisApi(self).post(self.path): return
+            if AcquisitionApi(self).post(self.path): return
+            if DeviceApi(self).post(self.path): return
         if path == "/api/auth/login": return self._login()
         if path == "/api/auth/logout": return self._logout()
         if path == "/api/users": return self._users_create()
@@ -94,13 +101,16 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if self._review_gate(): return
+        if self.server.studies is not None and StudyApi(self).dispatch(): return
         if InversionApi(self).dispatch(): return
         if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
-        if StrategyApi(self).patch(self.path): return
-        if DeviceApi(self).patch(self.path): return
-        if WellApi(self).patch(self.path): return
+        if self.server.runtime_mode == 'demo':
+            if StrategyApi(self).patch(self.path): return
+            if DeviceApi(self).patch(self.path): return
+            if WellApi(self).patch(self.path): return
         path = urlsplit(self.path).path
         if path.startswith("/api/users/"): return self._users_patch(path)
         if path.startswith("/api/roles/"): return self._roles_patch(path)
@@ -108,6 +118,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
 
     def _unsupported_method(self):
+        if self._review_gate(): return
+        if self.server.studies is not None and StudyApi(self).dispatch(): return
         if InversionApi(self).dispatch(): return
         if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
@@ -119,13 +131,36 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     do_OPTIONS = _unsupported_method
     do_HEAD = _unsupported_method
 
+    def _review_gate(self):
+        """Review exposes production modules, never legacy demo/control routes."""
+        if getattr(self.server, 'runtime_mode', 'demo') != 'review':
+            return False
+        path = urlsplit(self.path).path
+        if self.command not in ('GET', 'HEAD', 'OPTIONS'):
+            origins = self.headers.get_all('Origin', [])
+            allowed = {f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}
+            if len(origins) > 1 or origins and origins[0] not in allowed:
+                self._send_json(403, self._error('forbidden_origin', 'Origin not allowed'))
+                return True
+        exact = {'/api/health', '/api/auth/me', '/api/auth/login', '/api/auth/logout',
+                 '/api/audit', '/api/users', '/api/roles'}
+        prefixes = ('/api/production-studies', '/api/production-inversion', '/api/waveforms',
+                    '/api/registry', '/api/ingest-reliability', '/api/central', '/api/users', '/api/roles')
+        if path.startswith('/api/') and path not in exact and not any(path == prefix or path.startswith(prefix + '/') for prefix in prefixes):
+            self._send_api_not_found()
+            return True
+        return False
+
     def _health(self):
         try:
             status = "ok" if self.server.database.scalar("SELECT 1") == 1 else "unavailable"
         except (sqlite3.Error, OSError):
             return self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, self._error("database_unavailable", "Database is unavailable"))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"service": "ok", "database": status,
-            "simulator": "running" if getattr(self.server.simulator, "_thread", None) and self.server.simulator._thread.is_alive() else "ready", "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
+            "simulator": ("disabled" if self.server.runtime_mode == 'review' else
+                          "running" if getattr(self.server.simulator, "_thread", None) and self.server.simulator._thread.is_alive() else "ready"),
+            "runtime_mode": self.server.runtime_mode, "control_enabled": False,
+            "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
 
     def _audit_get(self):
         if self._require("audit.read") is None:
@@ -288,7 +323,9 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         waveform_status = self.server.waveform_runtime.status
         inversion_status = self.server.inversion_runtime.status
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
+            "runtime_mode": self.server.runtime_mode,
             "capabilities": {"registry": capability,
+                             "production_studies": {"enabled": self.server.studies is not None, "status": "ready" if self.server.studies is not None else "disabled"},
                              "production_inversion": {"enabled": inversion_status != "disabled", "status": inversion_status},
                              "waveforms": {"enabled": waveform_status != "disabled", "status": waveform_status},
                              "ingest_reliability": {"enabled": ingest_status != "disabled", "status": ingest_status}}}})
@@ -315,7 +352,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             status = body.get("status", "active")
             if status not in {"active", "disabled"}: raise RequestValidationError("invalid status")
             salt, digest, iterations = password_material(password)
-            with self.server.database.transaction(actor.id, "user.create", "user", username, auto_audit=False) as conn:
+            with self.server.database.transaction(actor.id, "user.create", "user", username, auto_audit=False, immediate=True) as conn:
+                self._refresh_admin_authority(actor, 'users.manage')
                 if conn.execute("SELECT 1 FROM roles WHERE id = ? AND status = 'active'", (role_id,)).fetchone() is None:
                     raise RequestValidationError("role_id is not active")
                 cursor = conn.execute("""INSERT INTO users(role_id, username, display_name, status, password_salt, password_hash,
@@ -326,6 +364,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                     {"before": {}, "after": self._public_user(created)}, conn)
         except RequestValidationError as error:
             return self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self._error("validation_error", str(error)))
+        except AuthError as error:
+            return self._admin_auth_error(error)
         except sqlite3.IntegrityError:
             return self._send_json(HTTPStatus.CONFLICT, self._error("conflict", "Username already exists"))
         self._send_json(HTTPStatus.CREATED, {"ok": True, "data": self._public_user(created)})
@@ -335,7 +375,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if actor is None: return
         try:
             target_id = self._path_id(path, "/api/users/"); body = self._json_body(); version = self._positive_int(body.get("version"), "version")
-            with self.server.database.transaction(actor.id, "user.update", "user", str(target_id), auto_audit=False) as conn:
+            with self.server.database.transaction(actor.id, "user.update", "user", str(target_id), auto_audit=False, immediate=True) as conn:
+                self._refresh_admin_authority(actor, 'users.manage')
                 before = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
                 if before is None: raise RequestValidationError("user not found")
                 fields, values = [], []
@@ -361,6 +402,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 safe_after = self._public_user(after)
                 if reset: safe_after["password_reset"] = True
                 self.server.audit.record(actor.id, "user.update", "user", str(target_id), {"before": self._public_user(before), "after": safe_after}, conn)
+        except AuthError as error:
+            return self._admin_auth_error(error)
         except VersionConflict:
             return self._send_json(HTTPStatus.CONFLICT, self._error("version_conflict", "Record version is stale"))
         except RequestValidationError as error:
@@ -386,12 +429,15 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if actor is None: return
         try:
             body = self._json_body(); code, name = self._text(body, "code"), self._text(body, "name"); permissions = self._permissions(body.get("permissions", []))
-            with self.server.database.transaction(actor.id, "role.create", "role", code, auto_audit=False) as conn:
+            with self.server.database.transaction(actor.id, "role.create", "role", code, auto_audit=False, immediate=True) as conn:
+                self._refresh_admin_authority(actor, 'roles.manage')
                 cursor = conn.execute("INSERT INTO roles(code, name, actor_id) VALUES(?, ?, ?)", (code, name, actor.id))
                 self._set_permissions(conn, cursor.lastrowid, permissions); after = conn.execute("SELECT * FROM roles WHERE id = ?", (cursor.lastrowid,)).fetchone()
                 self.server.audit.record(actor.id, "role.create", "role", str(cursor.lastrowid), {"before": {}, "after": self._public_role(after, conn)}, conn)
         except RequestValidationError as error:
             return self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, self._error("validation_error", str(error)))
+        except AuthError as error:
+            return self._admin_auth_error(error)
         except sqlite3.IntegrityError:
             return self._send_json(HTTPStatus.CONFLICT, self._error("conflict", "Role code already exists"))
         self._send_json(HTTPStatus.CREATED, {"ok": True, "data": self._public_role(after)})
@@ -401,7 +447,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if actor is None: return
         try:
             role_id = self._path_id(path, "/api/roles/"); body = self._json_body(); version = self._positive_int(body.get("version"), "version")
-            with self.server.database.transaction(actor.id, "role.update", "role", str(role_id), auto_audit=False) as conn:
+            with self.server.database.transaction(actor.id, "role.update", "role", str(role_id), auto_audit=False, immediate=True) as conn:
+                self._refresh_admin_authority(actor, 'roles.manage')
                 before = conn.execute("SELECT * FROM roles WHERE id = ?", (role_id,)).fetchone()
                 if before is None: raise RequestValidationError("role not found")
                 safe_before = self._public_role(before, conn)
@@ -419,6 +466,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 if permissions is not None: self._set_permissions(conn, role_id, permissions)
                 after = conn.execute("SELECT * FROM roles WHERE id = ?", (role_id,)).fetchone()
                 self.server.audit.record(actor.id, "role.update", "role", str(role_id), {"before": safe_before, "after": self._public_role(after, conn)}, conn)
+        except AuthError as error:
+            return self._admin_auth_error(error)
         except VersionConflict:
             return self._send_json(HTTPStatus.CONFLICT, self._error("version_conflict", "Record version is stale"))
         except RequestValidationError as error:
@@ -426,6 +475,17 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.NOT_FOUND if code == "not_found" else HTTPStatus.BAD_REQUEST if str(error) == "invalid resource id" else HTTPStatus.UNPROCESSABLE_ENTITY
             return self._send_json(status, self._error(code, str(error)))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._public_role(after)})
+
+    def _refresh_admin_authority(self, actor, permission):
+        if self.server.runtime_mode == 'review':
+            current = self.server.auth.require(self._token(), permission)
+            if current.id != actor.id:
+                raise AuthError('identity changed')
+
+    def _admin_auth_error(self, error):
+        denied = isinstance(error, PermissionDenied)
+        return self._send_json(403 if denied else 401, self._error(
+            'forbidden' if denied else 'unauthenticated', 'Permission denied' if denied else 'Authentication required'))
 
     def _require(self, permission):
         try: return self.server.auth.require(self._token(), permission)
@@ -442,6 +502,15 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         raise AuthError("authentication required")
 
     def _json_body(self):
+        if self.server.runtime_mode == 'review':
+            from backend.studies.contracts import StudyError
+            try:
+                lengths = self.headers.get_all('Content-Length', [])
+                if len(lengths) != 1 or not lengths[0].isdigit() or int(lengths[0]) > MAX_JSON_BYTES:
+                    raise RequestValidationError('single bounded Content-Length is required')
+                return StudyApi(self)._body()
+            except StudyError as error:
+                raise RequestValidationError(error.message) from None
         try: length = int(self.headers.get("Content-Length", ""))
         except ValueError: raise RequestValidationError("Content-Length is required") from None
         if length < 0 or length > MAX_JSON_BYTES: raise RequestValidationError("request body is too large")
@@ -557,6 +626,8 @@ class PlatformHTTPServer(ThreadingHTTPServer):
             self.close_request(request)
 
     def serve_forever(self, *args, **kwargs):
+        if self.runtime_mode == 'review':
+            return super().serve_forever(*args, **kwargs)
         self.acquisition_worker.start()
         try:
             self.workflow_worker.start()
@@ -597,15 +668,33 @@ def create_server(
     ingest_runtime=None,
     waveform_config_path=None,
     inversion_config_path=None,
+    runtime_mode='demo',
+    studies_engines=None,
 ) -> ThreadingHTTPServer:
+    if runtime_mode not in ('demo', 'review'):
+        raise ValueError('Unknown runtime mode')
+    if runtime_mode == 'review' and host != '127.0.0.1':
+        raise ValueError('Review runtime binds only 127.0.0.1')
     if central_repository is not None and center_config_path is not None:
         raise ValueError("central_repository and center_config_path are mutually exclusive")
     if center_config_path is not None:
         central_repository = PostgresTelemetryQueryRepository(
             connect_kwargs=load_query_postgres_config(center_config_path),
         )
-    database = Database(database_path or Config.DATABASE_PATH); database.migrate(); seed_database(database)
+    database = Database(database_path or Config.DATABASE_PATH)
+    if runtime_mode == 'review':
+        from backend.review_runtime import check_identity, study_engines
+        from backend.studies.service import StudyService
+        check_identity(database.path)
+        engines = study_engines() if studies_engines is None else studies_engines
+    else:
+        from backend.review_runtime import reject_review_identity_in_demo
+        reject_review_identity_in_demo(database.path)
+        database.migrate()
+        seed_database(database)
     server = PlatformHTTPServer((host, port), PlatformRequestHandler); server.database = database; server.auth = AuthService(database); server.audit = AuditService(database)
+    server.runtime_mode = runtime_mode
+    server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
     server.central_telemetry = central_repository
     server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
     server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
@@ -614,6 +703,9 @@ def create_server(
     waveform_hosts = ('127.0.0.1', 'localhost') if host in ('127.0.0.1', 'localhost') else (host,)
     server.waveform_runtime.allowed_origins = tuple(_origin(f'http://{name}:{server.server_port}') for name in waveform_hosts)
     server.inversion_runtime.allowed_origins = server.waveform_runtime.allowed_origins
+    if runtime_mode == 'review':
+        server.simulator = server.acquisition = server.acquisition_worker = server.workflow_worker = None
+        return server
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker
