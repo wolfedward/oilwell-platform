@@ -52,7 +52,8 @@ export function readPayload(container, kind) {
 export async function readPayloadFile(file, kind) {
   if (!file || file.size > 8 * 1024 * 1024) throw Error('选择不超过 8 MiB 的 JSON 文件');
   const value = JSON.parse(await file.text());
-  const payload = value?.payload && value?.kind === kind ? value.payload : value;
-  if (!payload || Array.isArray(payload) || payload.schema !== KINDS[kind].schema) throw Error('文件 schema 与当前研究类型不符');
-  return payload;
+  if (value && typeof value === 'object' && !Array.isArray(value) && ('source' in value || 'payload' in value || 'kind' in value))
+    throw Error('导出的完整记录包含来源与历史，不能当作新 payload 导入；请单独提供已核实来源的 payload JSON');
+  if (!value || Array.isArray(value) || value.schema !== KINDS[kind].schema) throw Error('文件 schema 与当前研究类型不符');
+  return value;
 }

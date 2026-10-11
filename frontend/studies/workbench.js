@@ -89,5 +89,7 @@ export function studyDetail(record) {
     <details><summary>查看提交的原始 payload</summary><pre class="study-json">${esc(JSON.stringify(record.payload||{},null,2))}</pre></details>
     <details><summary>依赖与历史事件</summary>${table(['依赖记录','类型','复核版本'],(record.dependencies||[]).map(d=>[d.record_id,d.kind,d.review_version]))}
       <h4>复核历史</h4>${table(['版本','决定','复核人','时间','意见'],(record.review_history||[]).map(x=>[x.version,x.decision,x.actor_id,x.created_at,x.comment]))}
-      <h4>影子选用历史</h4>${table(['版本','选用记录','操作人','时间','意见'],(record.selection_history||[]).map(x=>[x.version,x.record_id,x.actor_id,x.created_at,x.comment]))}</details></article>`;
+      ${record.review_history_truncated?'<p>仅显示最近 100 条复核记录；更早的复核记录未在本页面列出。</p>':''}
+      <h4>影子选用历史</h4>${table(['版本','选用记录','操作人','时间','意见'],(record.selection_history||[]).map(x=>[x.version,x.record_id,x.actor_id,x.created_at,x.comment]))}
+      ${record.selection_history_truncated?'<p>仅显示最近 100 条影子选用记录；更早的影子选用记录未在本页面列出。</p>':''}</details></article>`;
 }

@@ -70,6 +70,24 @@ class StudiesBrowserTests(unittest.TestCase):
     def test_rejected_result_cannot_offer_approval(self):
         self.run_browser('rejected-review')
 
+    def test_import_refuses_envelope_that_would_erase_provenance(self):
+        self.run_browser('import-envelope')
+
+    def test_failed_create_preserves_raw_draft(self):
+        self.run_browser('form-errors')
+
+    def test_disposal_during_receipt_lookup_never_posts(self):
+        self.run_browser('disposed-receipt')
+
+    def test_pending_selection_stays_bound_to_original_record(self):
+        self.run_browser('pending-select')
+
+    def test_disposal_aborts_export_and_reads(self):
+        self.run_browser('abort-reads-export')
+
+    def test_pending_deselection_retries_original_body(self):
+        self.run_browser('pending-unselect')
+
     def test_builtin_examples_run_real_engines(self):
         payloads = self.run_browser('templates')['payloads']
         training = train_conditions(payloads['condition_training'])

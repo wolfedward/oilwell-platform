@@ -68,8 +68,78 @@ try {
     const feasible=studyDetail({...base,kind:'energy_schedule',status:'feasible',result:{status:'feasible',evaluated_combinations:1,ranked_candidates:[{candidate_id:'cycle',total_energy_kwh:60,peak_power_kw:8,total_starts:2,schedule_by_well:{W1:{segments:[{state:'off',duration_minutes:60},{state:'on',duration_minutes:120}]}},daily_liquid_m3:{'2026-01-01':12},daily_energy_kwh:{'2026-01-01':60},daily_starts:{'2026-01-01':2}}]}});
     const unknown=studyDetail({...base,kind:'condition_prediction',status:'completed',result:{predictions:[{sample_id:'row-1',label:'unknown',score:null,reasons:['ood']}]}});
     check(rejected.includes('拟合被拒绝')&&noFeasible.includes('没有可行候选')&&unknown.includes('unknown'),'non-success evidence stays explicit');
+    const truncated=studyDetail({...base,kind:'condition_prediction',status:'completed',review_history_truncated:true,selection_history_truncated:true,result:{predictions:[]}});
+    check(truncated.includes('更早的复核记录')&&truncated.includes('更早的影子选用记录'),'truncated history is disclosed');
     check(feasible.includes('study-chart')&&feasible.includes('启停时序')&&feasible.includes('每日电量'),'feasible candidate has timeline and daily energy charts');
     check(!rejected.includes('<script>')&&!rejected.includes('<img'),'submitted text escaped');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='import-envelope'){
+    const {readPayloadFile}=await import(new URL('../../frontend/studies/forms.js',PAGE_MODULE));
+    const envelope={id:'11111111-1111-4111-8111-111111111111',kind:'recovery_fit',source:{kind:'software_fixture',description:'software vector',references:['fixture']},payload:{schema:'recovery.depth/1',well_id:'TEST'}};
+    let refused=false;try{await readPayloadFile(new File([JSON.stringify(envelope)],'export.json',{type:'application/json'}),'recovery_fit')}catch(error){refused=true;}
+    check(refused,'export envelope cannot silently lose software provenance');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='form-errors'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root');let posts=0;
+    const api={get:async()=>[],post:async()=>{posts++;throw Object.assign(Error('服务端字段拒绝'),{status:422,code:'invalid_payload'})}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.create']),actorId:'error-actor',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'recovery-lab'},pageHeader:()=>'<h1>恢复研究</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector('[data-study-title]').value='未保存的标题';root.querySelector('[data-study-description]').value='原始来源';root.querySelector('[data-study-references]').value='manifest:raw';
+    root.querySelector('[data-study-field="observations"]').value='{broken json';root.querySelector('[data-study-create]').click();await new Promise(r=>setTimeout(r,20));
+    check(root.querySelector('[data-study-field="observations"]').value==='{broken json'&&root.querySelector('[data-study-title]').value==='未保存的标题','validation error keeps exact invalid raw draft');
+    const advanced=root.querySelector('.study-advanced');advanced.open=true;const editor=root.querySelector('[data-study-advanced]');editor.value=JSON.stringify({schema:'recovery.depth/1',well_id:'W-ADV'});
+    root.querySelector('[data-study-create]').click();await new Promise(r=>setTimeout(r,20));
+    check(posts===1&&root.querySelector('.study-advanced').open&&root.querySelector('[data-study-advanced]').value===editor.value&&root.querySelector('[data-study-description]').value==='原始来源','server refusal keeps advanced state and metadata');
+    const rawAdvanced=root.querySelector('[data-study-advanced]').value;
+    root.querySelector('[data-study-refresh]').click();await new Promise(r=>setTimeout(r,20));
+    check(root.querySelector('.study-advanced').open&&root.querySelector('[data-study-advanced]').value===rawAdvanced&&root.querySelector('[data-study-title]').value==='未保存的标题','refresh preserves unfinished advanced draft');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='disposed-receipt'){
+    const {createStudiesClient}=await import(new URL('../../frontend/studies/client.js',PAGE_MODULE));
+    let posts=0,release;const fake={post:async()=>{posts++;throw Object.assign(Error('timed out'),{code:'timeout'})},get:async(_path,options)=>new Promise((_resolve,reject)=>{release=()=>reject(Object.assign(Error('missing'),{status:404}));check(!!options.signal,'receipt lookup has disposal signal')})};
+    const client=createStudiesClient(fake,'disposed-actor',()=>true),body={request_id:'55555555-5555-4555-8555-555555555555',kind:'recovery_fit',title:'same',source:{kind:'software_fixture',description:'fixture',references:[]},payload:{schema:'recovery.depth/1'}};
+    try{await client.create(body)}catch{}
+    const retry=client.create({...body,title:'changed'}).catch(error=>error);
+    const until=Date.now()+1000;while(!release){if(Date.now()>until)throw Error('receipt never started');await new Promise(r=>setTimeout(r,10));}
+    client.dispose();release();const error=await retry;
+    check(posts===1&&error.code==='cancelled'&&client.pending('create')?.body.title==='same','disposed receipt 404 cannot POST and pending exact body survives');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='abort-reads-export'){
+    const {createStudiesClient}=await import(new URL('../../frontend/studies/client.js',PAGE_MODULE));
+    let readSignal,exportSignal,downloaded=false;
+    const api={get:(_path,options)=>new Promise((_resolve,reject)=>{readSignal=options.signal;options.signal.addEventListener('abort',()=>reject(Object.assign(Error('cancelled'),{code:'cancelled'})))}),
+      download:(_path,_filename,options)=>new Promise((_resolve,reject)=>{exportSignal=options.signal;options.signal.addEventListener('abort',()=>reject(Object.assign(Error('cancelled'),{code:'cancelled'})))}),post:async()=>{throw Error('unexpected post')}};
+    const readClient=createStudiesClient(api,'read-actor');const reading=readClient.list().catch(error=>error);await new Promise(r=>setTimeout(r,0));readClient.dispose();await reading;
+    const exportClient=createStudiesClient(api,'export-actor');const exporting=exportClient.export('11111111-1111-4111-8111-111111111111').catch(error=>error);await new Promise(r=>setTimeout(r,0));exportClient.dispose();await exporting;
+    check(readSignal?.aborted&&exportSignal?.aborted&&!downloaded,'disposal aborts list and audited export before download');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='pending-unselect'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),a='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',b='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',posts=[];
+    const row=id=>({id,kind:'condition_training',title:id===a?'Record A':'Record B',actor_id:'author',status:'completed',source:{kind:'software_fixture',description:'test',references:['fixture']},review_status:'approved',version:2,selection_version:3,is_selected:id===a,dependency_current:true,dependencies:[],payload:{},result:{status:'completed',training_curve:[],metrics:{}},review_history:[],selection_history:[]});
+    const api={get:async path=>path.includes('?')?[row(a),row(b)]:row(path.endsWith(a)?a:b),post:async(_path,body)=>{posts.push(JSON.stringify(body));if(posts.length===1)throw Object.assign(Error('timed out'),{code:'timeout'});return{kind:'condition_training',record_id:null,version:4}}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.select']),actorId:'unselect-actor',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>复核</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector(`[data-study-record="${a}"]`).click();let until=Date.now()+2000;while(!root.querySelector('[data-study-unselect]')){if(Date.now()>until)throw Error('A timeout');await new Promise(r=>setTimeout(r,10));}
+    root.querySelector('[data-study-selection-comment]').value='撤销影子版本';root.querySelector('[data-study-unselect]').click();await new Promise(r=>setTimeout(r,20));
+    root.querySelector(`[data-study-record="${b}"]`).click();until=Date.now()+2000;while(root.querySelector('.study-detail h2')?.textContent!=='Record B'){if(Date.now()>until)throw Error('B timeout');await new Promise(r=>setTimeout(r,10));}
+    check(!root.querySelector('[data-study-select]')&&root.textContent.includes(a),'pending deselection target remains A on B');
+    root.querySelector(`[data-study-record="${a}"]`).click();until=Date.now()+2000;while(!root.querySelector('[data-study-unselect]')){if(Date.now()>until)throw Error('A retry timeout');await new Promise(r=>setTimeout(r,10));}
+    root.querySelector('[data-study-unselect]').click();until=Date.now()+2000;while(posts.length<2){if(Date.now()>until)throw Error('retry timeout');await new Promise(r=>setTimeout(r,10));}
+    check(posts[0]===posts[1]&&JSON.parse(posts[1]).record_id===null,'deselection replays exact null-record body');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='pending-select'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),a='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',b='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',posts=[];
+    const row=id=>({id,kind:'condition_training',title:id===a?'Record A':'Record B',actor_id:'author',status:'completed',source:{kind:'software_fixture',description:'test',references:['fixture']},review_status:'approved',version:2,selection_version:0,is_selected:false,dependency_current:true,dependencies:[],payload:{},result:{status:'completed',training_curve:[],metrics:{}},review_history:[],selection_history:[]});
+    const api={get:async path=>path.includes('?')?[row(a),row(b)]:row(path.endsWith(a)?a:b),post:async(path,body)=>{posts.push(JSON.stringify(body));if(posts.length===1)throw Object.assign(Error('timed out'),{code:'timeout'});return{kind:'condition_training',record_id:a,version:1}}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.select']),actorId:'selection-actor',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>复核</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector(`[data-study-record="${a}"]`).click();let until=Date.now()+2000;while(!root.querySelector('[data-study-select]')){if(Date.now()>until)throw Error('A timeout');await new Promise(r=>setTimeout(r,10));}
+    root.querySelector('[data-study-selection-comment]').value='原记录选用';root.querySelector('[data-study-select]').click();await new Promise(r=>setTimeout(r,20));
+    root.querySelector(`[data-study-record="${b}"]`).click();until=Date.now()+2000;while(root.querySelector('.study-detail h2')?.textContent!=='Record B'){if(Date.now()>until)throw Error('B timeout');await new Promise(r=>setTimeout(r,10));}
+    check(!root.querySelector('[data-study-select]')&&root.textContent.includes(a),'pending A cannot be triggered from B and target A is visible');
+    root.querySelector(`[data-study-record="${a}"]`).click();until=Date.now()+2000;while(root.querySelector('.study-detail h2')?.textContent!=='Record A'){if(Date.now()>until)throw Error('A reopen timeout');await new Promise(r=>setTimeout(r,10));}
+    root.querySelector('[data-study-select]').click();until=Date.now()+2000;while(posts.length<2){if(Date.now()>until)throw Error('retry timeout');await new Promise(r=>setTimeout(r,10));}
+    check(posts[0]===posts[1],'original selection body retried exactly');
     document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
   }else if(mode==='rejected-review'){
     const {renderProductionStudies}=await import(PAGE_MODULE);

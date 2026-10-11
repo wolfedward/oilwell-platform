@@ -51,31 +51,50 @@ export async function renderProductionStudies(context) {
       <div class="study-example-actions"><button type="button" class="button secondary" data-study-example>载入明确标注的软件样例</button><label class="button secondary">导入 payload JSON<input type="file" accept=".json,application/json" data-study-file hidden/></label></div>
       ${payloadEditor(kind,payload,eligibleDependencies())}
       <div class="study-form-actions"><button type="button" class="button primary" data-study-create ${permissions.has('studies.create')?'':'disabled'}>${pending?'查询回执并按原请求重试':'运行并保存不可覆盖的结果'}</button></div>
-      ${pending?`<p class="study-alert">上次请求结果不确定。请求号 ${esc(pending.body.request_id)}；再次点击只使用保存的原始请求体。</p>`:''}
+      ${pending?`<p class="study-alert" data-study-pending>上次 ${esc(KINDS[pending.body.kind]?.label||pending.body.kind)} 请求结果不确定。原请求号 ${esc(pending.body.request_id)}；再次点击只使用保存的原始请求体。</p>`:''}
     </div></section>`;
   }
   function reviewMarkup() {
     if(!record)return '';
     const self=String(record.actor_id)===String(actorId);
     const mayReview=permissions.has('studies.review')&&!self;
-    const maySelect=permissions.has('studies.select')&&SELECTABLE.has(record.kind)&&record.review_status==='approved'&&record.dependency_current!==false;
     const reviewPending=client.pending(`review:${record.id}`),selectPending=client.pending(`select:${record.kind}`);
+    const pendingTarget=selectPending?.target_id||selectPending?.body?.record_id;
+    const wrongTarget=!!selectPending&&String(pendingTarget)!==String(record.id);
+    const maySelect=permissions.has('studies.select')&&SELECTABLE.has(record.kind)&&record.review_status==='approved'&&record.dependency_current!==false&&!wrongTarget;
     return `<section class="panel study-actions"><header><h3>复核、影子选用与导出</h3></header><div class="panel-body">
       ${self?'<p class="study-boundary">作者不能复核自己的结果，包括管理员。</p>':''}
+      ${wrongTarget?`<p class="study-boundary">另一条记录 ${esc(pendingTarget||'目标未知')} 有结果未确定的影子选用请求。请先回到原记录，按原请求重试；当前记录的选用操作已暂停。</p>${pendingTarget?`<button type="button" class="button secondary" data-study-record="${esc(pendingTarget)}">打开原记录</button>`:''}`:''}
       ${mayReview?`<label class="study-field">复核决定<select data-study-decision>${record.status===APPROVABLE[record.kind]?'<option value="approved">批准软件研究</option>':''}<option value="rejected">拒绝</option>${record.review_status==='approved'?'<option value="revoked">撤销批准</option>':''}</select></label>
         <label class="study-field">复核意见<input data-study-comment maxlength="1000" placeholder="说明证据与决定"/></label><button type="button" class="button secondary" data-study-review>${reviewPending?'按原请求重试复核':'提交独立复核'}</button>`:''}
-      ${maySelect?`<label class="study-field">影子选用意见<input data-study-selection-comment maxlength="1000" placeholder="说明选用依据"/></label><button type="button" class="button secondary" data-study-select>${selectPending?'按原请求重试选用':'选用为影子版本'}</button>`:''}
-      ${permissions.has('studies.select')&&record.is_selected?'<button type="button" class="button secondary" data-study-unselect>撤销当前影子选用</button>':''}
+      ${maySelect?`<label class="study-field">影子选用意见<input data-study-selection-comment maxlength="1000" placeholder="说明选用依据"/></label>${!selectPending||selectPending.body.record_id!==null?`<button type="button" class="button secondary" data-study-select>${selectPending?'按原请求重试选用':'选用为影子版本'}</button>`:''}`:''}
+      ${permissions.has('studies.select')&&!wrongTarget&&(record.is_selected||selectPending?.body?.record_id===null)?`<button type="button" class="button secondary" data-study-unselect>${selectPending?.body?.record_id===null?'按原请求重试撤销选用':'撤销当前影子选用'}</button>`:''}
       ${permissions.has('studies.export')?'<button type="button" class="button secondary" data-study-export>导出已审计 JSON</button>':''}
     </div></section>`;
   }
-  function paint() {
+  function paint(preserveDraft=true) {
     if(!current())return;
+    const previous=content.querySelector('.study-form');
+    const draft=preserveDraft&&previous?{
+      kind:previous.querySelector('[data-study-kind]')?.value,
+      meta:Object.fromEntries(['title','source','description','references'].map(name=>[name,previous.querySelector(`[data-study-${name}]`)?.value])),
+      fields:Object.fromEntries([...previous.querySelectorAll('[data-study-field]')].map(field=>[field.dataset.studyField,field.value])),
+      recovery:previous.querySelector('[data-study-recovery]')?.value,
+      advanced:previous.querySelector('[data-study-advanced]')?.value,
+      advancedOpen:previous.querySelector('.study-advanced')?.open,
+    }:null;
     const header=`<div class="study-intro"><div><p class="eyebrow">ENGINEERING STUDIES</p><h2>${esc(PAGES[pageId]||'工程研究')}</h2><p>7 类有界算法，提交来源可追溯；复核与影子选用保留独立历史。</p></div><button class="button secondary" type="button" data-study-refresh>刷新记录</button></div>`;
     const summary=pageId==='engineering-overview'?`<div class="study-cards">${Object.entries(KINDS_BY_PAGE).map(([id,kinds])=>`<button type="button" data-page="${id}"><strong>${esc(PAGES[id])}</strong><span>${kinds.map(k=>KINDS[k].label).join(' · ')}</span><small>进入研究 →</small></button>`).join('')}</div>`:'';
     const list=`<section class="panel study-records"><header><h3>历史记录</h3><span>${records.length} 条（当前页）</span></header><div class="panel-body">${studyList(records,record?.id)}<div class="study-pagination"><button type="button" data-study-prev ${offset===0?'disabled':''}>上一页</button><span>${Math.floor(offset/50)+1}</span><button type="button" data-study-next ${records.length<50?'disabled':''}>下一页</button></div></div></section>`;
     content.innerHTML=`${header}${summary}<div class="study-columns">${KINDS_BY_PAGE[pageId]&&permissions.has('studies.create')?formMarkup():''}${list}</div>
       ${record?`<section class="panel study-detail-panel"><div class="panel-body">${studyDetail(record)}${reviewMarkup()}</div></section>`:''}`;
+    if(draft&&draft.kind===kind){
+      for(const [name,value] of Object.entries(draft.meta)){const field=content.querySelector(`[data-study-${name}]`);if(field&&value!==undefined)field.value=value;}
+      for(const [name,value] of Object.entries(draft.fields)){const field=content.querySelector(`[data-study-field="${name}"]`);if(field&&value!==undefined)field.value=value;}
+      const recovery=content.querySelector('[data-study-recovery]');if(recovery&&draft.recovery)recovery.value=draft.recovery;
+      const advanced=content.querySelector('[data-study-advanced]');if(advanced&&draft.advanced!==undefined)advanced.value=draft.advanced;
+      const details=content.querySelector('.study-advanced');if(details)details.open=!!draft.advancedOpen;
+    }
   }
   async function loadList() {
     const serial=++selection;notify('正在读取工程研究记录…');
@@ -93,8 +112,15 @@ export async function renderProductionStudies(context) {
     sourceDescription=root.querySelector('[data-study-description]')?.value||sourceDescription;
     sourceReferences=root.querySelector('[data-study-references]')?.value||sourceReferences;
   }
+  function showCreatePending() {
+    const saved=client.pending('create');if(!saved)return;
+    const action=root.querySelector('[data-study-create]');if(action)action.textContent='查询回执并按原请求重试';
+    const holder=root.querySelector('.study-form-actions');
+    if(holder){let note=root.querySelector('[data-study-pending]');if(!note){note=document.createElement('p');note.className='study-alert';note.dataset.studyPending='';holder.after(note);}
+      note.textContent=`上次 ${KINDS[saved.body.kind]?.label||saved.body.kind} 请求结果不确定。原请求号 ${saved.body.request_id}；重试只使用保存的原始请求体。`;}
+  }
   root.addEventListener('change',async event=>{
-    if(event.target.matches('[data-study-kind]')){captureMeta();kind=event.target.value;payload=null;exampleLoaded=false;paint();return;}
+    if(event.target.matches('[data-study-kind]')){captureMeta();kind=event.target.value;payload=null;exampleLoaded=false;paint(false);return;}
     if(event.target.matches('[data-study-source]')){
       sourceKind=event.target.value;
       for(const selector of ['[data-study-field="model_record_id"]','[data-study-recovery]']){
@@ -104,11 +130,11 @@ export async function renderProductionStudies(context) {
       notify('来源性质已更新；请核对依赖记录与输入内容。');return;
     }
     if(event.target.matches('[data-study-recovery]')){
-      try{captureMeta();payload=readPayload(root,kind);if(!payload.wells?.length)throw Error('先填写至少一口井');payload.wells[0].recovery_record_id=event.target.value;paint();notify('已填入第一口井的恢复记录编号；请核对井号与来源。');}
+      try{captureMeta();payload=readPayload(root,kind);if(!payload.wells?.length)throw Error('先填写至少一口井');payload.wells[0].recovery_record_id=event.target.value;paint(false);notify('已填入第一口井的恢复记录编号；请核对井号与来源。');}
       catch(error){notify(errorText(error),true);}return;
     }
     if(event.target.matches('[data-study-file]')){
-      try{captureMeta();payload=await readPayloadFile(event.target.files?.[0],kind);if(!current())return;exampleLoaded=false;paint();notify('JSON 已载入编辑区，请核对来源、单位与依赖编号。');}
+      try{captureMeta();payload=await readPayloadFile(event.target.files?.[0],kind);if(!current())return;exampleLoaded=false;paint(false);notify('JSON 已载入编辑区，请核对来源、单位与依赖编号。');}
       catch(error){notify(`导入失败：${errorText(error)}`,true);}return;
     }
   });
@@ -119,7 +145,7 @@ export async function renderProductionStudies(context) {
     if(target.matches('[data-study-record]')){await openRecord(target.dataset.studyRecord);return;}
     if(target.matches('[data-study-example]')){
       const dependency=eligibleDependencies()[0]?.id||'';
-      payload=examplePayload(kind,dependency);sourceKind='software_fixture';exampleLoaded=true;sourceDescription='显式载入的内置软件测试向量；无现场测量资格';sourceReferences='内置软件向量 / studies/templates.js';title=`${KINDS[kind].label} · 软件样例`;paint();notify('已载入软件样例；可编辑，但来源仍须如实标记为软件测试向量。');return;
+      payload=examplePayload(kind,dependency);sourceKind='software_fixture';exampleLoaded=true;sourceDescription='显式载入的内置软件测试向量；无现场测量资格';sourceReferences='内置软件向量 / studies/templates.js';title=`${KINDS[kind].label} · 软件样例`;paint(false);notify('已载入软件样例；可编辑，但来源仍须如实标记为软件测试向量。');return;
     }
     if(target.matches('[data-study-create]')){
       target.disabled=true;try{
@@ -130,7 +156,7 @@ export async function renderProductionStudies(context) {
           if(!body.title)throw Error('请填写研究标题');if(body.source.kind==='submitted_observation'&&!rawRefs.length)throw Error('提交观测资料必须填写来源引用');
         }
         const saved=await client.create(body);if(!current())return;notify(`已保存研究 ${saved.id}`);await loadList();await openRecord(saved.id);
-      }catch(error){if(current()){notify(errorText(error),true);paint();}}finally{if(current())target.disabled=false;}return;
+      }catch(error){if(current()){notify(errorText(error),true);showCreatePending();}}finally{if(current())target.disabled=false;}return;
     }
     if(target.matches('[data-study-export]')){try{await client.export(record.id);if(current())notify('已从已审计接口导出当前记录。');}catch(error){if(current())notify(errorText(error),true);}return;}
     if(target.matches('[data-study-review],[data-study-select],[data-study-unselect]')){
@@ -143,10 +169,10 @@ export async function renderProductionStudies(context) {
         }else{
           const prior=client.pending(`select:${record.kind}`);
           const body=prior?.body||{request_id:uuid(),expected_version:record.selection_version,record_id:target.matches('[data-study-unselect]')?null:id,comment:root.querySelector('[data-study-selection-comment]')?.value.trim()||''};
-          if(!body.comment)throw Error('请填写影子选用意见');await client.select(record.kind,body);
+          if(!body.comment)throw Error('请填写影子选用意见');await client.select(record.kind,body,id);
         }
         if(!current()||serial!==selection)return;notify('操作已记录在不可覆盖的历史中。');await loadList();await openRecord(id);
-      }catch(error){if(current()&&serial===selection){notify(errorText(error),true);paint();}}finally{if(current())target.disabled=false;}
+      }catch(error){if(current()&&serial===selection){notify(errorText(error),true);}}finally{if(current())target.disabled=false;}
     }
   });
   await loadList();
