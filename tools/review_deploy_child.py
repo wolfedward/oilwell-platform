@@ -78,8 +78,16 @@ def _probe_database(root, credentials):
 
 
 def mqtt_reason_ok(reason):
+    """MQTT 5 CONNACK success is exactly 0x00."""
     value = getattr(reason, 'value', reason)
     return type(value) is int and value == 0
+
+
+def mqtt_puback_ok(reason):
+    # OASIS MQTT 5, section 3.4.2.1: accepted without matching subscribers
+    # (0x10) is also success; never conflate it with the CONNACK contract.
+    value = getattr(reason, 'value', reason)
+    return type(value) is int and value in (0, 16)
 
 
 def _receiver_ready(root, credentials):
@@ -99,7 +107,7 @@ def _receiver_ready(root, credentials):
 
 
 def _mqtt_publish_probe(port, *, role, password, topic):
-    """Publish only to a private review health topic, requiring MQTT5 PUBACK 0."""
+    """Publish only to a private review health topic, requiring accepted PUBACK."""
     import paho.mqtt.client as mqtt
     connected = threading.Event()
     published = threading.Event()
@@ -112,7 +120,7 @@ def _mqtt_publish_probe(port, *, role, password, topic):
         result['connect'] = mqtt_reason_ok(reason)
         connected.set()
     def on_publish(_client, _userdata, _mid, reason, _properties):
-        result['publish'] = mqtt_reason_ok(reason)
+        result['publish'] = mqtt_puback_ok(reason)
         published.set()
     client.on_connect = on_connect
     client.on_publish = on_publish

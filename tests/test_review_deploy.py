@@ -101,6 +101,27 @@ class ConfigurationTests(unittest.TestCase):
             self.assertIn('topic write oilfield/review/health/waveform\n', acl)
             self.assertNotIn('topic write oilfield/v2/REVIEW-GW/+/waveform\n', acl)
 
+    def test_publish_probe_accepts_no_subscribers_but_not_denied_puback(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from paho.mqtt.reasoncodes import ReasonCode
+        from paho.mqtt.packettypes import PacketTypes
+        from tools.review_deploy_child import _mqtt_publish_probe
+        for code, expected in ((0, True), (16, True), (135, False)):
+            class Client:
+                def username_pw_set(self, *_args): pass
+                def connect(self, *_args, **_kwargs): return 0
+                def loop_start(self):
+                    self.on_connect(self, None, None, ReasonCode(PacketTypes.CONNACK, identifier=0), None)
+                def publish(self, *_args, **_kwargs):
+                    self.on_publish(self, None, 1, ReasonCode(PacketTypes.PUBACK, identifier=code), None)
+                    return SimpleNamespace(rc=0)
+                def disconnect(self): pass
+                def loop_stop(self): pass
+            with self.subTest(code=code), patch('paho.mqtt.client.Client', return_value=Client()):
+                self.assertEqual(_mqtt_publish_probe(1884, role='test', password='unused',
+                                                   topic='oilfield/review/health/test'), expected)
+
     def test_generated_configs_load_with_distinct_review_roles(self):
         from tools.review_deploy_config import write_configs, runtime_secrets
         from backend.center.config import load_center_config
