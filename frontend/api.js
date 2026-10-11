@@ -18,7 +18,9 @@ async function parseResponse(response) {
 }
 
 function errorFrom(response, payload) {
-  const envelope = payload && typeof payload === "object" ? payload.error : null;
+  const envelope = payload && typeof payload === "object"
+    ? (payload.error && typeof payload.error === "object" ? payload.error : payload)
+    : null;
   return new ApiError(
     envelope?.message || `请求失败（HTTP ${response.status}）`,
     {

@@ -233,7 +233,8 @@ class PlatformCapabilityTests(unittest.TestCase):
             caps = http('/api/auth/me')[1]['data']['capabilities']
             self.assertEqual(caps, {'ingest_reliability': {'enabled': True, 'status': 'unavailable'},
                                     'registry': {'enabled': False, 'status': 'disabled'},
-                                    'waveforms': {'enabled': False, 'status': 'disabled'}})
+                                    'waveforms': {'enabled': False, 'status': 'disabled'},
+                                    'production_inversion': {'enabled': False, 'status': 'disabled'}})
             status, result = http('/api/ingest-reliability/cases')
             self.assertEqual((status, result['error']['code']), (503, 'ingest.schema_incomplete'))
             self.assertNotIn('data', result)

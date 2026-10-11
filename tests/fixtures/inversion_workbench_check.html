@@ -1,0 +1,192 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE><div id="app"></div><main id="root"></main><pre id="result">pending</pre>
+<style>#result{display:none}</style><script type="module">
+const mode='FIXTURE_MODE',checks=[],calls=[];
+const check=(value,label)=>{if(!value)throw Error(label);checks.push(label)};
+const wait=async(fn)=>{const end=Date.now()+6000;while(!fn()){if(Date.now()>end)throw Error('timeout: '+fn);await new Promise(r=>setTimeout(r,10));}};
+const id=n=>`${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
+const assembly=id(1),parameter=id(2),model=id(3),dataset=id(4),version=id(5),pair=id(6),run=id(7),base='/api/production-inversion';
+const pins={assembly_id:assembly,parameter_id:parameter,parameter_sha256:'a'.repeat(64),parameter_review_version:2,model_id:model,model_sha256:'b'.repeat(64),model_review_version:2};
+const permissions=['inversion.read','inversion.run','waveform.read','waveform.raw.read','waveform.export'];
+const json=(data,status=200,code='inversion.selection_changed')=>new Response(JSON.stringify(status>=400?{code,message:'Refused',details:{}}:{ok:true,data}),{status,headers:{'Content-Type':'application/json'}});
+let refusePreflight=true,deny=false,holdPoll=false,held,aborted=false,runState='running';
+let diagnosticCause='not_applicable',diagnosticVersion=3;
+const replacing=mode.startsWith('replace-'),runB=id(8),resultA=id(9),digest='e'.repeat(64);
+let submissions=0,pollsA=0,pollsB=0,activePolls=0,maxActivePolls=0,releaseA,releasePage,pageAborted=false;
+const completedA=()=>({run_id:run,version:2,state:'completed',result_id:resultA});
+function resultPage(offset){
+ const total=mode==='replace-pages'?1002:2;
+ return {result_id:resultA,content_sha256:digest,offset,limit:1000,total,rows:Array.from({length:Math.min(1000,total-offset)},(_,i)=>({kind:'prediction',columns:['time_ns','power_index','s_m','load_N','status','reason_codes'],values:[String(offset+i),String(offset+i),'1','1000','valid',[]]}))};
+}
+window.fetch=async(path,options={})=>{
+ const url=new URL(path,'http://fixture'),route=url.pathname;
+ calls.push({path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
+ if(path==='/api/auth/me')return json({id:'77',username:'tester',permissions,role_code:'administrator',capabilities:{production_inversion:{enabled:mode!=='shell-disabled',status:mode==='shell-unavailable'?'degraded':'ready'}}});
+ if(path==='/api/auth/logout')return json({});
+ if(deny)return json({},403);
+ if(replacing){
+  if(route===base+'/runs'&&options.method==='POST')return json({run_id:++submissions===1?run:runB,version:1,state:'queued',result_id:null},202);
+  if(route===base+'/runs/'+run||route===base+'/runs/'+runB){
+   activePolls++;maxActivePolls=Math.max(maxActivePolls,activePolls);
+   try{
+    if(route.endsWith(runB)){pollsB++;return json({run_id:runB,version:pollsB,state:mode==='replace-poll'&&pollsB===1?'running':'failed',reason_code:'worker_failed',result_id:null});}
+    pollsA++;
+    if(mode==='replace-poll'&&pollsA===2)return await new Promise(resolve=>releaseA=()=>resolve(json({run_id:run,version:2,state:'running',result_id:null})));
+    return json(mode==='replace-poll'?{run_id:run,version:1,state:'running',result_id:null}:completedA());
+   }finally{activePolls--;}
+  }
+  if(route===base+'/results/'+resultA){
+   if(url.searchParams.has('include_input_metadata'))return json({},409);
+   return json({id:resultA,run_id:run,content_sha256:digest,snapshot_sha256:'f'.repeat(64),execution:'completed',source:'synthetic',review:{state:'unreviewed',version:0},current_applicability:{state:'applicable',reasons:[]},field_validation:{state:'not_field_validated'},body:{point_count:mode==='replace-pages'?1002:2,cycle:{start_ns:'0',end_ns:'1000000000'}}});
+  }
+  if(route===base+'/results/'+resultA+'/comparison')return json({result_id:resultA,content_sha256:digest,comparison:null});
+  if(route===base+'/results/'+resultA+'/points'){
+   const offset=Number(url.searchParams.get('offset'));
+   if(mode==='replace-pages'&&offset===1000){options.signal.addEventListener('abort',()=>pageAborted=true);return new Promise(resolve=>releasePage=()=>resolve(json(resultPage(offset))));}
+   return json(resultPage(offset));
+  }
+ }
+ if(route===base+'/assemblies')return json({offset:0,limit:100,items:[{id:assembly,version:1,body:{asset_number:'Assembly A'}}]});
+ if(route.endsWith('/selections'))return json({offset:0,limit:1,items:[{id:assembly,version:3,body:pins}]});
+ if(route===base+'/parameters/'+parameter)return json({id:parameter,content_sha256:pins.parameter_sha256,body:{provenance:{operating_conditions:[{id:'approved-condition',valid_from:'2026-01-01T00:00:00Z',valid_to:'2027-01-01T00:00:00Z'}]}}});
+ if(route==='/api/waveforms/datasets')return json({page:1,page_size:100,has_more:false,snapshot_revision:'w1.r1.qfixture',received_before:'2026-10-10T00:00:00Z',items:[{dataset_id:dataset,title:'Frozen input',state:'frozen'}]});
+ if(route==='/api/waveforms/datasets/'+dataset&&url.searchParams.get('view')==='members'){
+  const second=url.searchParams.get('page')==='2';
+  if(second)check(url.searchParams.has('snapshot_revision')&&url.searchParams.has('received_before'),'frozen members retain snapshot bounds');
+  return json({page:second?2:1,page_size:100,has_more:!second,snapshot_revision:'w1.r1.qfixture',received_before:'2026-10-10T00:00:00Z',items:second?[{kind:'pair',reference_id:pair}]:Array.from({length:100},()=>({kind:'capture',reference_id:id(8)}))});
+ }
+ if(route==='/api/waveforms/datasets/'+dataset)return json({draft:{title:'Frozen input',state:'frozen'},version:{id:version,content_sha256:'c'.repeat(64)}});
+ if(route==='/api/waveforms/pairs/'+pair)return json({id:pair,content_sha256:'d'.repeat(64),version:4,review_state:'approved',body:{}});
+ if(route===base+'/runs/preflight')return refusePreflight?json({},409):json({allowed:true,missing:[],provisional:true,calculation_performed:false});
+ if(route===base+'/runs'&&options.method==='POST')return json({run_id:run,version:1,state:'queued',result_id:null},202);
+ if(route===base+'/runs/'+run+'/retry')return json({},403);
+ if(route===base+'/runs/'+run+'/cancel')return json({run_id:run,version:2,state:'running',reason_code:'cancel_requested',cancelling:true});
+ if(route===base+'/runs/'+run){
+  if(holdPoll){options.signal.addEventListener('abort',()=>{aborted=true;held?.(json({run_id:run,state:'completed',result_id:'LATE'}))});return new Promise(resolve=>held=resolve)}
+  if(mode==='terminal-diagnostics')return json({run_id:run,version:3,state:'blocked',reason_code:diagnosticCause,result_id:null,
+   terminal_diagnostics:{run_id:run,version:diagnosticVersion,state:'blocked',reason_code:diagnosticCause,
+    reasons:[diagnosticCause==='not_applicable'?'insufficient_coverage':'parameter_pin_changed'],
+    ...(diagnosticCause==='not_applicable'?{coverage_fraction:'1/3',point_count:3,valid_point_count:2}:{})}});
+  return json({run_id:run,version:1,state:runState,reason_code:runState==='failed'?'worker_failed':null,result_id:null});
+ }
+ throw Error('Unexpected '+path);
+};
+try {
+ const {renderProductionInversion,mountProductionInversion}=await import(WORKBENCH_MODULE);
+ const {api}=await import(API_MODULE),root=document.querySelector('#root'),session={};
+ const ctx=()=>({workspace:root,api,permissions:new Set(permissions),actorId:'77',authSession:session,capabilities:{production_inversion:{enabled:true,status:'ready'}},params:{},page:{},pageHeader:()=>'<h1>反演与双图验证</h1>',isCurrent:()=>true,registerDispose:()=>{}});
+ if(mode==='terminal-diagnostics'){
+  const open=()=>renderProductionInversion({...ctx(),params:{run_id:run}});
+  await open();check(root.querySelector('.inversion-run').textContent.includes('有效支撑不足'),'stored numerical cause readable');
+  check(root.querySelector('.inversion-run').textContent.includes('1/3')&&root.querySelector('.inversion-run').textContent.includes('2 / 3'),'exact coverage and valid counts visible');
+  check(root.querySelector('.inversion-run').textContent.includes('缺口'),'numerical cause has actionable next step');
+  diagnosticCause='input_changed';await open();check(root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'changed parameter cause visible');
+  check(root.querySelector('.inversion-run').textContent.includes('重新读取'),'changed input has relevant next step');
+  await open();check(root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'durable cause survives reread');
+  check(!root.querySelector('[data-chart-kind]'),'blocked result never fabricates chart');
+  diagnosticVersion=2;await open();check(!root.querySelector('.inversion-run').textContent.includes('参数内容或复核版本已变化'),'mismatched diagnostic version not rendered');
+  check(root.querySelector('.inversion-run').textContent.includes('诊断详情不可用'),'missing exact diagnostics are explicit');
+  root.replaceChildren();holdPoll=true;const handle=mountProductionInversion({...ctx(),params:{run_id:run}});
+  await wait(()=>held);handle.dispose();await handle.ready;
+  check(aborted&&!root.textContent.includes('LATE')&&!root.textContent.includes('参数内容或复核版本已变化'),'disposed late diagnostics cannot paint');
+ }else if(replacing){
+  refusePreflight=false;
+  const handle=mountProductionInversion({...ctx(),permissions:new Set([...permissions,'inversion.review','inversion.export'])});await handle.ready;
+  root.querySelector('[name="operating_condition_ids"]').click();root.querySelector('[data-inversion-preflight]').click();
+  await wait(()=>root.querySelector('[data-inversion-action="runs.create"]'));
+  const form=root.querySelector('[data-inversion-action="runs.create"]');
+  form.querySelector('[name="reason"]').value='Run A';form.requestSubmit();
+  if(mode==='replace-poll')await wait(()=>releaseA);
+  else if(mode==='replace-pages')await wait(()=>releasePage);
+  else await wait(()=>root.querySelector('[data-inversion-action="exports.create"]'));
+  const oldReview=root.querySelector('[data-inversion-action="results.review"]');
+  if(mode==='replace-rendered')check(root.querySelector('[data-chart-kind]')&&oldReview,'A has rendered charts and active review before replacement');
+  await wait(()=>!form.querySelector('[type="submit"]').disabled);
+  form.querySelector('[name="reason"]').value='Run B';form.requestSubmit();await wait(()=>submissions===2);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  if(mode==='replace-poll'){
+   releaseA();await wait(()=>pollsB>=2);
+   check(root.querySelector('.inversion-run').textContent.includes('计算失败'),'B continues polling through terminal state');
+   check(maxActivePolls===1,'run replacement keeps polls serialized including delayed A');
+  }else{
+   check(!root.querySelector('[data-chart-kind]')&&!root.querySelector('.inversion-result-actions'),'starting B immediately removes A charts and actions');
+   await wait(()=>root.querySelector('.inversion-run').textContent.includes('计算失败'));
+   if(mode==='replace-pages'){
+    check(pageAborted,'replacing run aborts A result pagination');releasePage();await new Promise(resolve=>setTimeout(resolve,50));
+    check(!root.querySelector('[data-chart-kind]')&&!root.querySelector('.inversion-result-actions'),'late A page cannot paint into failed B');
+   }else{
+    const count=calls.length;oldReview.querySelector('[name="reason"]').value='Stale action';oldReview.requestSubmit();await new Promise(resolve=>setTimeout(resolve,30));
+    check(calls.length===count,'detached A review is disposed');
+   }
+  }
+  handle.dispose();
+ }else if(mode==='client-methods'){
+  const {createInversionClient}=await import(CLIENT_MODULE);
+  for(const method of ['preflight','waveformGet','downloadExport']){
+   const authority={...ctx(),authSession:{},permissions:new Set([...permissions,'inversion.export'])};
+   const client=createInversionClient(authority);let methodCalls=0;
+   window.fetch=async()=>{methodCalls++;return json({},403)};
+   const invoke=c=>method==='preflight'?c.preflight({}):method==='waveformGet'?c.waveformGet('/datasets?state=frozen'):c.downloadExport(run,'result.json');
+   try{await invoke(client)}catch{}
+   const sameSession=createInversionClient({...authority,permissions:new Set(authority.permissions)});
+   try{await sameSession.get('/runs')}catch{}
+   check(methodCalls===1,method+' denial blocks every method and remount');
+   client.dispose();sameSession.dispose();
+   const fresh=createInversionClient({...authority,authSession:{}});let resolveRequest,signal;
+   window.fetch=async(path,options)=>{signal=options.signal;return new Promise(resolve=>resolveRequest=resolve)};
+   const pending=invoke(fresh);await wait(()=>resolveRequest);fresh.dispose();
+   check(signal.aborted,method+' owned request aborts on dispose');
+   resolveRequest(json({late:true}));check(await pending===null,method+' late completion suppressed');
+  }
+  const client=createInversionClient(ctx());
+  for(const path of ['https://outside.test/raw','/captures/'+run+'/raw','/datasets/'+dataset+'?view=files']){
+   let refused=false;try{await client.waveformGet(path)}catch{refused=true}check(refused,'metadata route refuses '+path);
+  }
+ }else if(mode.startsWith('shell-')){
+  location.hash='#/production-inversion'+(mode==='shell-logout'?'?run_id='+run:'');
+  await import(APP_MODULE);await wait(()=>document.querySelector('#workspace')?.getAttribute('aria-busy')==='false');
+  const workspace=document.querySelector('#workspace');
+  if(mode==='shell-disabled'||mode==='shell-unavailable'){
+   check(workspace.querySelector('[data-inversion-state]')?.dataset.inversionState===(mode==='shell-disabled'?'disabled':'unavailable'),'actual shell direct route state');
+   check(!calls.some(c=>c.path.startsWith(base)||c.path.startsWith('/api/waveforms')),'gated shell performs zero reads');
+   check(!document.querySelector('#sidebar [data-page="production-results"]'),'results sidebar same gate');
+   document.querySelector('[data-module="production-inversion"]').click();await wait(()=>workspace.getAttribute('aria-busy')==='false');
+   check(!calls.some(c=>c.path.startsWith(base)),'module landing denied consistently');
+  }else{
+   check(document.querySelector('#sidebar [data-page="production-results"]'),'result route appears in real shell');
+   check(document.querySelector('#sidebar [data-page="production-inversion"]'),'workbench route appears in real shell');
+   if(mode==='shell-logout'){
+    await wait(()=>workspace.textContent.includes('计算中'));holdPoll=true;await wait(()=>held);
+    document.querySelector('#logoutButton').click();await wait(()=>aborted);
+    const count=calls.length;await new Promise(r=>setTimeout(r,1700));
+    check(!document.querySelector('#app').textContent.includes('LATE'),'late result cannot paint after real logout');
+    check(calls.length===count,'logout stops poll timer');
+   }
+  }
+ }else if(mode==='sticky-denial'){
+  deny=true;await renderProductionInversion(ctx());const count=calls.length;
+  deny=false;await renderProductionInversion(ctx());check(calls.length===count,'denial sticky through rerender');
+  check(root.textContent.includes('无权'),'denial visible');
+ }else{
+  await renderProductionInversion(ctx());
+  root.querySelector('[name="operating_condition_ids"]').click();
+  const preflight=root.querySelector('[data-inversion-preflight]');preflight.click();
+  await wait(()=>calls.some(c=>c.path.endsWith('/preflight')));await wait(()=>root.querySelector('.inversion-status').textContent.includes('重新读取')&&!preflight.disabled);
+  check(!root.querySelector('[data-inversion-action="runs.create"]'),'stale selection refuses run submission');
+  const sent=calls.find(c=>c.path.endsWith('/preflight')).body.body;
+  check(sent.member_ordinal===100,'frozen ordinal retained before filtering capture members');
+  check(sent.selection_version===3&&sent.pair_review_version===4,'actual selection and pair reviews pinned');
+  check(sent.dataset_version_id===version,'explicit frozen version only');
+  refusePreflight=false;preflight.click();await wait(()=>root.querySelector('[data-inversion-action="runs.create"]'));
+  const form=root.querySelector('[data-inversion-action="runs.create"]');form.querySelector('[name="reason"]').value='Validated run';form.requestSubmit();
+  await wait(()=>root.textContent.includes('计算中'));
+  const cancel=root.querySelector('[data-inversion-action="runs.cancel"]');cancel.querySelector('[name="reason"]').value='Stop test';cancel.requestSubmit();
+  await wait(()=>root.textContent.includes('正在取消'));check(!root.textContent.includes('已经停止'),'cancel_requested retains running status');
+  runState='failed';await renderProductionInversion({...ctx(),params:{run_id:run}});
+  const retry=root.querySelector('[data-inversion-action="runs.retry"]');retry.querySelector('[name="reason"]').value='Retry after inspection';retry.requestSubmit();
+  await wait(()=>root.textContent.includes('无权'));const count=calls.length;
+  retry.querySelector('[data-inversion-recover]').click();await new Promise(r=>setTimeout(r,50));
+  check(calls.length===count,'revoked retry remains refused');
+ }
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks});}
+</script></html>

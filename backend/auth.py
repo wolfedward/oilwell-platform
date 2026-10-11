@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
+import sqlite3
+from contextlib import closing
 
 from backend.database import Database
 
@@ -149,6 +151,49 @@ class AuthService:
 
     def me(self, token: str) -> User:
         return self._session_user(token)
+
+    def _background_user(self, *, token=None, ref=None, permissions=frozenset()):
+        """One read-only snapshot; no mkdir, WAL configuration, or identity bootstrap.
+
+        SQLite and the business store are separate transaction domains. This
+        successful check is the authorization point, not atomic revocation.
+        """
+        from backend.inversion.contracts import AuthorityRef
+        if type(permissions) is not frozenset or any(type(p) is not str for p in permissions):
+            raise AuthError('authentication required')
+        if ref is not None and (type(ref) is not AuthorityRef or ref.domain != 'platform-local'):
+            raise AuthError('authentication required')
+        if ref is None and (not isinstance(token, str) or not token):
+            raise AuthError('authentication required')
+        try:
+            path = self.database.path.resolve(strict=True)
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute('BEGIN')
+                clause, values = ('s.id=? AND s.user_id=?', (ref.session_id, ref.user_id)) if ref is not None else ('s.token_hash=?', (self._token_hash(token),))
+                row = conn.execute('''SELECT s.id AS session_id,s.expires_at,s.revoked_at,
+                    u.id,u.username,u.display_name,u.role_id,u.status AS user_status,u.version,
+                    r.code AS role_code,r.status AS role_status
+                    FROM sessions s JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id
+                    WHERE ''' + clause, values).fetchone()
+                if row is None: raise AuthError('authentication required')
+                if row['revoked_at'] is not None or datetime.fromisoformat(row['expires_at']) <= self._now():
+                    raise SessionExpired('session expired')
+                if row['user_status'] != 'active' or row['role_status'] != 'active':
+                    raise AuthError('authentication required')
+                current = frozenset(r[0] for r in conn.execute('''SELECT p.code FROM permissions p
+                    JOIN role_permissions rp ON rp.permission_id=p.id WHERE rp.role_id=?''', (row['role_id'],)))
+                if not permissions <= current: raise PermissionDenied('required permission missing')
+                user = User(row['id'], row['username'], row['display_name'], row['role_id'], row['role_code'], current, row['version'])
+                return AuthorityRef('platform-local', row['id'], row['session_id']), user
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            raise AuthError('current authority unavailable') from None
+
+    def capture_background_authority(self, token: str, permissions: frozenset[str]):
+        return self._background_user(token=token, permissions=permissions)[0]
+
+    def refresh_background_authority(self, ref, permissions: frozenset[str]) -> User:
+        return self._background_user(ref=ref, permissions=permissions)[1]
 
     def logout(self, token: str) -> None:
         user = self._session_user(token)

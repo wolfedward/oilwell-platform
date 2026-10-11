@@ -121,9 +121,31 @@ class RegistryPrivilegeTests(RegistryDatabaseCase):
             self.denied()
 
     def test_writer_schema_owner_is_rejected(self):
-        with self.changed(sql.SQL("ALTER SCHEMA device_registry OWNER TO {}").format(sql.Identifier(self.settings["writer"]["user"])),
-                          sql.SQL("ALTER SCHEMA device_registry OWNER TO {}").format(sql.Identifier(self.settings["migrator"]["user"])), admin=True):
-            self.denied()
+        owner = self.settings["migrator"]["user"]
+        writer = self.settings["writer"]["user"]
+        reader = self.settings["reader"]["user"]
+        def schema_state(conn):
+            actual_owner, acl = conn.execute(
+                "SELECT pg_get_userbyid(nspowner),nspacl::text[] FROM pg_namespace "
+                "WHERE nspname='device_registry'").fetchone()
+            return actual_owner, None if acl is None else sorted(acl)
+        with self.connect("migrator") as conn:
+            before = schema_state(conn)
+        self.assertEqual(before, (owner, sorted((f"{owner}=UC/{owner}",
+            f"{reader}=U/{owner}", f"{writer}=U/{owner}"))))
+        try:
+            with self.changed(sql.SQL("ALTER SCHEMA device_registry OWNER TO {}").format(sql.Identifier(writer)),
+                              sql.SQL("ALTER SCHEMA device_registry OWNER TO {}").format(sql.Identifier(owner)), admin=True):
+                self.denied()
+        finally:
+            # Reversing ownership does not restore the new owner's former ACL.
+            # Restore only the captured writer USAGE, as the original grantor.
+            with self.connect("migrator") as conn:
+                self.assertEqual(conn.execute("SELECT current_user").fetchone(), (owner,))
+                self.assertEqual(schema_state(conn), (owner, sorted((f"{owner}=UC/{owner}", f"{reader}=U/{owner}"))))
+                conn.execute(sql.SQL("GRANT USAGE ON SCHEMA device_registry TO {}").format(sql.Identifier(writer)))
+                self.assertEqual(schema_state(conn), before)
+        self.probe()
 
     def test_inherited_owner_and_set_role_only_owner_are_rejected(self):
         owner = sql.Identifier(self.settings["migrator"]["user"])

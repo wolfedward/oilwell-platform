@@ -44,14 +44,15 @@ UPDATE = {
     "reader": {}, "operator": {"state_head": {"version"}},
 }
 
-BUSINESS_TABLES = set('business_settings attachments evidence_versions evidence_events restrictions quality_runs pair_versions pair_reviews business_audit business_receipts dataset_drafts dataset_revisions dataset_events dataset_versions dataset_members dataset_files dataset_manifest_chunks dataset_exports'.split())
+BUSINESS_TABLES = set('business_settings attachments evidence_versions evidence_events restrictions quality_runs pair_versions pair_reviews business_audit business_receipts dataset_drafts dataset_revisions dataset_events dataset_versions dataset_members dataset_files dataset_manifest_chunks dataset_exports member_research_exports'.split())
 BUSINESS_READ = BUSINESS_TABLES-{'attachments','business_receipts'}
-BUSINESS_VIEWS = {'attachment_metadata','provenance_metadata','capture_restrictions'}
+BUSINESS_VIEWS = {'attachment_metadata','provenance_metadata','capture_restrictions','archive_channel_metadata'}
 TABLES |= BUSINESS_TABLES
 VIEWS |= BUSINESS_VIEWS | set(PROJECTIONS)
 for _role in ('reader','operator'):
     SELECT[_role] |= BUSINESS_READ | BUSINESS_VIEWS
 SELECT['reader'] |= set(PROJECTIONS)
+SELECT['operator'] |= set(PROJECTIONS)
 SELECT['operator'].add('business_receipts')
 INSERT['operator'] |= BUSINESS_TABLES-{'business_settings'}
 METADATA_SELECT_COLUMNS = {

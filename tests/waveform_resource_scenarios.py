@@ -1106,6 +1106,9 @@ def measured_output_owners(fixture,root,route):
             half_headers,half_body=bytes(half_response).split(b'\r\n\r\n',1)
             if b' 200 ' not in half_headers.splitlines()[0] or json.loads(half_body)!=json.loads(body):
                 raise AssertionError('Valid half-closed client response differs')
+        except BaseException as error:
+            if monitor.failure is not None: raise monitor.failure from error
+            raise
         finally:
             import sys
             _finish_output_owners(clients,monitor,stack,evidence,samples,began,error=sys.exc_info()[1])

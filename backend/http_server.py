@@ -26,6 +26,8 @@ from backend.ingest_reliability.api import IngestReliabilityApi
 from backend.ingest_reliability.runtime import build_reliability_runtime
 from backend.waveforms.api import WaveformApi
 from backend.waveforms.runtime import build_waveform_runtime
+from backend.inversion.api import InversionApi
+from backend.inversion.runtime import build_inversion_runtime
 from backend.ingest_reliability.config import _origin
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
@@ -44,6 +46,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     server_version = "OfflinePlatform/2.0"
 
     def do_GET(self):
+        if InversionApi(self).dispatch(): return
         if WaveformApi(self).get(self.path): return
         if IngestReliabilityApi(self).get(self.path): return
         if RegistryApi(self).get(self.path): return
@@ -67,6 +70,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self):
+        if InversionApi(self).dispatch(): return
         if WaveformApi(self).post(self.path): return
         if IngestReliabilityApi(self).post(self.path): return
         if RegistryApi(self).post(self.path): return
@@ -90,6 +94,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def do_PATCH(self):
+        if InversionApi(self).dispatch(): return
         if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
@@ -103,6 +108,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Route not found")
 
     def _unsupported_method(self):
+        if InversionApi(self).dispatch(): return
         if WaveformApi(self).unsupported(self.path): return
         if IngestReliabilityApi(self).unsupported(self.path): return
         if RegistryApi(self).unsupported(self.path): return
@@ -280,8 +286,10 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         capability = {"enabled": status != "disabled", "status": status}
         ingest_status = self.server.ingest_runtime.status
         waveform_status = self.server.waveform_runtime.status
+        inversion_status = self.server.inversion_runtime.status
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
             "capabilities": {"registry": capability,
+                             "production_inversion": {"enabled": inversion_status != "disabled", "status": inversion_status},
                              "waveforms": {"enabled": waveform_status != "disabled", "status": waveform_status},
                              "ingest_reliability": {"enabled": ingest_status != "disabled", "status": ingest_status}}}})
 
@@ -561,6 +569,8 @@ class PlatformHTTPServer(ThreadingHTTPServer):
     def server_close(self):
         try:
             try:
+                inversion_runtime = getattr(self, "inversion_runtime", None)
+                if inversion_runtime: inversion_runtime.close()
                 waveform_runtime = getattr(self, "waveform_runtime", None)
                 if waveform_runtime: waveform_runtime.close()
             finally:
@@ -586,6 +596,7 @@ def create_server(
     registry_runtime=None,
     ingest_runtime=None,
     waveform_config_path=None,
+    inversion_config_path=None,
 ) -> ThreadingHTTPServer:
     if central_repository is not None and center_config_path is not None:
         raise ValueError("central_repository and center_config_path are mutually exclusive")
@@ -599,8 +610,10 @@ def create_server(
     server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
     server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
     server.waveform_runtime = build_waveform_runtime(waveform_config_path)
+    server.inversion_runtime = build_inversion_runtime(inversion_config_path, auth=server.auth)
     waveform_hosts = ('127.0.0.1', 'localhost') if host in ('127.0.0.1', 'localhost') else (host,)
     server.waveform_runtime.allowed_origins = tuple(_origin(f'http://{name}:{server.server_port}') for name in waveform_hosts)
+    server.inversion_runtime.allowed_origins = server.waveform_runtime.allowed_origins
     from backend.simulator import SimulatorRegistry
     from backend.services.acquisition import AcquisitionService, AcquisitionWorker
     from backend.services.workflows import WorkflowService, WorkflowWorker

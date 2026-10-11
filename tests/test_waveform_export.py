@@ -44,7 +44,7 @@ class ExportDatabaseTests(DatasetCase):
         exporter._read_connect=observed_reader; exporter._connect=observed_operator
         context=exporter.open(record.id,actor=actor)
         self.assertEqual(open_readers,[1],'Actor/export/version/members must use one physical reader')
-        self.assertEqual(len(readers),2,'The independent live registry reader remains required for this pair')
+        self.assertEqual(len(readers),1,'Live registry checks must use the guarded operator cursor, never a nested reader')
         self.assertEqual(len(operators),1); self.assertTrue(all(c.closed for c in readers+operators))
         key=capture_key(vector['selection']['captures'][0]['key'])
         self.assertEqual(b''.join(context.stream_capture(key)),b'\n'.join(vector['wire_captures'][0])+b'\n')

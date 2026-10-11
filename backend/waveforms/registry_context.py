@@ -1,5 +1,6 @@
 """One readonly registry revision proves an entire exact physical window."""
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from math import floor, ceil
@@ -66,7 +67,7 @@ class RegistryContext:
         if not callable(connect): raise ValueError('Explicit reader connection required')
         self._connect=connect
 
-    def resolve(self, sources, *, utc_start, start_ns, end_ns, uncertainty_ns, revision):
+    def resolve(self, sources, *, utc_start, start_ns, end_ns, uncertainty_ns, revision, _cursor=None):
         if type(sources) is not tuple or not 1<=len(sources)<=32 or any(type(s) is not CaptureKey for s in sources):
             raise ContractError('contract_invalid')
         if len(set(sources))!=len(sources): raise ContractError('contract_invalid')
@@ -93,47 +94,63 @@ class RegistryContext:
             high_dt=EPOCH+timedelta(microseconds=ceil(upper/1000))
         except OverflowError: return result('pending',('evidence_unavailable',))
         try:
+            with self._cursor(_cursor) as cur:
+                cur.execute('SELECT revision FROM waveforms.registry_head WHERE singleton=1')
+                head=cur.fetchone()
+                if head is None: return result('pending',('evidence_unavailable',))
+                rev=head['revision']
+                if revision is not None and revision!=rev: return result('pending',('registry_revision_changed',),rev)
+                snapshots=[]; reasons=[]; wells=[]
+                for source in sources:
+                    cur.execute('SELECT id,gateway_id,device_id,created_at FROM waveforms.registry_devices WHERE gateway_id=%s AND device_id=%s',
+                                (source.gateway_id,source.device_id))
+                    device=cur.fetchone()
+                    snapshot={'capture':{'gateway_id':source.gateway_id,'device_id':source.device_id,'capture_id':str(source.capture_id)},
+                              'device':_public(device) if device else None,'states':[],'bindings':[],'well':None}
+                    if device is None or datetime_ns(device['created_at'])>lower:
+                        reasons.append('unregistered'); snapshots.append(freeze(snapshot)); continue
+                    for view,key in (('registry_device_states','states'),('registry_well_bindings','bindings')):
+                        # Fixed server names. Outward candidate envelope is NOT containment proof.
+                        cur.execute('SELECT * FROM waveforms.'+view+' WHERE device_id=%s AND valid_from<=%s AND (valid_to IS NULL OR valid_to>%s) ORDER BY valid_from,id LIMIT 65',
+                                    (device['id'],high_dt,low_dt))
+                        candidates=cur.fetchall()
+                        snapshot[key]=[_public(r) for r in candidates]
+                        if len(candidates)>64: return result('pending',('evidence_unavailable',),rev)
+                        eligible=[r for r in candidates if contains_window(datetime_ns(r['valid_from']),
+                            datetime_ns(r['valid_to']) if r['valid_to'] is not None else None,lower,upper)]
+                        if key=='states':
+                            if len(eligible)!=1 or eligible[0]['status']!='active': reasons.append('inactive_source')
+                        elif len(eligible)!=1:
+                            reasons.append('binding_boundary' if candidates else 'unbound')
+                        else:
+                            cur.execute('SELECT * FROM waveforms.registry_wells WHERE id=%s',(eligible[0]['well_id'],))
+                            well=cur.fetchone()
+                            if well is None or datetime_ns(well['created_at'])>lower: reasons.append('unbound')
+                            else: snapshot['well']=_public(well); wells.append(_public(well))
+                    snapshots.append(freeze(snapshot))
+                if wells and len({w['id'] for w in wells})!=1: reasons.append('different_wells')
+                return result('ineligible' if reasons else 'resolved',tuple(dict.fromkeys(reasons)),rev,
+                              snapshots,wells[0] if not reasons and wells else None)
+        except psycopg.Error:
+            return result('pending',('evidence_unavailable',))
+
+    @contextmanager
+    def _cursor(self, supplied):
+        if supplied is not None:
+            factory=supplied.row_factory
+            supplied.row_factory=dict_row
+            try: yield supplied
+            finally: supplied.row_factory=factory
+        else:
             with self._connect() as conn:
                 with conn.transaction():
                     conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
                     conn.execute("SET LOCAL statement_timeout='3s'")
                     conn.execute("SET LOCAL lock_timeout='1s'")
-                    cur=conn.cursor(row_factory=dict_row)
-                    cur.execute('SELECT revision FROM waveforms.registry_head WHERE singleton=1')
-                    head=cur.fetchone()
-                    if head is None: return result('pending',('evidence_unavailable',))
-                    rev=head['revision']
-                    if revision is not None and revision!=rev: return result('pending',('registry_revision_changed',),rev)
-                    snapshots=[]; reasons=[]; wells=[]
-                    for source in sources:
-                        cur.execute('SELECT id,gateway_id,device_id,created_at FROM waveforms.registry_devices WHERE gateway_id=%s AND device_id=%s',
-                                    (source.gateway_id,source.device_id))
-                        device=cur.fetchone()
-                        snapshot={'capture':{'gateway_id':source.gateway_id,'device_id':source.device_id,'capture_id':str(source.capture_id)},
-                                  'device':_public(device) if device else None,'states':[],'bindings':[],'well':None}
-                        if device is None or datetime_ns(device['created_at'])>lower:
-                            reasons.append('unregistered'); snapshots.append(freeze(snapshot)); continue
-                        for view,key in (('registry_device_states','states'),('registry_well_bindings','bindings')):
-                            # Fixed server names. Outward candidate envelope is NOT containment proof.
-                            cur.execute('SELECT * FROM waveforms.'+view+' WHERE device_id=%s AND valid_from<=%s AND (valid_to IS NULL OR valid_to>%s) ORDER BY valid_from,id LIMIT 65',
-                                        (device['id'],high_dt,low_dt))
-                            candidates=cur.fetchall()
-                            snapshot[key]=[_public(r) for r in candidates]
-                            if len(candidates)>64: return result('pending',('evidence_unavailable',),rev)
-                            eligible=[r for r in candidates if contains_window(datetime_ns(r['valid_from']),
-                                datetime_ns(r['valid_to']) if r['valid_to'] is not None else None,lower,upper)]
-                            if key=='states':
-                                if len(eligible)!=1 or eligible[0]['status']!='active': reasons.append('inactive_source')
-                            elif len(eligible)!=1:
-                                reasons.append('binding_boundary' if candidates else 'unbound')
-                            else:
-                                cur.execute('SELECT * FROM waveforms.registry_wells WHERE id=%s',(eligible[0]['well_id'],))
-                                well=cur.fetchone()
-                                if well is None or datetime_ns(well['created_at'])>lower: reasons.append('unbound')
-                                else: snapshot['well']=_public(well); wells.append(_public(well))
-                        snapshots.append(freeze(snapshot))
-                    if wells and len({w['id'] for w in wells})!=1: reasons.append('different_wells')
-                    return result('ineligible' if reasons else 'resolved',tuple(dict.fromkeys(reasons)),rev,
-                                  snapshots,wells[0] if not reasons and wells else None)
-        except psycopg.Error:
-            return result('pending',('evidence_unavailable',))
+                    yield conn.cursor(row_factory=dict_row)
+
+
+def resolve_with_cursor(cur, sources, *, utc_start, start_ns, end_ns, uncertainty_ns):
+    """Resolve metadata on the caller's guarded transaction; never open a connection."""
+    return RegistryContext(lambda: None).resolve(sources,utc_start=utc_start,start_ns=start_ns,
+        end_ns=end_ns,uncertainty_ns=uncertainty_ns,revision=None,_cursor=cur)

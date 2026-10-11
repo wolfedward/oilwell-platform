@@ -13,7 +13,7 @@ SQL_DIR = Path(__file__).with_name("sql")
 MIGRATION_LOCK = 499001212
 ROLES = {"migration_owner", "receiver", "assembler", "receipt_publisher", "reader", "operator"}
 RUNTIME_ROLES = ROLES - {"migration_owner"}
-MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"), (3, "003_evidence.sql"), (4, "004_datasets.sql"), (5, "005_portable_structure.sql"))
+MIGRATIONS = ((1, "001_capture.sql"), (2, "002_import_sessions.sql"), (3, "003_evidence.sql"), (4, "004_datasets.sql"), (5, "005_portable_structure.sql"), (6, "006_member_research.sql"))
 
 
 def _fail(code, message): raise WaveformError("waveform."+code, message)

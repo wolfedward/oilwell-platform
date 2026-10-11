@@ -27,6 +27,9 @@ import { renderAcquisitionStream } from "./frontend/pages/acquisition.js";
 import { renderFieldRegistry } from "./frontend/pages/field-registry.js";
 import { renderIngestReliability } from "./frontend/pages/ingest-reliability.js";
 import { renderWaveforms } from "./frontend/pages/waveforms.js";
+import { renderProductionParameters, productionInversionGate } from "./frontend/pages/production-parameters.js";
+import { renderProductionInversion } from "./frontend/pages/production-inversion.js";
+import { renderProductionResults } from "./frontend/pages/production-results.js";
 import { renderQualityBoard } from "./frontend/pages/data-quality.js";
 import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
@@ -63,6 +66,14 @@ const NAVIGATION = [
       { id: "dynagraphs", label: "功图档案", description: "采集来源、分析状态、诊断工况与功图下钻" },
       { id: "dynagraph-analysis", label: "智能分析", description: "电功图到人工复核的转换、诊断与产液闭环" },
       { id: "diagnosis-review", label: "诊断复核", description: "机器结论、候选工况与人工复核" },
+    ],
+  },
+  {
+    id: "production-inversion", label: "生产反演", icon: "参",
+    pages: [
+      { id: "production-parameters", label: "机械参数中心", description: "机械身份、参数版本、来源证据与独立复核", permission: "inversion.read" },
+      { id: "production-inversion", label: "反演与双图验证", description: "冻结成员预检、单成员运行、原始支撑双图与中间曲线", permission: "inversion.read" },
+      { id: "production-results", label: "结果与版本复核", description: "历史输入快照、独立复核、当前限制与完整结果导出", permission: "inversion.read" },
     ],
   },
   {
@@ -156,6 +167,16 @@ function activeContext() {
   return PAGE_INDEX.get(state.activePage) || PAGE_INDEX.get("dashboard");
 }
 
+function pageVisible(page, user) {
+  if (["production-parameters", "production-inversion", "production-results"].includes(page.id)) return productionInversionGate({
+    permissions: new Set(user?.permissions || []), capabilities: user?.capabilities,
+  }).allowed;
+  return (!page.permission || user?.permissions?.includes(page.permission))
+    && (page.id !== "field-registry" || user?.capabilities?.registry?.enabled === true)
+    && (page.id !== "ingest-reliability" || user?.capabilities?.ingest_reliability?.enabled === true)
+    && (page.id !== "waveforms" || user?.capabilities?.waveforms?.enabled === true);
+}
+
 function renderChrome() {
   if (!shellReady) return;
   const state = store.getState();
@@ -170,7 +191,7 @@ function renderChrome() {
     </button>`).join("");
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
-    </div><nav>${context.module.pages.filter((page) => !page.hidden && (!page.permission || state.user?.permissions?.includes(page.permission)) && (page.id !== "field-registry" || state.user?.capabilities?.registry?.enabled === true) && (page.id !== "ingest-reliability" || state.user?.capabilities?.ingest_reliability?.enabled === true) && (page.id !== "waveforms" || state.user?.capabilities?.waveforms?.enabled === true)).map((page) => `
+    </div><nav>${context.module.pages.filter((page) => !page.hidden && pageVisible(page, state.user)).map((page) => `
       <button type="button" data-page="${page.id}" class="${page.id === state.activePage ? "active" : ""}"
         aria-label="${escapeHtml(page.label)}" title="${escapeHtml(page.label)}"
         aria-current="${page.id === state.activePage ? "page" : "false"}">
@@ -198,7 +219,7 @@ async function renderModuleLanding(page) {
   workspace.innerHTML = `${pageHeader(page)}
     <section class="panel module-landing"><div class="landing-title"><span>${page.module.icon}</span>
       <div><p class="eyebrow">${escapeHtml(page.module.label.toUpperCase())}</p><h2>${escapeHtml(page.label)}</h2><p>${escapeHtml(page.description)}</p></div></div>
-      <div class="landing-links">${page.module.pages.filter(item => (item.id !== "field-registry" || (store.getState().user?.capabilities?.registry?.enabled === true && store.getState().user?.permissions?.includes("registry.read"))) && (item.id !== "ingest-reliability" || (store.getState().user?.capabilities?.ingest_reliability?.enabled === true && store.getState().user?.permissions?.includes("ingest.read"))) && (item.id !== "waveforms" || (store.getState().user?.capabilities?.waveforms?.enabled === true && store.getState().user?.permissions?.includes("waveform.read")))).map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
+      <div class="landing-links">${page.module.pages.filter(item => pageVisible(item, store.getState().user)).map((item) => `<button type="button" data-page="${item.id}" class="${item.id === page.id ? "active" : ""}">
         <strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.description)}</span><b>进入 →</b></button>`).join("")}</div>
       <div class="system-ready"><i></i><span><strong>服务接口已就绪</strong><small>页面读取当前登录账号的权限与本机业务数据。</small></span></div>
     </section>`;
@@ -252,6 +273,9 @@ async function renderPage(pageId, params = {}) {
       "field-registry": renderFieldRegistry,
       "ingest-reliability": renderIngestReliability,
       waveforms: renderWaveforms,
+      "production-parameters": renderProductionParameters,
+      "production-inversion": renderProductionInversion,
+      "production-results": renderProductionResults,
       "data-quality": renderQualityBoard,
       dynagraphs: renderDynagraphList,
       "dynagraph-analysis": renderDynagraphAnalysis,

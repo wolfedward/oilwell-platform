@@ -28,11 +28,17 @@ LIMITS = CapacityLimits(
     gateways={"GW": Quota(raw_bytes=268435456,facts=25000,attachment_bytes=33554432,
         incomplete_captures=4,orphan_bytes=2097152,quarantine_bytes=4194304,
         metadata_rows=250000,orphan_bytes_per_capture=524288)})
-RESET_TABLES = "dataset_exports dataset_manifest_chunks dataset_files dataset_members dataset_events dataset_versions dataset_revisions dataset_drafts pair_reviews pair_versions quality_runs restrictions evidence_events evidence_versions attachments business_audit business_receipts observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
+RESET_TABLES = "member_research_exports dataset_exports dataset_manifest_chunks dataset_files dataset_members dataset_events dataset_versions dataset_revisions dataset_drafts pair_reviews pair_versions quality_runs restrictions evidence_events evidence_versions attachments business_audit business_receipts observations chunk_slots streams chunks capture_conflicts completion assembly_jobs deliveries receipts import_events import_lines imports audit operation_receipts worker_health captures message_outcomes facts".split()
 
 
 class WaveformDatabaseCase(unittest.TestCase):
     def setUp(self):
+        self._validate_waveform_fixture()
+        self._lock_waveform_fixture()
+        self._migrate_and_grant_waveform_under_lock()
+        self._reset_waveform_under_lock()
+
+    def _validate_waveform_fixture(self):
         config = os.environ.get("OILWELL_WAVEFORM_TEST_CONFIG")
         self.assertTrue(config, "Waveform tests require explicit isolated OILWELL_WAVEFORM_TEST_CONFIG")
         self.config_path = Path(config).resolve()
@@ -51,13 +57,26 @@ class WaveformDatabaseCase(unittest.TestCase):
             _verify_live(conn,self.identity,database=TEST_DATABASE)
             marker="oilwell-waveform-test:"+self.manifest["fixture_id"]
             self.assertEqual(conn.execute("SELECT pg_get_userbyid(datdba),shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()").fetchone(), (self.settings["migration_owner"]["user"],marker))
+    def _lock_waveform_fixture(self):
         self.guard=self.connect("migration_owner")
         self.guard.autocommit=True
         self.guard.execute("SET statement_timeout='30s'")
         self.guard.execute("SELECT pg_advisory_lock(%s)",(TEST_LOCK,))
+    def _migrate_and_grant_waveform_under_lock(self):
+        # Explicit registry-owner prerequisite for additive metadata projections.
+        # Runs only after the pinned database identity and session reset lock.
+        from tools.provision_waveform_registry_test import owner_settings,sidecar_identity
+        from backend.waveforms.registry_dependency import grant_registry_history_prerequisites
+        settings=owner_settings(); expected=sidecar_identity(self.manifest)
+        self.assertEqual(settings['user'],expected['role'])
+        with psycopg.connect(**settings) as conn:
+            self._check_endpoint(conn)
+            grant_registry_history_prerequisites(conn,registry_owner=expected['role'],
+                                                waveform_owner=self.settings['migration_owner']['user'])
         migrate(self.settings["migration_owner"],expected_database=TEST_DATABASE,limits=LIMITS,shared_accounting_bucket='GW')
         with self.connect("migration_owner") as conn:
             grant_roles(conn,roles={role:self.settings[role]["user"] for role in ROLES})
+    def _reset_waveform_under_lock(self):
         with self.connect("migration_owner") as conn:
             self._check_endpoint(conn)
             conn.execute(sql.SQL("TRUNCATE {} ").format(sql.SQL(",").join(sql.Identifier("waveforms",name) for name in RESET_TABLES)))
