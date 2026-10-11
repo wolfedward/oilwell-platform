@@ -22,7 +22,9 @@
 
 支持的 metric 为 current_max_A、voltage_min_V、voltage_max_V、current_deviation_ratio、voltage_deviation_ratio、temperature_C、speed_rpm、frequency_hz。三相偏差为最大绝对偏离均值除以均值，不是负序分量。无热模型、无厂家电机热容量推定。
 
-`step(frame)` 必填 at（UTC）、sequence、boot_id、quality（valid/invalid/unknown）、configuration_valid、hardware_trip、reset_request（none/local）和 measurements。测量对象含 currents_A/voltages_V（三相数组或 null）、temperature_C、speed_rpm、frequency_hz；未使用的通道可 null，已配置判据必需的通道不可缺。
+`step(frame)` 必填 at（UTC）、sequence、boot_id、quality（valid/invalid/unknown）、configuration_valid、hardware_trip、reset_request（none/local）和 measurements。测量对象含 currents_A/voltages_V（三相数组或 null）、temperature_C、speed_rpm、frequency_hz；未使用的通道可 null，已配置判据必需的通道不可缺。`ProtectionReplay` 是纯重放算法，保持这一帧格式；DSP 邮箱版本与定值摘要由外层 MCU 适配器逐帧核验。
+
+DSP→MCU 本地邮箱每帧须同时携带 `protocol_version='owp.dsp.protection/1'` 与 `settings_sha256`（当前完整整定 JSON 的 SHA-256，包含 `settings.version`；使用与 `ProtectionReplay.settings_digest` 相同的规范化算法）。接入时将 DSP 声明的两项值原样传给 `EdgeProtectionReference.receive(frame, protocol_version=..., settings_sha256=...)`；不得从 MCU 的 `status()` 代填真实 DSP 声明。MCU 仅支持上述协议版本，摘要必须与当前引擎一致；缺失、类型错误、版本不支持、摘要不匹配或帧畸形均抛出 `ReferenceStateError`，持久清除旧安全证据和未成熟计时并保持禁用，不解除已锁存故障。`configuration_valid=True` 只是 DSP 对该帧质量的声明，不能替代这项独立核验。升级协议或重新整定须经本地重新验证和确认，不得沿用旧就绪状态。
 
 状态是 normal → pickup → would_trip_latched。只有连续有效实际时间计入延迟；坏质量、间断、重启、乱序、失效设置清除尚未成熟的计时但不解除锁定。复位需要本地请求、当前设置有效、没有硬件故障，且所有配置判据连续达到安全侧达到 reset_safe_ms。复核/确认不是复位。始终输出 hardware_execution=false、control_enabled=false。
 
@@ -30,15 +32,16 @@
 
 1. 在**私有、本机、非网络盘**中准备父目录。Windows 使用部署账户独占 ACL；本参考不代替操作系统权限配置。显式调用 `EdgeProtectionReference.initialize(new_directory, settings, commissioning_reference='本地调试记录号')`，已有目录拒绝。
 2. 用相同设置构造适配器；每个目录只允许一个持有操作系统锁的实例。启动始终保持禁用，检查点缺失/损坏/配置摘要不同/存在 pending.json 会拒绝启动，保留原文件供核对。
-3. 本地 ADC 适配调用 `receive(frame)`；本地物理复位另需调用参数 `local_reset=True`，不能将网络消息直接映射成这一授权。
-4. 当有新的有效安全帧后，`confirm_local_startup(actor, reason)` 仅解除**软件影子禁用**，不清除保护锁定，也不使能任何物理输出。`mark_unavailable('watchdog_timeout')` 清除连续时间和旧安全证据，进入禁用。
-5. 每次接受帧先写并同步 pending 标记，再原子替换含摘要的检查点；成功后才删除本次标记。存储失败保留证据并禁用。调用 `close()` 释放独占锁。
+3. 本地 DSP 邮箱接入调用 `receive(frame, protocol_version=dsp_protocol_version, settings_sha256=dsp_settings_sha256)`；本地物理复位另需调用参数 `local_reset=True`，不能将网络消息直接映射成这一授权。拒绝的帧或复位授权错误仍计作输入不可用；错误不能让此前的影子就绪继续有效。
+4. 当有新的有效安全帧后，`confirm_local_startup(actor, reason)` 仅解除**软件影子禁用**，不清除保护锁定，也不使能任何物理输出。确认者和原因作为历史证据保留在检查点；重启仍然禁用，必须重新接收安全帧并作新的本地确认。
+5. 厂家调用方**必须**用独立的单调时钟监管 DSP 输入：从上次收到完整帧起，最迟在 `maximum_frame_gap_ms` 内没有下一帧时，立即调用 `mark_unavailable('watchdog_timeout')`，并在任何后续状态使用前完成该调用；更短的经批准期限优先。连接中断、生产者停顿、邮箱错误或无法证明时限也应调用 `mark_unavailable`。此方法清除连续时间和旧安全证据，持久进入禁用。`status()` 只是当前已记录状态，不读取时间，也不能证明外部看门狗按期运行；现场必须验证调度、断电及联锁时限。
+6. 每次接受帧先写并同步 pending 标记，再原子替换含摘要的检查点；成功后才删除本次标记。存储失败保留证据并禁用。调用 `close()` 释放独占锁。
 
 SHA-256 是损坏检测，不是签名或防恶意修改。文件同步与原子替换不构成所有操作系统/控制器断电保证；厂家必须在目标 Flash/FRAM、电源保持和文件系统上验证。不确定恢复不得手工删除 pending 后宣称保护状态完整；需核对事件、独立硬件状态与原始检查点，保留故障包，重新执行经批准的本地调试流程。本 Python 模型没有硬实时/中断延迟保证。
 
 ## 可重复对照测试
 
-解压完整接入包后，运行 `python -B check_edge_reference.py`，无需安装平台或第三方库。它在临时目录中使用固定日期的**软件测试定值**（不是当前现场定值）检查启动禁止、持续延时锁存、重启保留锁存、安全复位与看门狗、坏质量下的硬件输入优先级。成功返回 `status=passed`，失败非零退出；不连接设备或网络。代码内的 `settings()` / `frame()` 可作为厂家构造自己测试向量的格式参考，不可复制为保护定值。
+解压完整接入包后，运行 `python -B check_edge_reference.py`，无需安装平台或第三方库。它在临时目录中使用固定日期的**软件测试定值**（不是当前现场定值）检查启动禁止、DSP 协议/摘要不匹配禁用、持续延时锁存、重启保留锁存、安全复位与看门狗、坏质量下的硬件输入优先级。成功返回 `status=passed`，失败非零退出；不连接设备或网络。代码内的 `settings()` / `frame()` 可作为厂家构造自己测试向量的格式参考，不可复制为保护定值；测试辅助函数 `receive()` 用适配器摘要模拟匹配的 DSP 声明，厂家接线时必须改用 DSP 实际提供的值。
 
 厂家固件与同一输入参考输出对照：阈值相等、回差区、动作延迟、时间乱序/重复、boot 变化、缺相数据、设置过期/撤销、硬件输入在坏质量时锁定、不安全复位拒绝、重启保留锁定、存储满/中断写入保留 pending、双进程拒绝、看门狗后不得继续计时。参考实现的对应测试在平台 `tests/test_protection_replay.py` 与 `tests/test_edge_protection_reference.py`；它们验证软件行为，不是样机报告。
 

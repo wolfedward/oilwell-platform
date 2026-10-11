@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from edge_protection_reference import EdgeProtectionReference, ReferenceStateError
+from edge_protection_reference import DSP_PROTOCOL_VERSION, EdgeProtectionReference, ReferenceStateError
 
 
 def settings():
@@ -27,6 +27,11 @@ def frame(ms, amps, **changes):
     return result
 
 
+def receive(adapter, evidence, **options):
+    return adapter.receive(evidence, protocol_version=DSP_PROTOCOL_VERSION,
+                           settings_sha256=adapter.status()['settings_sha256'], **options)
+
+
 def run():
     checks = []
     def check(name, condition):
@@ -41,21 +46,39 @@ def run():
         adapter = EdgeProtectionReference(root, config)
         try:
             check('boot_inhibited', adapter.status()['shadow_inhibit'])
-            adapter.receive(frame(0, 0))
+            receive(adapter, frame(0, 0))
             status = adapter.confirm_local_startup('local-vector', 'software test only')
             check('confirmation_never_enables_hardware', not status['control_enabled'] and not status['hardware_execution'])
-            adapter.receive(frame(500, 11))
-            row = adapter.receive(frame(1500, 11))
+            try:
+                adapter.receive(frame(100, 0), protocol_version='owp.dsp.protection/2',
+                                settings_sha256=adapter.status()['settings_sha256'])
+            except ReferenceStateError:
+                check('protocol_mismatch_inhibits', adapter.status()['shadow_inhibit'])
+            else:
+                check('protocol_mismatch_inhibits', False)
+            receive(adapter, frame(200, 0))
+            adapter.confirm_local_startup('local-vector', 'fresh software check')
+            try:
+                adapter.receive(frame(300, 0), protocol_version=DSP_PROTOCOL_VERSION,
+                                settings_sha256='0' * 64)
+            except ReferenceStateError:
+                check('settings_mismatch_inhibits', adapter.status()['shadow_inhibit'])
+            else:
+                check('settings_mismatch_inhibits', False)
+            receive(adapter, frame(400, 0))
+            adapter.confirm_local_startup('local-vector', 'fresh software check')
+            receive(adapter, frame(500, 11))
+            row = receive(adapter, frame(1500, 11))
             check('continuous_delay_latches', row['rules']['overcurrent']['state'] == 'would_trip_latched')
         finally:
             adapter.close()
         adapter = EdgeProtectionReference(root, config)
         try:
             check('restart_preserves_latch', adapter.status()['state']['rules']['overcurrent']['state'] == 'would_trip_latched')
-            row = adapter.receive(frame(1600, 11, reset_request='local'), local_reset=True)
+            row = receive(adapter, frame(1600, 11, reset_request='local'), local_reset=True)
             check('unsafe_reset_denied', row['reset_decision'] == 'denied')
-            adapter.receive(frame(2000, 0))
-            row = adapter.receive(frame(2500, 0, reset_request='local'), local_reset=True)
+            receive(adapter, frame(2000, 0))
+            row = receive(adapter, frame(2500, 0, reset_request='local'), local_reset=True)
             check('continuous_safe_local_reset', row['reset_decision'] == 'accepted')
             adapter.mark_unavailable('watchdog_timeout')
             try:
@@ -64,7 +87,7 @@ def run():
                 check('watchdog_invalidates_confirmation', True)
             else:
                 check('watchdog_invalidates_confirmation', False)
-            row = adapter.receive(frame(3000, 0, quality='invalid', hardware_trip=True))
+            row = receive(adapter, frame(3000, 0, quality='invalid', hardware_trip=True))
             check('hardware_trip_priority', row['hardware_inhibit'])
         finally:
             adapter.close()

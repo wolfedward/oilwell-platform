@@ -14,6 +14,7 @@ from protection_replay import ProtectionReplay
 from protection_contracts import StudyError
 
 MAX_CHECKPOINT_BYTES = 32768
+DSP_PROTOCOL_VERSION = 'owp.dsp.protection/1'
 
 
 class ReferenceStateError(ValueError):
@@ -113,6 +114,7 @@ class EdgeProtectionReference:
                 if type(confirmation) is not dict or set(confirmation) != {'actor', 'reason'}:
                     raise ReferenceStateError('Invalid local confirmation')
                 _text(confirmation['actor']); _text(confirmation['reason'])
+                self.local_confirmation = deepcopy(confirmation)
             self.engine.restore(body['engine'])
         except (OSError, ValueError, StudyError, RecursionError) as error:
             self.close()
@@ -174,19 +176,23 @@ class EdgeProtectionReference:
             self.notice = 'storage_uncertain'
             raise ReferenceStateError('Checkpoint write failed; remain inhibited') from error
 
-    def receive(self, frame, *, local_reset=False):
+    def receive(self, frame, *, protocol_version=None, settings_sha256=None, local_reset=False):
         self._available()
-        if type(local_reset) is not bool or type(frame) is not dict:
-            raise ReferenceStateError('Invalid local frame')
-        if frame.get('reset_request') == 'local' and not local_reset:
-            raise ReferenceStateError('Network/unattested reset is not accepted')
-        # Validate and calculate before changing accepted memory or filesystem.
-        candidate = deepcopy(self.engine)
         try:
+            if type(local_reset) is not bool or type(frame) is not dict:
+                raise ReferenceStateError('Invalid local frame')
+            if type(protocol_version) is not str or protocol_version != DSP_PROTOCOL_VERSION:
+                raise ReferenceStateError('Unsupported or missing DSP protocol version')
+            if type(settings_sha256) is not str or settings_sha256 != self.engine.settings_digest:
+                raise ReferenceStateError('DSP settings digest missing or mismatched')
+            if frame.get('reset_request') == 'local' and not local_reset:
+                raise ReferenceStateError('Network/unattested reset is not accepted')
+            # Validate and calculate before changing accepted memory or filesystem.
+            candidate = deepcopy(self.engine)
             row = candidate.step(frame)
-        except StudyError as error:
+        except (StudyError, ReferenceStateError) as error:
             self.startup_inhibit = True
-            self.notice = 'invalid_frame'
+            self.notice = 'invalid_dsp_evidence'
             self.last_row = None
             self.engine.restore(self.engine.snapshot())
             self._persist()
