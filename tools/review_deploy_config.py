@@ -1,5 +1,6 @@
 """Private config generation for one loopback engineering review instance."""
 import json
+import hashlib
 from pathlib import Path
 
 from .review_deploy_paths import write_json_private, private_acl
@@ -17,6 +18,27 @@ MQTT_ACCOUNTS = ('mqtt_center', 'mqtt_receipts', 'mqtt_wave_receive', 'mqtt_wave
 DATABASE = 'review_platform'
 GATEWAY = 'REVIEW-GW'
 PREFIX = 'oilfield'
+SEALED_FILES = ('center.toml', 'waveform.toml', 'inversion.toml',
+                'mosquitto.conf', 'mqtt.acl', 'mqtt.passwd')
+
+
+def config_hashes(root):
+    """Seal every generated input consumed by the launched components."""
+    private = Path(root) / 'private'
+    result = {}
+    for name in SEALED_FILES:
+        path = private / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+            raise ValueError('deployment config unavailable or linked')
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def verify_config_hashes(root, expected):
+    if not isinstance(expected, dict) or set(expected) != set(SEALED_FILES):
+        raise ValueError('deployment config inventory mismatch')
+    if config_hashes(root) != expected:
+        raise ValueError('deployment config changed since initialization')
 
 
 def runtime_secrets():
@@ -123,8 +145,10 @@ def broker_configuration(root, *, mqtt_port):
              'message_size_limit 262144', 'max_packet_size 270336']
     acl = ('user review_mqtt_center\ntopic read oilfield/v1/+/+/telemetry\n'
            'user review_mqtt_receipts\ntopic write oilfield/v2/+/+/ingest-ack\n'
+           'topic write oilfield/review/health/reliability\n'
            'user review_mqtt_wave_receive\ntopic read oilfield/v2/REVIEW-GW/+/waveform\n'
-           'user review_mqtt_wave_publish\ntopic write oilfield/v2/REVIEW-GW/+/waveform-ack\n')
+           'user review_mqtt_wave_publish\ntopic write oilfield/v2/REVIEW-GW/+/waveform-ack\n'
+           'topic write oilfield/review/health/waveform\n')
     _write(private / 'mosquitto.conf', '\n'.join(lines) + '\n')
     _write(private / 'mqtt.acl', acl)
     return private / 'mosquitto.conf'

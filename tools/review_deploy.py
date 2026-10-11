@@ -1,5 +1,6 @@
 """Owned single-host review deployment. Run as: python -m tools.review_deploy."""
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -9,16 +10,16 @@ import subprocess
 import sys
 import uuid
 
-import psycopg
-
 from .review_deploy_backup import count_business_rows, dump_database, restore_database, seal_backup, snapshot_identity, verify_backup
 from .review_deploy_config import (PG_OWNERS, PG_RUNTIME, MQTT_ACCOUNTS, GATEWAY,
-                                   broker_configuration, env_name, runtime_secrets, write_configs)
+                                   broker_configuration, config_hashes, verify_config_hashes,
+                                   runtime_secrets, write_configs)
 from .review_deploy_paths import claim_target, private_acl, replace_json_private, safe_target, verify_target, write_json_private
 from .review_deploy_pg import (cluster_running, connection_settings, initialize_cluster,
-                               install_schemas, probe_system_identifier, start_cluster, stop_cluster)
+                               probe_system_identifier, start_cluster, stop_cluster)
 from .review_deploy_process import inspect_pid, owned_process, port_available, require_free_ports, start_services, stop_services
-from .review_deploy_source import export_committed_source, verify_export
+from .review_deploy_ready import COMPONENTS, readiness_complete, wait_for_readiness
+from .review_deploy_source import export_committed_source, run_exported_backend, verify_export
 
 
 BASE_PYTHON = Path('C:/Users/hp/AppData/Local/Programs/Python/Python313/python.exe')
@@ -95,50 +96,12 @@ def _broker_passwords(root, credentials):
         raise RuntimeError('private broker password hashing failed')
 
 
-def _validate_configs(root, credentials):
-    from backend.center.config import load_center_config, load_query_postgres_config
-    from backend.registry.config import load_registry_config
-    from backend.ingest_reliability.config import load_reliability_config
-    from backend.waveforms.config import load_waveform_config
-    from backend.inversion.config import load_inversion_config
-    private = Path(root) / 'private'
-    previous = os.environ.copy()
-    try:
-        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets()})
-        center = load_center_config(private / 'center.toml')
-        query = load_query_postgres_config(private / 'center.toml')
-        registry = load_registry_config(private / 'center.toml')
-        reliability = {role: load_reliability_config(private / 'center.toml', component=role)
-                       for role in ('ingestor', 'publisher', 'management')}
-        waves = {role: load_waveform_config(private / 'waveform.toml', component=role)
-                 for role in ('receive', 'assemble', 'publish', 'management')}
-        inversion = load_inversion_config(private / 'inversion.toml')
-        if not all((center, query, registry, inversion, *reliability.values(), *waves.values())):
-            raise ValueError('review component config disabled')
-    finally:
-        os.environ.clear()
-        os.environ.update(previous)
+def _validate_configs(root):
+    return run_exported_backend(root, 'validate_configs')
 
 
-def _probe_database(port, credentials):
-    """Read-only effective capabilities, schema and extension checks."""
-    from backend.registry.runtime import probe_privileges
-    from backend.ingest_reliability.privileges import probe_role as reliability_probe
-    from backend.waveforms.privileges import probe_role as waveform_probe
-    from backend.inversion.privileges import probe_role as inversion_probe
-    from backend.inversion.metadata import probe_metadata
-    def connect(role):
-        return lambda: psycopg.connect(**connection_settings(port, role, credentials[role]))
-    probe_privileges(connect('registry_writer'), connect('foundation_reader'))
-    for role in ('ingestor', 'publisher', 'reader', 'operator'):
-        reliability_probe(connect('reliable_' + role), role)
-    for role, name in (('receiver', 'wave_receiver'), ('assembler', 'wave_assembler'),
-                       ('receipt_publisher', 'wave_publisher'), ('reader', 'wave_reader'),
-                       ('operator', 'wave_operator')):
-        waveform_probe(connect(name), role)
-    for role in ('reader', 'operator'):
-        inversion_probe(connect('inversion_' + role), role)
-        probe_metadata(connect('inversion_' + role))
+def _probe_database(root):
+    return run_exported_backend(root, 'probe_database')
 
 
 def _preflight(target, source, ports):
@@ -163,22 +126,17 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None):
     _venv(target)
     credentials = _new_credentials()
     write_json_private(target / 'private' / 'credentials.json', credentials)
-    from backend.review_runtime import initialize_identity
-    accounts = initialize_identity(target / 'private' / 'identity.db')
-    private_acl(target / 'private' / 'identity.db')
-    write_json_private(target / 'private' / 'accounts.json', accounts)
+    accounts = run_exported_backend(target, 'identity_init')
     source_ref = str(uuid.uuid4())
     write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets()},
                   source_ref=source_ref)
     broker_configuration(target, mqtt_port=ports['mqtt'])
     _broker_passwords(target, credentials)
-    _validate_configs(target, credentials)
+    marker['config_hashes'] = config_hashes(target)
+    _validate_configs(target)
     system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials)
-    install_schemas(port=ports['postgres'], credentials=credentials,
-                    center_config=target / 'private' / 'center.toml',
-                    waveform_config=target / 'private' / 'waveform.toml',
-                    inversion_config=target / 'private' / 'inversion.toml')
-    _probe_database(ports['postgres'], credentials)
+    run_exported_backend(target, 'install_schemas', timeout=600)
+    _probe_database(target)
     stop_cluster(target)
     marker.update(state='ready', system_id=system_id, identity_instance_id=accounts['instance_id'],
                   source_ref=source_ref, processes={})
@@ -187,16 +145,18 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None):
             'source_commit': source_record['commit'], 'ports': ports}
 
 
-def _checked(root, *, require_ready=True, verify_code=True, verify_identity=True):
+def _checked(root, *, require_ready=True, verify_code=True, verify_identity=True,
+             verify_config=True):
     root = Path(root).absolute()
     marker = _marker(root)
     if require_ready and marker['state'] not in {'ready', 'running', 'stopped', 'starting', 'start_failed'}:
         raise ValueError('deployment initialization incomplete')
     if verify_code:
         verify_export(root / 'code', marker['source'])
+    if verify_config:
+        verify_config_hashes(root, marker.get('config_hashes'))
     if verify_identity:
-        from backend.review_runtime import check_identity
-        identity = check_identity(root / 'private' / 'identity.db')
+        identity = run_exported_backend(root, 'identity_check')
         if identity['instance_id'] != marker['identity_instance_id']:
             raise ValueError('identity instance mismatch')
     return root, marker
@@ -227,31 +187,53 @@ def launch(root):
         start_cluster(root, port=ports['postgres'])
     if probe_system_identifier(ports['postgres'], credentials) != marker['system_id']:
         raise ValueError('PostgreSQL cluster identity mismatch')
-    _validate_configs(root, credentials)
-    _probe_database(ports['postgres'], credentials)
+    _validate_configs(root)
+    _probe_database(root)
     marker['state'] = 'starting'
     marker['processes'] = {}
+    marker['launch_started_at'] = datetime.now(timezone.utc).isoformat()
+    center_log = root / 'logs' / 'center.log'
+    marker['center_log_offset'] = center_log.stat().st_size if center_log.is_file() else 0
+    for component in ('wave_assembler', 'inversion'):
+        log = root / 'logs' / (component + '.log')
+        marker[component + '_log_offset'] = log.stat().st_size if log.is_file() else 0
     _update(root, marker)
     def on_start(name, identity):
         marker['processes'][name] = identity
         _update(root, marker)
+    evidence = {name: False for name in COMPONENTS}
     try:
         start_services(root, ports=ports, credentials=credentials, on_start=on_start)
         observed = status(root)
         if (not observed['processes'] or any(value != 'running' for value in observed['processes'].values())
                 or port_available(ports['mqtt'])):
             raise RuntimeError('one or more review services exited during launch')
+        evidence = wait_for_readiness(root, marker, timeout=60)
+        if not readiness_complete(evidence):
+            raise RuntimeError('bounded review component readiness was not established')
     except Exception:
+        _readiness_receipt(root, marker, evidence, ok=False)
         marker['state'] = 'start_failed'
         _update(root, marker)
         raise
+    _readiness_receipt(root, marker, evidence, ok=True)
     marker['state'] = 'running'
     _update(root, marker)
     return status(root)
 
 
+def _readiness_receipt(root, marker, evidence, *, ok):
+    name = 'readiness-' + uuid.uuid4().hex + '.json'
+    write_json_private(Path(root) / 'private' / name,
+                       {'format': 1, 'instance_id': marker['instance_id'],
+                        'launch_started_at': marker['launch_started_at'],
+                        'recorded_at': datetime.now(timezone.utc).isoformat(),
+                        'ok': ok, 'evidence': {key: evidence.get(key) is True for key in sorted(COMPONENTS)}})
+    marker['readiness_receipt'] = name
+
+
 def stop(root):
-    root, marker = _checked(root, verify_code=False, verify_identity=False)
+    root, marker = _checked(root, verify_code=False, verify_identity=False, verify_config=False)
     if marker['state'] in {'running', 'starting', 'start_failed'}:
         stop_services(root, marker.get('processes', {}))
     elif marker['state'] not in {'ready', 'stopped'}:
@@ -320,21 +302,21 @@ def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
     private_acl(target / 'private' / 'identity.db')
     shutil.copyfile(Path(backup_path) / 'accounts.json', target / 'private' / 'accounts.json')
     private_acl(target / 'private' / 'accounts.json')
-    from backend.review_runtime import check_identity
-    identity = check_identity(target / 'private' / 'identity.db')
+    identity = run_exported_backend(target, 'identity_check')
     if identity['instance_id'] != backup_manifest['instance_id']:
         raise ValueError('restored identity mismatch')
     write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets()},
                   source_ref=backup_manifest['source_ref'])
     broker_configuration(target, mqtt_port=ports['mqtt'])
     _broker_passwords(target, credentials)
-    _validate_configs(target, credentials)
+    marker['config_hashes'] = config_hashes(target)
+    _validate_configs(target)
     system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials)
     restore_database(backup_path, port=ports['postgres'], password=credentials['bootstrap'])
     counts = count_business_rows(port=ports['postgres'], password=credentials['bootstrap'])
     if counts != backup_manifest['row_counts']:
         raise ValueError('restored PostgreSQL row counts differ')
-    _probe_database(ports['postgres'], credentials)
+    _probe_database(target)
     stop_cluster(target)
     marker.update(state='ready', system_id=system_id, identity_instance_id=identity['instance_id'],
                   source_ref=backup_manifest['source_ref'], processes={},

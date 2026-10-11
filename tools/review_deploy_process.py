@@ -110,11 +110,11 @@ def start_services(root, *, ports, credentials, on_start=None):
          ('mqtt_receipts', 'reliable_publisher')),
         ('wave_receiver', ['-m', 'backend.waveforms', '--config', str(private / 'waveform.toml'), 'receive'],
          ('wave_receiver', 'mqtt_wave_receive')),
-        ('wave_assembler', ['-m', 'backend.waveforms', '--config', str(private / 'waveform.toml'), 'assemble'],
+        ('wave_assembler', ['-m', 'tools.review_deploy_worker', 'wave_assembler', '--config', str(private / 'waveform.toml')],
          ('wave_assembler',)),
         ('wave_publisher', ['-m', 'backend.waveforms', '--config', str(private / 'waveform.toml'), 'publish'],
          ('wave_publisher', 'mqtt_wave_publish')),
-        ('inversion', ['-m', 'backend.inversion', 'worker', '--config', str(private / 'inversion.toml')],
+        ('inversion', ['-m', 'tools.review_deploy_worker', 'inversion', '--config', str(private / 'inversion.toml')],
          ('inversion_reader', 'inversion_operator', 'wave_reader', 'wave_operator', 'wave_receiver')),
     )
     for name, arguments, roles in specs:

@@ -6,6 +6,21 @@ from pathlib import Path
 from tools.review_deploy_paths import claim_target, verify_target
 
 
+def _add_public_kit_fixture(repo):
+    from tools.build_open_interface_kit import PUBLIC_FILES
+    from zipfile import ZipFile
+    kit = repo / 'assets' / 'open-interface'
+    kit.mkdir(parents=True)
+    (repo / 'tools').mkdir(exist_ok=True)
+    (repo / 'tools' / 'build_open_interface_kit.py').write_bytes(
+        (Path(__file__).parents[1] / 'tools' / 'build_open_interface_kit.py').read_bytes())
+    for name in PUBLIC_FILES:
+        (kit / name).write_bytes(('public-' + name).encode())
+    with ZipFile(kit / 'open-interface-r1.zip', 'w') as archive:
+        for name in PUBLIC_FILES:
+            archive.write(kit / name, name)
+
+
 class TargetTests(unittest.TestCase):
     def test_existing_target_is_never_adopted_or_removed(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -46,6 +61,46 @@ class TargetTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_private_acl_change_invalidates_launch_config_hashes(self):
+        from tools.review_deploy_config import config_hashes, verify_config_hashes
+        with tempfile.TemporaryDirectory() as parent:
+            private = Path(parent) / 'private'
+            private.mkdir()
+            names = ('center.toml', 'waveform.toml', 'inversion.toml',
+                     'mosquitto.conf', 'mqtt.acl', 'mqtt.passwd')
+            for name in names:
+                (private / name).write_text('pinned', encoding='utf-8')
+            sealed = config_hashes(Path(parent))
+            verify_config_hashes(Path(parent), sealed)
+            (private / 'mqtt.acl').write_text('changed', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                verify_config_hashes(Path(parent), sealed)
+
+    def test_worker_startup_receipts_require_fresh_actual_tick_or_idle(self):
+        from tools.review_deploy_ready import worker_started
+        with tempfile.TemporaryDirectory() as parent:
+            log = Path(parent) / 'worker.log'
+            log.write_text('{"event":"review_worker_ready","component":"inversion"}\n', encoding='utf-8')
+            offset = log.stat().st_size
+            self.assertFalse(worker_started(log, offset, 'inversion'))
+            with log.open('a', encoding='utf-8') as output:
+                output.write('{"event":"review_worker_failed","component":"inversion"}\n')
+            self.assertFalse(worker_started(log, offset, 'inversion'))
+            with log.open('a', encoding='utf-8') as output:
+                output.write('{"event":"review_worker_ready","component":"inversion"}\n')
+            self.assertTrue(worker_started(log, offset, 'inversion'))
+
+    def test_broker_acl_limits_diagnostic_publish_to_review_topics(self):
+        from tools.review_deploy_config import broker_configuration
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            (root / 'private').mkdir()
+            broker_configuration(root, mqtt_port=1884)
+            acl = (root / 'private' / 'mqtt.acl').read_text(encoding='utf-8')
+            self.assertIn('topic write oilfield/review/health/reliability\n', acl)
+            self.assertIn('topic write oilfield/review/health/waveform\n', acl)
+            self.assertNotIn('topic write oilfield/v2/REVIEW-GW/+/waveform\n', acl)
+
     def test_generated_configs_load_with_distinct_review_roles(self):
         from tools.review_deploy_config import write_configs, runtime_secrets
         from backend.center.config import load_center_config
@@ -81,6 +136,60 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class SourceTests(unittest.TestCase):
+    def test_export_contains_public_kit_entry_and_exact_zip_inventory(self):
+        from tools.review_deploy_source import export_committed_source
+        from tools.build_open_interface_kit import PUBLIC_FILES
+        import subprocess
+        from zipfile import ZipFile
+        with tempfile.TemporaryDirectory() as parent:
+            repo = Path(parent) / 'repo'
+            repo.mkdir()
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            (repo / 'server.py').write_text('pass\n', encoding='utf-8')
+            (repo / 'requirements-production.txt').write_text('psycopg==3.3.5\n', encoding='utf-8')
+            _add_public_kit_fixture(repo)
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=t@example.test',
+                            'commit', '-qm', 'public kit'], check=True)
+            result = export_committed_source(repo, Path(parent) / 'code')
+            exported = Path(parent) / 'code' / 'assets' / 'open-interface'
+            self.assertTrue((exported / 'index.html').is_file())
+            with ZipFile(exported / 'open-interface-r1.zip') as archive:
+                self.assertEqual(archive.namelist(), list(PUBLIC_FILES))
+            self.assertEqual({path.name for path in exported.iterdir()}, set(PUBLIC_FILES) | {'open-interface-r1.zip'})
+            self.assertIn('assets/open-interface/index.html', result['files'])
+
+    def test_exported_backend_child_reads_lf_schema_not_crlf_checkout(self):
+        from tools.review_deploy_source import run_exported_backend
+        import hashlib
+        import shutil
+        import sys
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            code = root / 'code'
+            (code / 'tools').mkdir(parents=True)
+            (code / 'backend').mkdir()
+            (root / 'private').mkdir()
+            (code / 'tools' / 'review_deploy_child.py').write_bytes(
+                (Path(__file__).parents[1] / 'tools' / 'review_deploy_child.py').read_bytes())
+            (code / 'backend' / '__init__.py').write_text('', encoding='utf-8')
+            (code / 'backend' / 'schema.sql').write_bytes(b'A\nB\n')
+            (root / 'working-schema.sql').write_bytes(b'A\r\nB\r\n')
+            (code / 'backend' / 'review_runtime.py').write_text(
+                'from pathlib import Path\nimport hashlib\n'
+                'def _source_hashes():\n'
+                '    return (hashlib.sha256(Path(__file__).with_name("schema.sql").read_bytes()).hexdigest(), "x")\n'
+                'def check_identity(path):\n'
+                '    if Path(path).read_text() != _source_hashes()[0]: raise ValueError("schema mismatch")\n'
+                '    return {"instance_id":"exported-code"}\n',
+                encoding='utf-8')
+            (root / 'private' / 'identity.db').write_text(hashlib.sha256(b'A\nB\n').hexdigest(), encoding='ascii')
+            result = run_exported_backend(root, 'fingerprint', python=sys.executable)
+            self.assertEqual(result['schema_sha256'], hashlib.sha256(b'A\nB\n').hexdigest())
+            self.assertNotEqual(result['schema_sha256'], hashlib.sha256((root / 'working-schema.sql').read_bytes()).hexdigest())
+            self.assertEqual(run_exported_backend(root, 'identity_check', python=sys.executable)['instance_id'],
+                             'exported-code')
+
     def test_dirty_release_source_is_rejected_before_export(self):
         from tools.review_deploy_source import export_committed_source
         import subprocess
@@ -109,7 +218,8 @@ class SourceTests(unittest.TestCase):
             (repo / 'server.py').write_text('print(1)\n', encoding='utf-8')
             (repo / 'requirements-production.txt').write_text('psycopg==3.3.5\n', encoding='utf-8')
             (repo / 'private.key').write_text('omit', encoding='utf-8')
-            subprocess.run(['git', '-C', str(repo), 'add', 'server.py', 'requirements-production.txt', 'private.key'], check=True)
+            _add_public_kit_fixture(repo)
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
             subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=t@example.test',
                             'commit', '-qm', 'base'], check=True)
             result = export_committed_source(repo, Path(parent) / 'code')
@@ -140,6 +250,42 @@ class ProcessOwnershipTests(unittest.TestCase):
         self.assertFalse(owned_process(expected, actual))
         actual = dict(expected, command='python unrelated.py')
         self.assertFalse(owned_process(expected, actual))
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_mqtt_publish_ack_permission_denied_is_not_ready(self):
+        from tools.review_deploy_child import mqtt_reason_ok
+        class Reason:
+            def __init__(self, value): self.value = value
+        self.assertTrue(mqtt_reason_ok(Reason(0)))
+        self.assertFalse(mqtt_reason_ok(Reason(135)))
+        self.assertFalse(mqtt_reason_ok(None))
+
+    def test_center_subscribe_rejection_after_launch_cannot_count_as_ready(self):
+        from tools.review_deploy_ready import center_subscribed
+        with tempfile.TemporaryDirectory() as parent:
+            log = Path(parent) / 'center.log'
+            log.write_text('{"event":"mqtt_subscribed","topic":"oilfield/v1/+/+/telemetry","qos":1}\n', encoding='utf-8')
+            offset = log.stat().st_size
+            with log.open('a', encoding='utf-8') as stream:
+                stream.write('{"event":"mqtt_subscribe_rejected","topic":"oilfield/v1/+/+/telemetry"}\n')
+            self.assertFalse(center_subscribed(log, offset))
+            with log.open('a', encoding='utf-8') as stream:
+                stream.write('{"event":"mqtt_subscribed","topic":"oilfield/v1/+/+/telemetry","qos":1}\n')
+            self.assertTrue(center_subscribed(log, offset))
+            with log.open('a', encoding='utf-8') as stream:
+                stream.write('{"event":"mqtt_retry_scheduled"}\n')
+            self.assertFalse(center_subscribed(log, offset))
+
+    def test_launch_evidence_requires_http_receiver_and_both_publishers(self):
+        from tools.review_deploy_ready import readiness_complete
+        evidence = {'http': True, 'center_subscription': True, 'wave_receiver': True,
+                    'reliability_publisher': True, 'wave_publisher': True,
+                    'wave_assembler': True, 'inversion_worker': True}
+        self.assertTrue(readiness_complete(evidence))
+        for component in evidence:
+            missing = dict(evidence, **{component: False})
+            self.assertFalse(readiness_complete(missing), component)
 
 
 class BackupTests(unittest.TestCase):
