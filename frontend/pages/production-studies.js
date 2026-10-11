@@ -62,12 +62,13 @@ export async function renderProductionStudies(context) {
     const pendingTarget=selectPending?.target_id||selectPending?.body?.record_id;
     const wrongTarget=!!selectPending&&String(pendingTarget)!==String(record.id);
     const maySelect=permissions.has('studies.select')&&SELECTABLE.has(record.kind)&&record.review_status==='approved'&&record.dependency_current!==false&&!wrongTarget;
+    const mayRetrySelection=permissions.has('studies.select')&&!!selectPending&&!wrongTarget;
     return `<section class="panel study-actions"><header><h3>复核、影子选用与导出</h3></header><div class="panel-body">
       ${self?'<p class="study-boundary">作者不能复核自己的结果，包括管理员。</p>':''}
       ${wrongTarget?`<p class="study-boundary">另一条记录 ${esc(pendingTarget||'目标未知')} 有结果未确定的影子选用请求。请先回到原记录，按原请求重试；当前记录的选用操作已暂停。</p>${pendingTarget?`<button type="button" class="button secondary" data-study-record="${esc(pendingTarget)}">打开原记录</button>`:''}`:''}
       ${mayReview?`<label class="study-field">复核决定<select data-study-decision>${record.status===APPROVABLE[record.kind]?'<option value="approved">批准软件研究</option>':''}<option value="rejected">拒绝</option>${record.review_status==='approved'?'<option value="revoked">撤销批准</option>':''}</select></label>
         <label class="study-field">复核意见<input data-study-comment maxlength="1000" placeholder="说明证据与决定"/></label><button type="button" class="button secondary" data-study-review>${reviewPending?'按原请求重试复核':'提交独立复核'}</button>`:''}
-      ${maySelect?`<label class="study-field">影子选用意见<input data-study-selection-comment maxlength="1000" placeholder="说明选用依据"/></label>${!selectPending||selectPending.body.record_id!==null?`<button type="button" class="button secondary" data-study-select>${selectPending?'按原请求重试选用':'选用为影子版本'}</button>`:''}`:''}
+      ${maySelect||mayRetrySelection?`<label class="study-field">影子选用意见<input data-study-selection-comment maxlength="1000" placeholder="说明选用依据"/></label>${!selectPending||selectPending.body.record_id!==null?`<button type="button" class="button secondary" data-study-select>${selectPending?'按原请求重试选用':'选用为影子版本'}</button>`:''}${mayRetrySelection&&!maySelect?'<p>当前记录已不满足新选用条件；此按钮仅按原请求查询或重试，由服务端确认原请求结果。</p>':''}`:''}
       ${permissions.has('studies.select')&&!wrongTarget&&(record.is_selected||selectPending?.body?.record_id===null)?`<button type="button" class="button secondary" data-study-unselect>${selectPending?.body?.record_id===null?'按原请求重试撤销选用':'撤销当前影子选用'}</button>`:''}
       ${permissions.has('studies.export')?'<button type="button" class="button secondary" data-study-export>导出已审计 JSON</button>':''}
     </div></section>`;

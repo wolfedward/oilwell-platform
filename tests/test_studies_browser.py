@@ -82,6 +82,9 @@ class StudiesBrowserTests(unittest.TestCase):
     def test_pending_selection_stays_bound_to_original_record(self):
         self.run_browser('pending-select')
 
+    def test_pending_selection_can_resolve_after_original_target_revoked(self):
+        self.run_browser('pending-select-revoked')
+
     def test_disposal_aborts_export_and_reads(self):
         self.run_browser('abort-reads-export')
 

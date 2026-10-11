@@ -127,10 +127,10 @@ try {
     root.querySelector('[data-study-unselect]').click();until=Date.now()+2000;while(posts.length<2){if(Date.now()>until)throw Error('retry timeout');await new Promise(r=>setTimeout(r,10));}
     check(posts[0]===posts[1]&&JSON.parse(posts[1]).record_id===null,'deselection replays exact null-record body');
     document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
-  }else if(mode==='pending-select'){
+  }else if(mode==='pending-select'||mode==='pending-select-revoked'){
     const {renderProductionStudies}=await import(PAGE_MODULE);
     const root=document.querySelector('#root'),a='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',b='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',posts=[];
-    const row=id=>({id,kind:'condition_training',title:id===a?'Record A':'Record B',actor_id:'author',status:'completed',source:{kind:'software_fixture',description:'test',references:['fixture']},review_status:'approved',version:2,selection_version:0,is_selected:false,dependency_current:true,dependencies:[],payload:{},result:{status:'completed',training_curve:[],metrics:{}},review_history:[],selection_history:[]});
+    const row=id=>({id,kind:'condition_training',title:id===a?'Record A':'Record B',actor_id:'author',status:'completed',source:{kind:'software_fixture',description:'test',references:['fixture']},review_status:mode==='pending-select-revoked'&&posts.length&&id===a?'revoked':'approved',version:2,selection_version:0,is_selected:false,dependency_current:true,dependencies:[],payload:{},result:{status:'completed',training_curve:[],metrics:{}},review_history:[],selection_history:[]});
     const api={get:async path=>path.includes('?')?[row(a),row(b)]:row(path.endsWith(a)?a:b),post:async(path,body)=>{posts.push(JSON.stringify(body));if(posts.length===1)throw Object.assign(Error('timed out'),{code:'timeout'});return{kind:'condition_training',record_id:a,version:1}}};
     await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.select']),actorId:'selection-actor',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>复核</h1>',isCurrent:()=>true,navigate:()=>{}});
     root.querySelector(`[data-study-record="${a}"]`).click();let until=Date.now()+2000;while(!root.querySelector('[data-study-select]')){if(Date.now()>until)throw Error('A timeout');await new Promise(r=>setTimeout(r,10));}
@@ -138,8 +138,13 @@ try {
     root.querySelector(`[data-study-record="${b}"]`).click();until=Date.now()+2000;while(root.querySelector('.study-detail h2')?.textContent!=='Record B'){if(Date.now()>until)throw Error('B timeout');await new Promise(r=>setTimeout(r,10));}
     check(!root.querySelector('[data-study-select]')&&root.textContent.includes(a),'pending A cannot be triggered from B and target A is visible');
     root.querySelector(`[data-study-record="${a}"]`).click();until=Date.now()+2000;while(root.querySelector('.study-detail h2')?.textContent!=='Record A'){if(Date.now()>until)throw Error('A reopen timeout');await new Promise(r=>setTimeout(r,10));}
+    check(root.querySelector('[data-study-select]'),'pending original request remains resolvable after revocation');
     root.querySelector('[data-study-select]').click();until=Date.now()+2000;while(posts.length<2){if(Date.now()>until)throw Error('retry timeout');await new Promise(r=>setTimeout(r,10));}
     check(posts[0]===posts[1],'original selection body retried exactly');
+    if(mode==='pending-select-revoked'){
+      await new Promise(r=>setTimeout(r,20));
+      check(!root.querySelector('[data-study-select]'),'resolved request does not authorize new selection of revoked target');
+    }
     document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
   }else if(mode==='rejected-review'){
     const {renderProductionStudies}=await import(PAGE_MODULE);
