@@ -196,6 +196,10 @@ function pageVisible(page, user) {
     && (page.id !== "waveforms" || user?.capabilities?.waveforms?.enabled === true);
 }
 
+function pageRoutable(page, user) {
+  return !!page && (!reviewMode(user) || REVIEW_PAGES.has(page.id));
+}
+
 function renderChrome() {
   if (!shellReady) return;
   const state = store.getState();
@@ -203,7 +207,7 @@ function renderChrome() {
   document.querySelector(".app-shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   const collapse = document.querySelector("#collapseButton");
   if (collapse) collapse.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
-  document.querySelector("#topNav").innerHTML = NAVIGATION.filter(module => module.pages.some(page => !page.hidden && pageVisible(page,state.user))).map((module) => `
+  document.querySelector("#topNav").innerHTML = NAVIGATION.filter(module => !reviewMode(state.user) || module.pages.some(page => !page.hidden && pageVisible(page,state.user))).map((module) => `
     <button type="button" data-module="${module.id}" class="${module.id === context.module.id ? "active" : ""}"
       aria-current="${module.id === context.module.id ? "page" : "false"}">
       <span>${module.icon}</span>${escapeHtml(module.label)}
@@ -249,7 +253,7 @@ async function renderPage(pageId, params = {}) {
   disposeWaveforms?.(); disposeWaveforms = null;
   components.closeAllModals();
   const candidate = PAGE_INDEX.get(pageId);
-  const page = candidate && pageVisible(candidate,store.getState().user) ? candidate : PAGE_INDEX.get(reviewMode(store.getState().user) ? "engineering-overview" : "dashboard");
+  const page = pageRoutable(candidate,store.getState().user) ? candidate : PAGE_INDEX.get(reviewMode(store.getState().user) ? "engineering-overview" : "dashboard");
   const state = store.getState();
   const tabs = state.tabs.includes(page.id) ? state.tabs : [...state.tabs, page.id];
   const tabParams = { ...(state.tabParams || {}), [page.id]: { ...params } };
@@ -327,7 +331,7 @@ function registerRoutes() {
 }
 
 async function openPage(pageId, params = {}) {
-  const destination = PAGE_INDEX.has(pageId) && pageVisible(PAGE_INDEX.get(pageId),store.getState().user) ? pageId : reviewMode(store.getState().user) ? "engineering-overview" : "dashboard";
+  const destination = pageRoutable(PAGE_INDEX.get(pageId),store.getState().user) ? pageId : reviewMode(store.getState().user) ? "engineering-overview" : "dashboard";
   try {
     await router.open(destination, params);
   } catch (error) {
@@ -368,7 +372,9 @@ function bindShellEvents() {
     const moduleButton = event.target.closest("[data-module]");
     if (moduleButton) {
       const module = NAVIGATION.find((item) => item.id === moduleButton.dataset.module);
-      if (module) await openPage(module.pages.find(page => !page.hidden && pageVisible(page,store.getState().user))?.id);
+      if (module) await openPage((reviewMode(store.getState().user)
+        ? module.pages.find(page => !page.hidden && pageVisible(page,store.getState().user))
+        : module.pages[0])?.id);
       return;
     }
     const closeButton = event.target.closest("[data-close-tab]");
