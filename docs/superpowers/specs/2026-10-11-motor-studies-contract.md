@@ -1,0 +1,55 @@
+# Motor evidence and protection replay contract v1
+
+Binding supplement to integrated review release Tasks 5 and 6. All computations are software evidence, never a protective relay or permission to energize machinery. Unknown keys, booleans as numbers, nonfinite/overflow, and out-of-bound dimensions are rejected with `StudyError`. Engines do not write, dispatch, import executable models, or infer missing machine settings.
+
+## Spectrum payload and output
+
+`backend.studies.spectrum.analyze_spectrum(payload)`; version `motor_spectrum/1`.
+
+Payload exact keys:
+
+- `schema`: `motor.spectrum/1`.
+- `capture`: `{capture_id,well_id,device_id,started_at,sample_rate_hz,samples_A,quality,clipped,provenance}`. IDs bounded nonempty text, timezone-aware timestamp; rate finite 1..100000 Hz. Samples are one phase's instantaneous amperes, NOT per-second RMS; N is an exact power of two 256..65536, values absolute <=100000 A. Reject other lengths; do not truncate or zero-pad. Duration N/fs <=60 s. Quality has N entries `valid|invalid|unknown`; clipped has N booleans. Provenance exact keys `sample_kind` (`instantaneous|rms|unknown`), `uniform_sampling_confirmed` (bool), `clock_error_ppm` (0..100000 or null), `calibration_reference` (bounded string or null), `anti_alias_reference` (bounded string or null), `anti_alias_passband_hz` (positive <fs/2 or null), `manifest_sha256` (64 lowercase hex or null). Submitted references are declared, not independently certified.
+- `motor`: `{type,supply,pole_count,speed_rpm,speed_uncertainty_rpm,supply_frequency_hz,frequency_uncertainty_hz,steady_state_declared,periodic_load_excluded,basis_reference}`. Type `squirrel_cage_induction|other|unknown`; supply `line_fed|inverter_fed|unknown`; pole_count null or even integer 2..64, NOT pole pairs; speed null or 0..120000; speed uncertainty null or 0..120000; frequency null or >0..1000; frequency uncertainty null or 0..1000. Boolean declarations; bounded basis_reference string or null. Zero uncertainty is allowed only as a declared analytical/software fixture value, never described as field accuracy.
+- `policy`: `{maximum_clock_error_ppm,maximum_rms_variation_ratio,minimum_fundamental_A,minimum_sideband_dbc,minimum_sideband_to_noise_db}`. All required, explicit research thresholds: max clock >0..100000, RMS variation 0..1, minimum main >0..100000, dBc -160..0, noise dB 0..100. No default safety thresholds.
+
+Compute a bounded radix-2 FFT with DC removal and **periodic Hann** window `0.5-0.5*cos(2*pi*n/N)`. One-sided amplitude in A peak `2*abs(FFT)/sum(window)`; DC and Nyquist are not doubled. Record removed DC, unwindowed AC RMS, window, N, duration, `bin_spacing_hz=fs/N`, frequency/amplitude bins. The Hann main-lobe half width is 2*df. No claim that df alone resolves overlapping Hann lobes. Subwindow steadiness: 8 equal contiguous RMS windows; `(max-min)/mean`, explicit zero-mean handling. No hidden filtering, sample replacement or interpolation.
+
+All bad/clipped/unknown samples, absent/invalid time/calibration/filter evidence, non-instantaneous data, unsupported motor/supply, missing speed/poles/frequency/uncertainty, nonsteady data, weak main line, and unresolvable sidebands give named support reasons. Structurally numeric captures may retain descriptive spectrum despite missing physical support, but malformed values/shape are rejected. Mark amplitude as declared calibration, not verified traceability. No quantitative broken-bar finding on unsupported input.
+
+`n_sync=120*f/poles`; `slip=(n_sync-speed)/n_sync`; supported motoring requires `0<slip<0.5` and both sidebands in positive measured passband. Nominal sidebands `(1±2*slip)*f`. Propagate the correlated exact forms `f_minus=-f+speed*poles/60`, `f_plus=3*f-speed*poles/60` using supplied frequency/speed intervals, and include sample clock uncertainty in all search intervals. Search observed bins only. Main frequency interval and each sideband interval expanded by 2*df must not overlap and must be in positive Nyquist/filter passband. Missing bins refuse. Fundamental is maximum amplitude in its interval; sideband peak is maximum in each interval; dBc=20log10(side/main). Zero amplitude => null, not infinity. Local noise: median of non-main/non-sideband bins within ±10df around sideband; at least 3 bins required; zero floor gives null SNR and no threshold support. Never silently enlarge an out-of-range interval or substitute a peak outside it.
+
+Output exact stable top-level keys: `status` (`completed`), `algorithm_version`, `support` (`spectrum_only|sideband_features_supported|not_applicable`), `finding` (`sideband_features_present|no_resolved_sideband|indeterminate`), `reasons` (bounded code/message entries), `spectrum` (bins plus above settings/metrics), `motor_features` (derived frequencies/slip/intervals and measured amplitudes/dBc/noise, or null), `confounders`, `fault_confirmation:false`, `field_validation:false`, `control_eligible:false`. Presence requires BOTH supported sidebands exceed both explicit thresholds. Unsupported -> indeterminate, never healthy. Periodic pump loading is a confounder even for apparent sidebands; unless explicitly excluded with basis, report unexcluded; no confirmed broken bars, bar count, fault probability, or certified health even if declared excluded. `supply=inverter_fed` is v1 not applicable, not extrapolated line-fed diagnosis.
+
+## Protection replay payload and reusable state machine
+
+`backend.studies.protection.replay_protection(payload)`; version `protection_replay/1`. Export a reusable `ProtectionReplay(settings)` with `step(frame)->dict` implementing the same validation/state logic for Task 6. No hardware output member.
+
+Payload exact keys `{schema,settings,frames}`, schema `motor.protection/1`.
+
+Settings exact keys:
+
+- `version`: bounded nonempty text; `basis_reference`, `approved_by`: bounded nonempty declared text, never a platform approval substitute.
+- `effective_from`, `effective_until`: UTC-aware timestamps, from<until; maximum 366 days.
+- `maximum_frame_gap_ms`: integer 1..60000; `reset_safe_ms`: integer 0..3600000.
+- `rules`: 1..16 uniquely named rules, exact `{id,metric,direction,pickup,dropout,delay_ms}`. Metrics `current_max_A|voltage_min_V|voltage_max_V|current_deviation_ratio|voltage_deviation_ratio|temperature_C|speed_rpm|frequency_hz`. Direction `high|low`; delay integer 0..3600000. All finite metric-appropriate ranges; high pickup>dropout, low pickup<dropout. Temperature -100..500, ratios 0..1, current0..100000, voltage0..100000, speed0..120000, frequency0..1000. Deviation uses `(max(abs(x-mean)))/mean` across three phases; NOT negative-sequence ratio. All-zero phase mean is invalid for deviation, never ratio zero.
+
+Frames: 1..8192, total span<=24 hours; exact `{at,sequence,boot_id,quality,configuration_valid,hardware_trip,reset_request,measurements}`. at aware timestamp, sequence integer 0..2^53-1, boot_id bounded nonempty, quality `valid|invalid|unknown`, configuration_valid/hardware_trip boolean, reset_request `none|local`. Measurements exact `{currents_A,voltages_V,temperature_C,speed_rpm,frequency_hz}`; triples or null, scalars or null, same physical numeric bounds above. Missing a metric needed by any configured rule makes entire frame invalid and excludes elapsed accumulation. Null unused channels allowed. Frames malformed are rejected; well-formed duplicate/out-of-order timestamps or sequence are explicitly invalid discontinuities, not sorted/ignored.
+
+Qualification `valid|stale|invalid|config_revoked|unconfigured` is separate from rule state `normal|pickup|would_trip_latched`. Hardware_trip causes a separate latched inhibit, never suppressed by missing measurements. Settings expired/revoked are unavailable immediately; existing latches persist. Rules evaluate current valid sample, high `>=pickup`/safe `<=dropout` (inverse for low), hysteresis retains pickup inside band. Continuous valid elapsed time only: first violating frame starts at zero, subsequent contiguous violating/retained pickup frames accrue actual milliseconds; zero delay latches at first valid pickup. Any gap>maximum, duplicate/reversed sequence/time, boot change, invalid quality/config/required measurement clears nonmature pickup and safe timers; never bridges time. First frame after a gap/restart establishes fresh evidence, may start new pickup, never counts missing elapsed time. Invalid/reordered frame cannot regress the accepted time/sequence cursor; next frame compares to last accepted cursor but cannot count the disrupted span.
+
+For each latch, release requires `reset_request=local`, current valid config/measurement, hardware_trip false, all configured rules on safe side of dropout continuously for reset_safe_ms. Fault remains -> deny reset. Acknowledgement/review/selection never resets. Restart preserves a latch within the replay machine (adapter must persist and restore), and invalid frames do not release. After reset use normal state. No automatic reset, default threshold, derived manufacturer thermal capacity, external API command, or de-energization claim.
+
+Output `status:completed`, version, declared settings digest, `events`, per-frame `timeline` with qualification/rules/inhibit/reset decision/reasons, `final_state`, `control_eligible:false`, `hardware_execution:false`, `field_validation:false`. Outputs say `would_trip`, never actual `tripped`. Event count bounded by frames*(rules+constant); do not duplicate raw input in every row. Selected replay remains shadow-only, not enabled protection.
+
+## Required tests and primary references
+
+RED tests: exact-bin and non-bin sinusoid amplitude/DC, bounded extreme/invalid values, clipping/unknown/rms input, anti-alias/passband absence, positive-slip and uncertainty resolution rejection, line-fed paired synthetic sidebands versus no supported fault, load ambiguity; protection threshold equality, irregular durations, dropout hysteresis, zero delay, invalid/gap/reordered timestamps, boot reset, revoked/expired config, missing phases, persistent latch, reset while unsafe, hardware trip during invalid data, same-engine adapter reuse.
+
+- NI, FFT and windowing: https://www.ni.com/en/shop/data-acquisition/measurement-fundamentals/analog-fundamentals/understanding-ffts-and-windowing.html
+- NI, digitizer sampling and aliasing: https://www.ni.com/en/shop/electronic-test-instrumentation/oscilloscopes/using-a-digitizer-for-time-domain-measurements.html
+- Original motor-current frequency research: https://www.sciencedirect.com/science/article/pii/S0263224110000631
+- Original research distinguishing broken bars and load oscillation: https://www.sciencedirect.com/science/article/pii/S0378475419302083
+- ABB REM615 application reference (functions/settings and relay responsibilities, not copied field settings): https://library.e.abb.com/public/a491466747e31f17c1257b130056ca30/REM615ANSI_appl_259901_ENa.pdf
+
+The exact numeric software limits and conservative acceptance policy above are this project's reviewable design choices, not claimed industry-standard protection settings.

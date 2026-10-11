@@ -51,6 +51,8 @@
 
 **Interfaces:** `StudyError(code,message,status=422)`; `validate_envelope(body)->dict`; `StudyService(database,auth,engines)` with `create(token,body)`, `list(token,kind=None,limit=50,offset=0)`, `get(token,id)`, `review(token,id,body)`, `select(token,kind,body)`, `export(token,id)`; `migrate_studies(database)` explicit. Engines map kind to `callable(payload)->dict` and version. `StudyApi(handler).dispatch()->bool` uses `/api/production-studies` namespace.
 
+Supported kinds: `condition_training`, `condition_prediction`, `recovery_fit`, `energy_schedule`, `energy_effects`, `motor_spectrum`, `protection_replay`. Actor-scoped committed lookup is `request(token,request_id)` / `GET /api/production-studies/requests/{request_id}`. Public prediction supplies `model_record_id`, never an artifact; service resolves an approved, currently shadow-selected training artifact. Public schedule wells supply `recovery_record_id`, never an injected recovery result; service resolves approved fitted recovery records. Persist exact dependency hashes/review versions and recheck on commit/read/review/export/selection; upstream revocation restricts downstream without rewriting history. Software-fixture dependencies cannot be upgraded to submitted-observation source. Maximum 32 dependencies, depth 4, typed acyclic references. Heavy compute uses nonblocking single-slot admission with typed 503, committed replay checked first.
+
 - [ ] Test strict JSON/envelope, source preservation, create/restart/read, current auth, duplicate request same/different body, concurrent replay, audit failure rollback, self-review refusal, stale version conflict, revoke/reselect, export audited before returning bytes.
 - [ ] Implement records with UUID IDs, canonical finite JSON and SHA-256, append-only events/reviews/selections, bounded list/read and payload size, foreign key author identities, explicit schema version. Creation envelope: `{request_id,kind,title,source:{kind,description,references},payload}`; source kind `software_fixture|submitted_observation`, references max 32 bounded strings. Unknown fields refused. Review: `{request_id,expected_version,decision,comment}`; selection same plus `record_id`. Return committed record identity/digests/version, never raw auth data.
 - [ ] Compute only after permission and validation; serialize commit with in-transaction current authorization and idempotency check. Engines cannot control SQL/paths, calculate outside transaction. Read/export current restrictions and immutable original hashes. Add per-kind supported statuses and fail-safe unavailable engine behavior, not fake success.
@@ -61,7 +63,7 @@
 
 **Files:** Create `backend/studies/{condition_data,condition_models,condition_evaluation}.py`, `tests/test_condition_studies.py`, `docs/工况模型软件验证.md`.
 
-**Interfaces:** `train_conditions(payload)->dict`; `predict_conditions(payload)->dict` in `condition_models.py`. Plain JSON only. Detailed bounded data/model contract is fixed in the task supplement before dispatch; root records that supplement alongside this plan.
+**Interfaces:** `train_conditions(payload)->dict`; `predict_conditions(payload)->dict` in `condition_models.py`. Plain JSON only. Required exact supplement: `docs/superpowers/specs/2026-10-11-condition-studies-contract.md`; all its limits, field names, split and metric rules are binding.
 
 - [ ] Pin train/validation/test grouping, timestamp ordering, sample identity, feature units, train-only scaling, class coverage, unknown thresholds and finite operation budget with independent fixtures; write RED tests.
 - [ ] Implement actual deterministic tanh/softmax backpropagation with recorded seed/loss history and bounded JSON weights, plus submitted threshold rules and nearest-centroid baseline on identical held-out rows; confusion matrices/macro F1/coverage and rejected samples, no training-set accuracy as test accuracy.
@@ -72,7 +74,7 @@
 
 **Files:** Create `backend/studies/{recovery,energy_schedule,energy_effects}.py`, `tests/test_recovery_studies.py`, `tests/test_energy_schedule.py`, `docs/恢复与影子优化方法.md`.
 
-**Interfaces:** `fit_recovery(payload)->dict`, `optimize_schedule(payload)->dict`, `evaluate_effects(payload)->dict`. Supplement before dispatch pins observations/units/constraints; never call the legacy demo fitter with incompatible measurements.
+**Interfaces:** `fit_recovery(payload)->dict`, `optimize_schedule(payload)->dict`, `evaluate_effects(payload)->dict`. Required exact supplement `docs/superpowers/specs/2026-10-11-energy-studies-contract.md` pins observations/units/constraints; never call the legacy demo fitter with incompatible measurements.
 
 - [ ] RED tests for known bounded recovery, flat/reversed/missing/sparse data, uncertainty/no extrapolation, and ill-conditioned fit.
 - [ ] Implement explicit empirical exponential fit with measured residuals/profile uncertainty and applicability evidence; preserve original points and rejected-quality reasons.
@@ -84,7 +86,7 @@
 
 **Files:** Create `backend/studies/{spectrum,protection}.py`, `tests/test_motor_spectrum.py`, `tests/test_protection_replay.py`, `docs/电机诊断与保护软件边界.md`.
 
-**Interfaces:** `analyze_spectrum(payload)->dict`, `replay_protection(payload)->dict`; detailed contract in supplement before dispatch. No hardware write.
+**Interfaces:** `analyze_spectrum(payload)->dict`, `replay_protection(payload)->dict`; required detailed supplement `docs/superpowers/specs/2026-10-11-motor-studies-contract.md`. No hardware write.
 
 - [ ] RED tests for exact frequency sinusoid/amplitude, DC/Hann compensation, missing quality/anti-alias, undersampled/unresolvable sideband, invalid slip, variable speed, clipped data and extreme finite input.
 - [ ] Implement bounded real FFT, resolution and supplied uncertainty checks, main/sideband evidence; result never asserts confirmed broken bars or bar count; return inconclusive with explicit reasons when prerequisites fail.
