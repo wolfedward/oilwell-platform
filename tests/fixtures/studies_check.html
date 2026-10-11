@@ -1,0 +1,188 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href=STYLE_MODULE>
+<div id="app"></div><main id="root"></main><pre id="result" hidden>pending</pre>
+<script type="module">
+const checks=[]; const check=(value,name)=>{if(!value)throw Error(name);checks.push(name)};
+try {
+  const mode='FIXTURE_MODE';
+  if(mode==='templates'){
+    const {examplePayload}=await import(new URL('../../frontend/studies/templates.js',PAGE_MODULE));
+    const payloads=Object.fromEntries(['condition_training','recovery_fit','energy_effects','motor_spectrum','protection_replay'].map(kind=>[kind,examplePayload(kind)]));
+    payloads.condition_prediction=examplePayload('condition_prediction','11111111-1111-4111-8111-111111111111');
+    payloads.energy_schedule=examplePayload('energy_schedule','11111111-1111-4111-8111-111111111111');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks:['templates'],payloads});
+  }else if(mode==='retry'){
+    const {createStudiesClient}=await import(new URL('../../frontend/studies/client.js',PAGE_MODULE));
+    let posts=[],receipt=0;
+    const fake={get:async()=>{receipt++;throw Object.assign(Error('missing'),{status:404})},post:async(_path,body)=>{posts.push(JSON.stringify(body));if(posts.length===1)throw Object.assign(Error('timeout'),{code:'timeout'});return{id:'saved'};}};
+    const client=createStudiesClient(fake,'retry-actor',()=>true);
+    const original={request_id:'11111111-1111-4111-8111-111111111111',kind:'recovery_fit',title:'original',source:{kind:'software_fixture',description:'test',references:[]},payload:{schema:'recovery.depth/1'}};
+    try{await client.create(original)}catch(error){check(error.code==='timeout','first ambiguous timeout')}
+    original.title='changed';await client.create(original);
+    check(posts.length===2&&posts[0]===posts[1],'retry retains exact body and request id');check(receipt===1,'checks committed receipt first');
+    let committedPosts=0,committedReads=0;
+    const committed=createStudiesClient({post:async()=>{committedPosts++;throw Object.assign(Error('timeout'),{code:'timeout'})},get:async()=>{committedReads++;return{id:'receipt-record'}}},'receipt-actor',()=>true);
+    try{await committed.create({...original,request_id:'22222222-2222-4222-8222-222222222222'})}catch{}
+    const found=await committed.create({...original,request_id:'33333333-3333-4333-8333-333333333333'});
+    check(found.id==='receipt-record'&&committedPosts===1&&committedReads===1,'committed receipt prevents a second POST');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='details'){
+    const {payloadEditor,readPayload}=await import(new URL('../../frontend/studies/forms.js',PAGE_MODULE));
+    const {chart,bindStudyCharts}=await import(new URL('../../frontend/studies/charts.js',PAGE_MODULE));
+    const {studyDetail}=await import(new URL('../../frontend/studies/workbench.js',PAGE_MODULE));
+    const root=document.querySelector('#root');root.innerHTML=payloadEditor('recovery_fit',null);
+    const details=root.querySelector('.study-advanced');details.open=true;
+    root.querySelector('[data-study-advanced]').value=JSON.stringify({schema:'recovery.depth/1',well_id:'W-TEST'});
+    check(readPayload(root,'recovery_fit').well_id==='W-TEST','advanced payload editor overrides guided fields');
+    root.innerHTML=chart('液面趋势',[{name:'观测',points:[{x:1,y:2.345},{x:3,y:4.567}]}],'min','m');bindStudyCharts(root);
+    const slider=root.querySelector('[data-study-chart-point]');slider.value='1';slider.dispatchEvent(new Event('input',{bubbles:true}));
+    check(root.querySelector('.study-chart-controls span').textContent.includes('3.00 min')&&root.querySelector('.study-chart-controls span').textContent.includes('4.57 m'),'chart reports axes and two-decimal units');
+    slider.value='0';slider.dispatchEvent(new Event('input',{bubbles:true}));
+    check(root.querySelector('.study-chart-controls span').textContent.match(/观测/g).length===1,'repeated chart navigation keeps a single series label');
+    root.innerHTML=chart('大频谱',[{name:'峰值',points:Array.from({length:4096},(_,i)=>({x:i,y:i===1001?10:0}))}],'Hz','A');
+    check(JSON.parse(root.querySelector('[data-study-chart]').dataset.points)[0].length<=502,'large chart keeps bounded interactive samples');
+    const big=root.querySelector('[data-study-chart]'),bigSlider=big.querySelector('[data-study-chart-point]');
+    check(Number(bigSlider.max)===4095,'keyboard can inspect every original bin');
+    bigSlider.value='1001';bigSlider.dispatchEvent(new Event('input',{bubbles:true}));
+    check(big.querySelector('.study-chart-controls span').textContent.includes('1001.00 Hz')&&big.querySelector('.study-chart-controls span').textContent.includes('10.00 A'),'keyboard reads unplotted original peak');
+    const svg=big.querySelector('svg'),box=svg.getBoundingClientRect();
+    svg.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:box.left+(48+1001/4095*690)/760*box.width,clientY:box.top+100}));
+    check(!big.querySelector('[data-study-chart-tooltip]').hidden&&big.querySelector('[data-study-chart-tooltip]').textContent.includes('1001.00 Hz'),'pointer hover locates original bin and units');
+    svg.dispatchEvent(new PointerEvent('pointerleave',{clientX:box.right,clientY:box.bottom}));
+    check(big.querySelector('[data-study-chart-tooltip]').hidden,'pointer leave hides active point');
+    root.innerHTML=chart('双线',[{name:'训练',points:[{x:0,y:0},{x:1,y:0}]},{name:'验证',points:[{x:0,y:10},{x:1,y:10}]}],'轮','损失');
+    const twin=root.querySelector('[data-study-chart]'),twinSvg=twin.querySelector('svg'),twinBox=twinSvg.getBoundingClientRect();
+    twinSvg.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:twinBox.left+738/760*twinBox.width,clientY:twinBox.top+40/290*twinBox.height}));
+    check(twin.querySelector('[data-study-chart-tooltip]').textContent.startsWith('验证：'),'hover selects nearest curve in both axes');
+    twinSvg.querySelector('path[stroke="#0e7490"]').dispatchEvent(new PointerEvent('pointerleave'));
+    check(!twin.querySelector('[data-study-chart-tooltip]').hidden,'moving between chart children keeps active point');
+    root.innerHTML=chart('启停',[{name:'井一',points:[{x:0,y:0},{x:1,y:0},{x:1,y:1}]}],'min','state');
+    const step=root.querySelector('[data-study-chart]'),stepSvg=step.querySelector('svg'),stepBox=stepSvg.getBoundingClientRect();
+    stepSvg.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:stepBox.left+738/760*stepBox.width,clientY:stepBox.top+40/290*stepBox.height}));
+    check(step.querySelector('[data-study-chart-tooltip]').textContent.includes('1.00 state'),'same-time vertical transition resolves by y coordinate');
+    const base={id:'11111111-1111-4111-8111-111111111111',title:'<img src=x onerror=alert(1)>',actor_id:'a',source:{kind:'submitted_observation',description:'<script>x',references:['ref']},input_sha256:'a'.repeat(64),result_sha256:'b'.repeat(64),review_status:'unreviewed',version:1,dependencies:[],review_history:[],selection_history:[]};
+    const rejected=studyDetail({...base,kind:'recovery_fit',status:'rejected',result:{status:'rejected',reason_codes:['flat_data'],accepted_count:6,excluded_count:1}});
+    const fitted=studyDetail({...base,kind:'recovery_fit',status:'fitted',result:{status:'fitted',parameters:{tau_minutes:120},metrics:{rmse_m:.1,r_squared:.99},fitted_points:[{at:'2026-01-01T00:00:00Z',observed_m:140,predicted_m:139.9,residual_m:.1},{at:'2026-01-01T00:30:00Z',observed_m:130,predicted_m:130,residual_m:0},{at:'2026-01-01T01:30:00Z',observed_m:120,predicted_m:120.1,residual_m:-.1}]}});
+    root.innerHTML=fitted;
+    check(JSON.parse(root.querySelector('[data-study-chart]').dataset.rawPoints)[0].map(point=>point[0]).join(',')==='0,30,90','recovery x axis uses actual elapsed minutes');
+    const noFeasible=studyDetail({...base,kind:'energy_schedule',status:'no_feasible_candidate',result:{status:'no_feasible_candidate',evaluated_combinations:4,no_feasible_evidence:{rejection_counts:{model_extrapolation:4}}}});
+    const feasible=studyDetail({...base,kind:'energy_schedule',status:'feasible',result:{status:'feasible',evaluated_combinations:1,ranked_candidates:[{candidate_id:'cycle',total_energy_kwh:60,peak_power_kw:8,total_starts:2,schedule_by_well:{W1:{segments:[{state:'off',duration_minutes:60},{state:'on',duration_minutes:120}]}},daily_liquid_m3:{'2026-01-01':12},daily_energy_kwh:{'2026-01-01':60},daily_starts:{'2026-01-01':2}}]}});
+    const unknown=studyDetail({...base,kind:'condition_prediction',status:'completed',result:{predictions:[{sample_id:'row-1',label:'unknown',score:null,reasons:['ood']}]}});
+    check(rejected.includes('拟合被拒绝')&&noFeasible.includes('没有可行候选')&&unknown.includes('unknown'),'non-success evidence stays explicit');
+    check(feasible.includes('study-chart')&&feasible.includes('启停时序')&&feasible.includes('每日电量'),'feasible candidate has timeline and daily energy charts');
+    check(!rejected.includes('<script>')&&!rejected.includes('<img'),'submitted text escaped');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='rejected-review'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),id='44444444-4444-4444-8444-444444444444';
+    const record={id,kind:'recovery_fit',title:'不稳定恢复拟合',actor_id:'other',status:'rejected',source:{kind:'submitted_observation',description:'manually submitted',references:['manifest']},review_status:'unreviewed',version:1,selection_version:0,dependencies:[],payload:{},result:{status:'rejected',reason_codes:['flat_curve']},review_history:[],selection_history:[]};
+    const api={get:async path=>path.includes('?')?[record]:record};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.review']),actorId:'reviewer',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>复核</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector('[data-study-record]').click();const until=Date.now()+2000;while(!root.querySelector('[data-study-decision]')){if(Date.now()>until)throw Error('decision timeout');await new Promise(r=>setTimeout(r,10));}
+    check(!Array.from(root.querySelector('[data-study-decision]').options).some(option=>option.value==='approved'),'rejected calculation cannot be offered approval');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='stale'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),idA='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',idB='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    let releaseA;
+    const row=(id,title)=>({id,kind:'recovery_fit',title,actor_id:'other',status:'rejected',source:{kind:'submitted_observation',description:'source',references:['manifest']},review_status:'unreviewed',version:1,selection_version:0,dependencies:[]});
+    const api={get:async path=>path.includes('?')?[row(idA,'OLDER'),row(idB,'CURRENT')]:path.endsWith(idA)?new Promise(resolve=>{releaseA=resolve}):{...row(idB,'CURRENT'),payload:{},result:{status:'rejected',reason_codes:['flat_data']},review_history:[],selection_history:[]}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read']),actorId:'reader',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>研究复核</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector(`[data-study-record="${idA}"]`).click();root.querySelector(`[data-study-record="${idB}"]`).click();
+    const until=Date.now()+2000;while(!root.querySelector('.study-detail')){if(Date.now()>until)throw Error('new selection timeout');await new Promise(r=>setTimeout(r,10));}
+    releaseA({...row(idA,'OLDER'),payload:{},result:{status:'rejected'},review_history:[],selection_history:[]});await new Promise(r=>setTimeout(r,10));
+    check(root.querySelector('.study-detail h2').textContent==='CURRENT','late prior selection cannot repaint current record');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='shell-logout'){
+    window.location.hash='#/engineering-overview';let release;
+    window.fetch=async path=>{
+      if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'review-actor',username:'reviewer',runtime_mode:'review',permissions:['studies.read'],capabilities:{production_studies:{enabled:true,status:'ready'}}}}),{headers:{'Content-Type':'application/json'}});
+      if(path==='/api/auth/logout')return new Response(JSON.stringify({data:{}}),{headers:{'Content-Type':'application/json'}});
+      if(path==='/api/production-studies?limit=50&offset=0')return new Promise(resolve=>{release=resolve});
+      throw Error('unexpected '+path);
+    };
+    await import(APP_MODULE);const until=Date.now()+5000;while(!release){if(Date.now()>until)throw Error('pending read timeout');await new Promise(r=>setTimeout(r,10));}
+    document.querySelector('#logoutButton').click();await new Promise(r=>setTimeout(r,20));
+    release(new Response(JSON.stringify({data:[{id:'11111111-1111-4111-8111-111111111111',title:'PRIVATE-LATE',source:{kind:'submitted_observation'}}]}),{headers:{'Content-Type':'application/json'}}));
+    await new Promise(r=>setTimeout(r,40));check(!document.querySelector('#app').textContent.includes('PRIVATE-LATE'),'logout discards late private list');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='shell'){
+    window.location.hash='#/dashboard';
+    window.fetch=async path=>{
+      if(path==='/api/auth/me')return new Response(JSON.stringify({data:{id:'review-actor',username:'reviewer',role_code:'administrator',runtime_mode:'review',permissions:['studies.read','studies.create','studies.review','studies.select','studies.export'],capabilities:{production_studies:{enabled:true,status:'ready'}}}}),{headers:{'Content-Type':'application/json'}});
+      if(path==='/api/production-studies?limit=50&offset=0')return new Response(JSON.stringify({data:[]}),{headers:{'Content-Type':'application/json'}});
+      throw Error('unexpected '+path);
+    };
+    await import(APP_MODULE);
+    const until=Date.now()+5000;while(document.querySelector('#workspace')?.getAttribute('aria-busy')!=='false'){if(Date.now()>until)throw Error('shell timeout');await new Promise(r=>setTimeout(r,10));}
+    const nav=document.querySelector('#topNav').textContent;
+    check(location.hash==='#/engineering-overview'&&document.querySelector('#workspace').textContent.includes('工程总览'),'review defaults to engineering overview');
+    check(!nav.includes('节能控制')&&!nav.includes('采集监控')&&!nav.includes('验收中心'),'legacy demo modules omitted');
+    check(document.querySelector('a[href="/assets/open-interface/index.html"]'),'open interface static reference linked');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='formstate'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),api={get:async()=>[],post:async()=>{throw Error('unexpected post')}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.create']),actorId:'form-actor',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'recovery-lab'},pageHeader:()=>'<h1>恢复研究</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector('[data-study-title]').value='输入中的研究';root.querySelector('[data-study-description]').value='仪器与基准面说明';
+    root.querySelector('[data-study-references]').value='manifest:123';
+    root.querySelector('[data-study-field="well_id"]').value='W-REAL';
+    const source=root.querySelector('[data-study-source]');source.value='software_fixture';source.dispatchEvent(new Event('change',{bubbles:true}));
+    check(root.querySelector('[data-study-title]').value==='输入中的研究'&&root.querySelector('[data-study-description]').value==='仪器与基准面说明'&&root.querySelector('[data-study-field="well_id"]').value==='W-REAL','source change preserves unsaved form');
+    const imported={schema:'recovery.depth/1',well_id:'W-FILE',datum:'surface',unit:'m',shutdown_at:'2026-01-01T00:00:00Z'};
+    const file=new File([JSON.stringify(imported)],'recovery.json',{type:'application/json'});
+    const input=root.querySelector('[data-study-file]');Object.defineProperty(input,'files',{value:[file]});input.dispatchEvent(new Event('change',{bubbles:true}));
+    const until=Date.now()+2000;while(root.querySelector('[data-study-field="well_id"]').value!=='W-FILE'){if(Date.now()>until)throw Error('import timeout');await new Promise(r=>setTimeout(r,10));}
+    check(root.querySelector('[data-study-source]').value==='software_fixture'&&root.querySelector('[data-study-field="well_id"]').value==='W-FILE','bounded JSON file import is editable and source choice explicit');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='review'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),id='33333333-3333-4333-8333-333333333333',calls=[];
+    let decision='unreviewed',version=1,selection=0,refuse=false;
+    const row=()=>({id,kind:'condition_training',title:'独立训练记录',actor_id:'different-author',created_at:'2026-10-11',status:'completed',source:{kind:'software_fixture',description:'明确的软件向量',references:['fixture:1']},review_status:decision,version,selection_version:selection,is_selected:selection>0,dependency_current:true,algorithm_version:'condition_bp/1',input_sha256:'a'.repeat(64),result_sha256:'b'.repeat(64),dependencies:[]});
+    const api={get:async path=>path.includes('?')?[row()]:{...row(),payload:{schema:'condition.training/1'},result:{status:'completed',training_curve:[],metrics:{}},review_history:[],selection_history:[]},
+      post:async(path,body)=>{calls.push({path,body});if(refuse)throw Object.assign(Error('独立复核被服务端拒绝'),{status:403,code:'forbidden'});if(path.endsWith('/reviews')){decision=body.decision;version++;return{id,review_status:decision,version}}if(path.includes('/selections/')){selection++;return{kind:'condition_training',record_id:id,version:selection}}throw Error(path)},
+      download:async path=>{calls.push({path,export:true})}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.review','studies.select','studies.export']),actorId:'reviewer-2',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'study-review'},pageHeader:()=>'<h1>独立复核</h1>',isCurrent:()=>true,navigate:()=>{}});
+    root.querySelector('[data-study-record]').click();let until=Date.now()+2000;while(!root.querySelector('[data-study-review]')){if(Date.now()>until)throw Error('detail timeout');await new Promise(r=>setTimeout(r,10));}
+    root.querySelector('[data-study-comment]').value='核对了软件证据';root.querySelector('[data-study-review]').click();
+    until=Date.now()+2000;while(!root.querySelector('[data-study-select]')){if(Date.now()>until)throw Error('review timeout '+root.textContent.slice(-300));await new Promise(r=>setTimeout(r,10));}
+    check(calls[0].path.endsWith('/reviews')&&calls[0].body.expected_version===1&&calls[0].body.comment==='核对了软件证据','independent review uses versioned real API');
+    root.querySelector('[data-study-selection-comment]').value='仅影子研究';root.querySelector('[data-study-select]').click();
+    until=Date.now()+2000;while(!calls.some(x=>x.path.includes('/selections/'))){if(Date.now()>until)throw Error('selection timeout');await new Promise(r=>setTimeout(r,10));}
+    check(calls.some(x=>x.path.endsWith('/selections/condition_training')&&x.body.expected_version===0),'shadow selection uses versioned real API');
+    root.querySelector('[data-study-export]').click();await new Promise(r=>setTimeout(r,0));
+    check(calls.some(x=>x.export&&x.path.endsWith('/export')),'export uses audited endpoint');
+    refuse=true;root.querySelector('[data-study-decision]').value='rejected';root.querySelector('[data-study-comment]').value='服务端应拒绝';root.querySelector('[data-study-review]').click();
+    until=Date.now()+2000;while(!root.querySelector('[data-study-alert]').textContent.includes('服务端拒绝')){if(Date.now()>until)throw Error('refusal timeout');await new Promise(r=>setTimeout(r,10));}
+    check(decision==='approved'&&root.querySelector('.study-detail').textContent.includes('approved'),'server refusal does not fake review success');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else if(mode==='create'){
+    const {renderProductionStudies}=await import(PAGE_MODULE);
+    const root=document.querySelector('#root'),id='22222222-2222-4222-8222-222222222222',posts=[];
+    let list=[];
+    const api={get:async path=>{if(path.startsWith('/api/production-studies?'))return list;if(path.endsWith(id))return {...list[0],payload:posts[0].payload,result:{status:'completed',training_curve:[{epoch:1,train_loss:1.234,validation_loss:1.456},{epoch:2,train_loss:.8,validation_loss:.9}],metrics:{rule:{coverage:.5,accuracy:.5,accepted_accuracy:1,macro_F1:.5,unknown_count:3,labels:['A'],prediction_columns:['A','unknown'],confusion_matrix:[[1,1]]},centroid:{coverage:1,accuracy:1,accepted_accuracy:1,macro_F1:1,unknown_count:0,labels:['A'],prediction_columns:['A','unknown'],confusion_matrix:[[2,0]]},bp:{coverage:1,accuracy:1,accepted_accuracy:1,macro_F1:1,unknown_count:0,labels:['A'],prediction_columns:['A','unknown'],confusion_matrix:[[2,0]]}},best_epoch:2,data_digest:'a'.repeat(64)},review_history:[],selection_history:[]};throw Error(path)},
+      post:async(path,body)=>{check(path==='/api/production-studies','real create endpoint');posts.push(body);list=[{id,kind:body.kind,title:body.title,actor_id:'actor-1',created_at:'2026-10-11',status:'completed',source:body.source,review_status:'unreviewed',version:1,selection_version:0,algorithm_version:'condition_bp/1',input_sha256:'b'.repeat(64),result_sha256:'c'.repeat(64),dependencies:[],dependency_current:true}];return{id}},download:async()=>{}};
+    await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.create','studies.review']),actorId:'actor-1',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'condition-lab'},pageHeader:()=>'<h1>工况研究</h1>',isCurrent:()=>true,navigate:()=>{}});
+    check(!root.querySelector('[data-study-field="rows"]').value,'observations are not silently seeded');
+    root.querySelector('[data-study-example]').click();
+    check(root.querySelector('[data-study-source]').value==='software_fixture','example remains software source');
+    check(root.querySelector('[data-study-source]').disabled,'built-in vector cannot be relabelled as submitted observation');
+    root.querySelector('[data-study-create]').click();
+    const until=Date.now()+5000;while(!root.querySelector('.study-chart')){if(Date.now()>until)throw Error('create timeout '+root.textContent.slice(-500));await new Promise(r=>setTimeout(r,10));}
+    check(posts.length===1&&posts[0].source.kind==='software_fixture'&&posts[0].payload.rows.length===18,'actual payload and source submitted');
+    check(root.textContent.includes('训练损失')&&root.textContent.includes('混淆矩阵'),'meaningful chart and comparison');
+    check(!root.querySelector('[data-study-review]'),'self review disabled');
+    const point=root.querySelector('[data-study-chart-point]');point.value='1';point.dispatchEvent(new Event('input',{bubbles:true}));
+    check(root.querySelector('.study-chart-controls span').textContent.includes('2.00')&&root.querySelector('.study-chart-controls span').textContent.includes('0.80'),'chart keyboard value has two decimals');
+    document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }else {
+  const {renderProductionStudies}=await import(PAGE_MODULE);
+  const root=document.querySelector('#root');
+  const calls=[];const api={get:async path=>{calls.push(path);return [];},post:async()=>{throw Error('unexpected post')},download:async()=>{throw Error('unexpected download')}};
+  await renderProductionStudies({workspace:root,api,permissions:new Set(['studies.read','studies.create']),actorId:'actor-1',capabilities:{production_studies:{enabled:true,status:'ready'}},page:{id:'engineering-overview'},pageHeader:()=>'<h1>工程研究</h1>',isCurrent:()=>true,navigate:()=>{}});
+  check(calls.includes('/api/production-studies?limit=50&offset=0'),'reads actual list endpoint');
+  check(root.textContent.includes('暂无')&&root.textContent.includes('软件研究'),'empty state and boundary');
+  document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+  }
+} catch(error) {document.querySelector('#result').textContent=JSON.stringify({ok:false,error:error.stack,checks});}
+</script>

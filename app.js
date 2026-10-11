@@ -35,6 +35,7 @@ import { renderDynagraphList } from "./frontend/pages/dynagraphs.js";
 import { renderDynagraphAnalysis } from "./frontend/pages/dynagraph-analysis.js";
 import { bindChartInteractions } from "./frontend/charts.js";
 import { renderDiagnosisReview } from "./frontend/pages/diagnosis-review.js";
+import { renderProductionStudies } from "./frontend/pages/production-studies.js";
 
 const NAVIGATION = [
   {
@@ -74,6 +75,16 @@ const NAVIGATION = [
       { id: "production-parameters", label: "机械参数中心", description: "机械身份、参数版本、来源证据与独立复核", permission: "inversion.read" },
       { id: "production-inversion", label: "反演与双图验证", description: "冻结成员预检、单成员运行、原始支撑双图与中间曲线", permission: "inversion.read" },
       { id: "production-results", label: "结果与版本复核", description: "历史输入快照、独立复核、当前限制与完整结果导出", permission: "inversion.read" },
+    ],
+  },
+  {
+    id: "engineering", label: "工程研究", icon: "研",
+    pages: [
+      { id: "engineering-overview", label: "工程总览", description: "有界软件研究、来源和历史记录", permission: "studies.read" },
+      { id: "condition-lab", label: "工况研究", description: "BP 训练、规则与中心基线、独立推理", permission: "studies.read" },
+      { id: "recovery-lab", label: "恢复与调度", description: "液面拟合、有限候选影子调度与观测效果", permission: "studies.read" },
+      { id: "motor-lab", label: "电机与保护", description: "电流频谱证据和保护规则回放", permission: "studies.read" },
+      { id: "study-review", label: "研究复核", description: "独立复核、影子选用、历史和审计导出", permission: "studies.read" },
     ],
   },
   {
@@ -123,6 +134,10 @@ let waveformAuthSession = {};
 let shellEventsBound = false;
 let renderGeneration = 0;
 let disposeWaveforms = null;
+const REVIEW_PAGES = new Set(["engineering-overview", "condition-lab", "recovery-lab", "motor-lab", "study-review",
+  "field-registry", "ingest-reliability", "waveforms", "production-parameters", "production-inversion", "production-results",
+  "users", "roles", "audit"]);
+const reviewMode = user => user?.runtime_mode === "review";
 
 function roleLabel(code) {
   return ({
@@ -164,10 +179,14 @@ function shellMarkup(user) {
 
 function activeContext() {
   const state = store.getState();
-  return PAGE_INDEX.get(state.activePage) || PAGE_INDEX.get("dashboard");
+  return PAGE_INDEX.get(state.activePage) || PAGE_INDEX.get(reviewMode(state.user) ? "engineering-overview" : "dashboard");
 }
 
 function pageVisible(page, user) {
+  if (reviewMode(user) && !REVIEW_PAGES.has(page.id)) return false;
+  if (page.id in {"engineering-overview":1,"condition-lab":1,"recovery-lab":1,"motor-lab":1,"study-review":1})
+    return user?.permissions?.includes("studies.read") && user?.capabilities?.production_studies?.enabled === true
+      && user?.capabilities?.production_studies?.status === "ready";
   if (["production-parameters", "production-inversion", "production-results"].includes(page.id)) return productionInversionGate({
     permissions: new Set(user?.permissions || []), capabilities: user?.capabilities,
   }).allowed;
@@ -184,11 +203,11 @@ function renderChrome() {
   document.querySelector(".app-shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   const collapse = document.querySelector("#collapseButton");
   if (collapse) collapse.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
-  document.querySelector("#topNav").innerHTML = NAVIGATION.map((module) => `
+  document.querySelector("#topNav").innerHTML = NAVIGATION.filter(module => module.pages.some(page => !page.hidden && pageVisible(page,state.user))).map((module) => `
     <button type="button" data-module="${module.id}" class="${module.id === context.module.id ? "active" : ""}"
       aria-current="${module.id === context.module.id ? "page" : "false"}">
       <span>${module.icon}</span>${escapeHtml(module.label)}
-    </button>`).join("");
+    </button>`).join("") + (reviewMode(state.user) ? '<a class="study-open-interface" href="/assets/open-interface/index.html" target="_blank" rel="noopener">开放接口 ↗</a>' : '');
   document.querySelector("#sidebar").innerHTML = `<div class="sidebar-head">
       <span>${context.module.icon}</span><div><strong>${escapeHtml(context.module.label)}</strong><small>业务工作区</small></div>
     </div><nav>${context.module.pages.filter((page) => !page.hidden && pageVisible(page, state.user)).map((page) => `
@@ -229,7 +248,8 @@ async function renderPage(pageId, params = {}) {
   const generation = ++renderGeneration;
   disposeWaveforms?.(); disposeWaveforms = null;
   components.closeAllModals();
-  const page = PAGE_INDEX.get(pageId) || PAGE_INDEX.get("dashboard");
+  const candidate = PAGE_INDEX.get(pageId);
+  const page = candidate && pageVisible(candidate,store.getState().user) ? candidate : PAGE_INDEX.get(reviewMode(store.getState().user) ? "engineering-overview" : "dashboard");
   const state = store.getState();
   const tabs = state.tabs.includes(page.id) ? state.tabs : [...state.tabs, page.id];
   const tabParams = { ...(state.tabParams || {}), [page.id]: { ...params } };
@@ -280,6 +300,11 @@ async function renderPage(pageId, params = {}) {
       dynagraphs: renderDynagraphList,
       "dynagraph-analysis": renderDynagraphAnalysis,
       "diagnosis-review": renderDiagnosisReview,
+      "engineering-overview": renderProductionStudies,
+      "condition-lab": renderProductionStudies,
+      "recovery-lab": renderProductionStudies,
+      "motor-lab": renderProductionStudies,
+      "study-review": renderProductionStudies,
     })[page.id];
     if (renderer) await renderer(context);
     else await renderModuleLanding(page, params);
@@ -302,7 +327,7 @@ function registerRoutes() {
 }
 
 async function openPage(pageId, params = {}) {
-  const destination = PAGE_INDEX.has(pageId) ? pageId : "dashboard";
+  const destination = PAGE_INDEX.has(pageId) && pageVisible(PAGE_INDEX.get(pageId),store.getState().user) ? pageId : reviewMode(store.getState().user) ? "engineering-overview" : "dashboard";
   try {
     await router.open(destination, params);
   } catch (error) {
@@ -343,7 +368,7 @@ function bindShellEvents() {
     const moduleButton = event.target.closest("[data-module]");
     if (moduleButton) {
       const module = NAVIGATION.find((item) => item.id === moduleButton.dataset.module);
-      if (module) await openPage(module.pages[0].id);
+      if (module) await openPage(module.pages.find(page => !page.hidden && pageVisible(page,store.getState().user))?.id);
       return;
     }
     const closeButton = event.target.closest("[data-close-tab]");
@@ -375,7 +400,9 @@ function bindShellEvents() {
 async function showShell(user) {
   loginGeneration += 1;
   waveformAuthSession = {}; // Only reached after successful login/auth-me.
-  store.setState({ user });
+  store.setState(reviewMode(user) ? {user,activePage:"engineering-overview",activeModule:"engineering",tabs:["engineering-overview"],tabParams:{"engineering-overview":{}}} : {user});
+  if (reviewMode(user) && (!window.location.hash || window.location.hash === "#/dashboard" || !REVIEW_PAGES.has(window.location.hash.slice(2).split("?",1)[0])))
+    history.replaceState(null,"","#/engineering-overview");
   app.innerHTML = shellMarkup(user);
   app.setAttribute("aria-busy", "false");
   shellReady = true;
