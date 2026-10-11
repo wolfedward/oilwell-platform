@@ -11,6 +11,34 @@ try {
   const filled=[{...prediction[4],load_N:'36456',original_reason_codes:['deadpoint'],periodic_assumption:true,method:'linear',source_indices:[indices[3],indices[5]],source_times_ns:[prediction[3].time_ns,prediction[5].time_ns]}];
   reference.forEach((point,i)=>point.reference_edge_from_previous=i!==0&&i!==2&&i!==3);
   const handle=mountComparison(root,{prediction,reference,filled,metadata:{source:'synthetic'}});
+  if('FIXTURE_MODE'==='intermediate-diagnostics'){
+    for(const kind of ['power','motion','torque']){
+      const chart=root.querySelector(`[data-chart-kind="${kind}"]`),series=chart.querySelector(`[data-series="${kind}"]`),hit=chart.querySelector('[data-chart-hit]');
+      check(series.querySelectorAll('[data-diagnostic-point]').length===2,kind+' retains two isolated finite invalid points');
+      check(series.querySelectorAll('[data-valid-segment]').length===3,kind+' valid segments split at invalid points');
+      check([...series.querySelectorAll('[data-valid-segment]')].map(path=>path.getAttribute('d').split(' L').length-1).join(',')==='1,0,0',kind+' only adjacent valid points connect; no line bridges unsupported interval');
+      hit.focus();hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+      hit.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+      hit.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+      check(chart.querySelector('[role="status"]').textContent.includes('诊断点')&&chart.querySelector('[role="status"]').textContent.includes('invalid'),kind+' invalid finite value keyboard readable as diagnostic');
+      check(chart.querySelector('circle').getAttribute('visibility')==='visible',kind+' invalid finite value hover marker visible');
+      const diagnostic=series.querySelector('[data-diagnostic-point]'),position=diagnostic.getAttribute('d').match(/^M([\d.]+),([\d.]+)/),bounds=hit.getBoundingClientRect();
+      hit.dispatchEvent(new PointerEvent('pointermove',{clientX:bounds.left+Number(position[1])/720*bounds.width,clientY:bounds.top+Number(position[2])/300*bounds.height,bubbles:true}));
+      check(chart.querySelector('[role="status"]').textContent.includes(indices[2])&&chart.querySelector('[role="status"]').textContent.includes('诊断点'),kind+' invalid finite value pointer readable');
+      hit.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+      hit.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+      check(chart.querySelector('[role="status"]').textContent.includes('unobservable'),kind+' uncertain finite value keyboard readable');
+    }
+    const legacy=[{...prediction[0],power_W:null,theta_rad:undefined,drive_Nm:null,status:'invalid'}];
+    const oldRoot=document.createElement('div');root.append(oldRoot);const legacyHandle=mountComparison(oldRoot,{prediction:legacy,reference:[],filled:[],metadata:{source:'legacy'}});
+    for(const kind of ['power','motion','torque']){
+      const chart=oldRoot.querySelector(`[data-chart-kind="${kind}"]`);
+      check(!chart.querySelector('[data-diagnostic-point]'),kind+' absent legacy value is not a zero diagnostic point');
+      chart.querySelector('[data-chart-hit]').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+      check(chart.querySelector('[role="status"]').textContent.includes('未知'),kind+' absent legacy value remains unavailable');
+    }
+    legacyHandle.dispose();oldRoot.remove();
+  }
   check(root.querySelectorAll('[data-chart-kind]').length>=4,'dual card plus power motion torque slots');
   const dual=root.querySelector('[data-chart-kind="comparison"]');
   check(dual.querySelector('svg').getAttribute('aria-label').includes('载荷（kN）'),'load axis converts server N to display kN');
@@ -24,7 +52,7 @@ try {
   check(dual.querySelector('circle').getAttribute('visibility')==='visible','measured reference at unobservable prediction remains selectable');
   check(dual.querySelector('[role="status"]').textContent.includes('参考支撑 有效')&&dual.querySelector('[role="status"]').textContent.includes('共同比较 无效'),'reference support and joint comparison statuses are distinct');
   handle.setVisibility('prediction',true);
-  const metricBefore=JSON.stringify(prediction);
+  const metricBefore=JSON.stringify({prediction,reference,filled});
   root.querySelector('[data-trace-toggle="prediction"]').click();
   check(dual.querySelector('[data-series="prediction"]').hidden,'prediction independently hidden');
   check(!dual.querySelector('[data-series="reference"]').hidden,'reference still visible');
@@ -45,7 +73,7 @@ try {
     check(tip.textContent.includes('索引')&&tip.textContent.includes('状态'),'actual SVG pointer hover');
     hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
   }
-  check(JSON.stringify(prediction)===metricBefore,'visibility never alters calculation values');
+  check(JSON.stringify({prediction,reference,filled})===metricBefore,'visibility never alters prediction, reference or fill values');
   check(document.documentElement.scrollWidth<=innerWidth+1,'responsive charts fit viewport');
   check(!root.querySelector('polyline'),'gaps use distinct paths');
   const focus=dual.querySelector('[data-chart-hit]');focus.focus({preventScroll:true});focus.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));window.scrollTo(0,0);

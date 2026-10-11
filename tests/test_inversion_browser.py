@@ -25,6 +25,11 @@ class BrowserFixtureCase(unittest.TestCase):
             source = source.replace(marker, json.dumps((ROOT / path).as_uri()))
         source = source.replace('FIXTURE_MODE', mode)
         source = source.replace('ENCODED_ROWS', json.dumps(encoded_rows or []))
+        diagnostic_codes = {}
+        if mode == 'diagnostic-contract':
+            from backend.inversion.queries import DIAGNOSTIC_REASONS
+            diagnostic_codes = {reason: sorted(codes) for reason, codes in DIAGNOSTIC_REASONS.items()}
+        source = source.replace('DIAGNOSTIC_CODES', json.dumps(diagnostic_codes))
         runtime = Path(os.environ['USERPROFILE']) / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
         with tempfile.TemporaryDirectory(prefix='inversion-ui-') as directory:
             page = Path(directory) / 'check.html'
@@ -82,6 +87,13 @@ class InversionWorkbenchBrowserTests(BrowserFixtureCase):
     def test_blocked_causes_are_readable_exact_and_disposal_safe(self):
         self.fixture='inversion_workbench_check.html'
         self.run_fixture('terminal-diagnostics')
+
+    def test_every_backend_diagnostic_has_code_cause_and_next_step(self):
+        self.fixture='inversion_workbench_check.html'
+        self.run_fixture('diagnostic-contract')
+
+    def test_retained_intermediate_values_are_isolated_diagnostics(self):
+        self.run_fixture('intermediate-diagnostics')
 
     def test_logout_stops_poll_and_denial_is_sticky(self):
         self.fixture = 'inversion_workbench_check.html'

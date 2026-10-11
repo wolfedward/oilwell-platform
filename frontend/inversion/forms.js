@@ -27,7 +27,11 @@ export function mountActionForm(root, client, spec, onChanged) {
   const body = spec.bodyEditor ? input(form, spec.bodyLabel || '严格 JSON（保留数值字符串与来源附件）', 'body', {multiline: true, value: spec.bodyText || '{}', required: true}) : null;
   const reason = input(form, `${spec.label}理由`, 'reason', {required: true});
   const decision = spec.decisions ? element('select') : null;
-  if (decision) {decision.name = 'decision'; for (const [value,label] of spec.decisions) decision.append(new Option(label,value)); form.append(decision);}
+  if (decision) {
+    decision.name = 'decision';
+    for (const [value,label] of spec.decisions) decision.append(new Option(label,value));
+    form.append(decision);
+  }
   const send = element('button', spec.label, 'button primary'); send.type = 'submit'; form.append(send);
   const recover = element('button','查询原操作','button'); recover.type='button'; recover.dataset.inversionRecover=''; form.append(recover);
   const replay = element('button','使用原请求重试','button'); replay.type='button'; replay.dataset.inversionReplay=''; form.append(replay);
@@ -36,44 +40,67 @@ export function mountActionForm(root, client, spec, onChanged) {
   let disposed = false, busy = false;
   const slot = spec.slot || spec.action + ':' + spec.path;
   const pending = () => client.pending.get(slot);
+  function restoreSaved(saved) {
+    reason.value = saved.envelope.command.reason;
+    if (body) body.value = JSON.stringify(saved.envelope.body, null, 2);
+    if (decision) decision.value = saved.envelope.body?.decision || '';
+    savedView.hidden = false;
+    savedView.textContent = JSON.stringify({action:saved.action,target:saved.path,
+      command:saved.envelope.command,body:saved.envelope.body},null,2);
+    status.textContent ||= '待确认原操作；先查询其提交结果。';
+  }
   function update() {
     if (disposed) return;
-    const saved = pending(); body && (body.disabled = !!saved); reason.disabled = !!saved; decision && (decision.disabled = !!saved);
-    send.disabled = busy || !!saved; recover.hidden = !saved; replay.hidden = !saved; recover.disabled = replay.disabled = busy || !saved;
-    if (saved) {
-      reason.value = saved.envelope.command.reason;
-      if (body) body.value = JSON.stringify(saved.envelope.body, null, 2);
-      if (decision) decision.value = saved.envelope.body?.decision || '';
-      savedView.hidden = false;
-      savedView.textContent = JSON.stringify({action:saved.action,target:saved.path,
-        command:saved.envelope.command,body:saved.envelope.body},null,2);
-      status.textContent ||= '待确认原操作；先查询其提交结果。';
-    } else savedView.hidden = true;
+    const saved = pending();
+    if (body) body.disabled = !!saved;
+    reason.disabled = !!saved;
+    if (decision) decision.disabled = !!saved;
+    send.disabled = busy || !!saved;
+    recover.hidden = replay.hidden = !saved;
+    recover.disabled = replay.disabled = busy || !saved;
+    if (saved) restoreSaved(saved);
+    else savedView.hidden = true;
+  }
+  function commandRequest() {
+    const request = {...spec, slot, reason: reason.value};
+    if (body) request.body = JSON.parse(body.value);
+    else if (spec.fixedBody) request.body = structuredClone(spec.fixedBody);
+    else if (decision) request.body = {decision: decision.value};
+    spec.validateBody?.(request.body);
+    return request;
   }
   async function execute(retry = false) {
     if (disposed || busy) return;
     busy = true; update();
     try {
       let value;
-      if (retry) value = await client.submit({slot, replay:true});
-      else {
-        const request = {...spec, slot, reason: reason.value};
-        if (body) request.body = JSON.parse(body.value);
-        else if (spec.fixedBody) request.body = structuredClone(spec.fixedBody);
-        else if (decision) request.body = {decision: decision.value};
-        spec.validateBody?.(request.body);
-        value = await client.submit(request);
+      value = await client.submit(retry ? {slot, replay:true} : commandRequest());
+      if (!disposed && value) {
+        status.textContent = value.state === 'unknown' ? '原操作仍待确认；可使用完全相同的请求重试。' : '操作已提交。';
+        if (value.state !== 'unknown') await onChanged?.(value);
       }
-      if (!disposed && value) {status.textContent = value.state === 'unknown' ? '原操作仍待确认；可使用完全相同的请求重试。' : '操作已提交。'; if (value.state !== 'unknown') await onChanged?.(value);}
-    } catch (error) {if (!disposed) status.textContent = errorText(error);}
-    finally {busy = false; update();}
+    } catch (error) {
+      if (!disposed) status.textContent = errorText(error);
+    } finally {
+      busy = false; update();
+    }
   }
   form.addEventListener('submit', event => {event.preventDefault(); execute();});
-  recover.addEventListener('click', async () => {
+  async function recoverOriginal() {
     if (disposed || busy) return; busy=true; update();
-    try {const value=await client.recoverPending(slot); if (!disposed) {status.textContent=value?.state==='committed'?'原操作已提交。':'待确认原操作：服务尚未确认提交，可使用原请求重试。'; if (value?.state==='committed') await onChanged?.(value);}}
-    catch(error){if(!disposed)status.textContent=errorText(error);} finally {busy=false;update();}
-  });
+    try {
+      const value=await client.recoverPending(slot);
+      if (!disposed) {
+        status.textContent=value?.state==='committed'?'原操作已提交。':'待确认原操作：服务尚未确认提交，可使用原请求重试。';
+        if (value?.state==='committed') await onChanged?.(value);
+      }
+    } catch(error) {
+      if(!disposed)status.textContent=errorText(error);
+    } finally {
+      busy=false;update();
+    }
+  }
+  recover.addEventListener('click',recoverOriginal);
   replay.addEventListener('click',()=>execute(true)); update();
   return {dispose(){disposed=true;}};
 }

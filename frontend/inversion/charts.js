@@ -64,7 +64,7 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
   chart.append(element('h3',title));
   const svg=svgNode('svg',{viewBox:'0 0 720 300',role:'img','aria-label':`${title}，${xLabel}，${yLabel}`});
   const left=70,right=695,top=20,bottom=252;
-  const all=traces.flatMap(trace=>trace.points.filter(p=>p.x!==null&&p.y!==null&&p.valid));
+  const all=traces.flatMap(trace=>trace.points.filter(p=>p.x!==null&&p.y!==null&&(p.valid||p.diagnostic)));
   const extent=key=>{
     let low=Infinity,high=-Infinity;
     for(const point of all){low=Math.min(low,point[key]);high=Math.max(high,point[key]);}
@@ -92,7 +92,7 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
     let segment=[],previous=null;
     const flush=()=>{
       if(segment.length){
-        const path=svgNode('path',{d:segment.map((point,i)=>`${i?'L':'M'}${x(point.x).toFixed(3)},${y(point.y).toFixed(3)}`).join(' '),fill:'none',stroke:trace.color,'stroke-width':'1.25','vector-effect':'non-scaling-stroke'});
+        const path=svgNode('path',{d:segment.map((point,i)=>`${i?'L':'M'}${x(point.x).toFixed(3)},${y(point.y).toFixed(3)}`).join(' '),fill:'none',stroke:trace.color,'stroke-width':'1.25','vector-effect':'non-scaling-stroke','data-valid-segment':''});
         if(trace.dashed)path.setAttribute('stroke-dasharray','5 4');group.append(path);
       }
       segment=[];
@@ -103,6 +103,12 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
       segment.push(point);previous=point;
     }
     flush();groups.set(trace.id,group);svg.append(group);
+    for(const point of trace.points.filter(p=>p.diagnostic&&p.x!==null&&p.y!==null)){
+      group.append(svgNode('path',{d:`M${x(point.x).toFixed(3)},${y(point.y).toFixed(3)}h0.01`,
+        fill:'none',stroke:'#ae6a12','stroke-width':'4','stroke-linecap':'round',
+        'vector-effect':'non-scaling-stroke','data-diagnostic-point':'',
+        'aria-label':`孤立诊断点，${point.raw.status||'invalid'}，索引 ${point.power_index}`}));
+    }
   }
   const marker=svgNode('circle',{r:'2.5',fill:'#163a62',visibility:'hidden'});
   const hit=svgNode('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'transparent',tabindex:'0','data-chart-hit':'','aria-label':`${title}：左右方向键查看原始点，Home / End 到首末点`});
@@ -117,8 +123,9 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
     const support=Object.hasOwn(detail,'load_value_si')
       ? `参考支撑 ${referenceSupported(detail)?'有效':'无效'} · 共同比较 ${detail.valid?'有效':'无效'} · 参考原因 ${[detail.load_reason,detail.displacement_reason].filter(Boolean).join(', ')||'无'}`
       : detail.status ?? (detail.valid?'valid':'invalid');
-    tooltip.textContent=`${point.trace} · ${xLabel} ${twoDecimals(point.x)} · ${yLabel} ${twoDecimals(point.y)} · 原始功率索引 ${point.power_index} · 时间 ${detail.time_ns} ns · 状态 ${support} ${(detail.reason_codes||detail.original_reason_codes||[]).join(', ')} · 来源 ${source || '未提供'}${detail.load_indices?' · 参考载荷索引 '+detail.load_indices.join(', '):''}${detail.displacement_indices?' · 参考位移索引 '+detail.displacement_indices.join(', '):''}${detail.periodic_assumption?' · periodic_assumption=true':''}`;
-    marker.setAttribute('visibility',point.valid&&point.x!==null&&point.y!==null?'visible':'hidden');
+    tooltip.textContent=`${point.trace} · ${xLabel} ${twoDecimals(point.x)} · ${yLabel} ${twoDecimals(point.y)} · 原始功率索引 ${point.power_index} · 时间 ${detail.time_ns} ns · 状态 ${support}${point.diagnostic?' · 诊断点（载荷无效或不确定，不构成物理有效区间证据）':''} ${(detail.reason_codes||detail.original_reason_codes||[]).join(', ')} · 来源 ${source || '未提供'}${detail.load_indices?' · 参考载荷索引 '+detail.load_indices.join(', '):''}${detail.displacement_indices?' · 参考位移索引 '+detail.displacement_indices.join(', '):''}${detail.periodic_assumption?' · periodic_assumption=true':''}`;
+    marker.setAttribute('visibility',(point.valid||point.diagnostic)&&point.x!==null&&point.y!==null?'visible':'hidden');
+    marker.setAttribute('fill',point.diagnostic?'#ae6a12':'#163a62');
     if(point.x!==null&&point.y!==null){marker.setAttribute('cx',x(point.x));marker.setAttribute('cy',y(point.y));}
   }
   function pointer(event){
@@ -170,7 +177,8 @@ export function mountComparison(elementRoot,{prediction,reference,filled,metadat
     ['motion','运动 · 曲柄角度','theta_rad','角度（rad）'],
     ['torque','中间转矩 · 驱动转矩','drive_Nm','转矩（N·m）']]){
     charts.push(mountChart(root,{kind,title,xLabel:'距首个功率中心时间（s）',yLabel:label,source:metadata.source,
-      traces:[{id:kind,label:title,color:'#296aa3',points:points(prediction,time,p=>numeric(p[key]),p=>p.status==='valid')}]}));
+      traces:[{id:kind,label:title,color:'#296aa3',points:points(prediction,time,p=>numeric(p[key]),p=>p.status==='valid')
+        .map(point=>({...point,diagnostic:point.raw.status!=='valid'&&point.x!==null&&point.y!==null}))}]}));
   }
   return {setVisibility(id,visible){charts[0].setVisibility(id,visible);const input=controls.querySelector(`[data-trace-toggle="${id}"]`);if(input)input.checked=visible;},dispose(){charts.forEach(chart=>chart.dispose());}};
 }

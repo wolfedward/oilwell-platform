@@ -42,6 +42,22 @@ function requireBody(condition,message) {if(!condition)throw Object.assign(new E
 function pagePath(path,offset,extra={}) {
   return `${path}?${new URLSearchParams({...extra,offset:String(offset),limit:String(PAGE_SIZE)})}`;
 }
+function emptyAssemblyPages() {
+  return {parameters:{offset:0,limit:PAGE_SIZE,items:[]},head:{items:[]},
+    mechanical:{offset:0,limit:PAGE_SIZE,items:[]},selections:{offset:0,limit:PAGE_SIZE,items:[]},selectionHead:{items:[]}};
+}
+async function loadAssemblyPages(client,state,assembly) {
+  if(!assembly)return emptyAssemblyPages();
+  const filter={assembly_id:assembly.id};
+  const [parameters,head,mechanical,selections,selectionHead]=await Promise.all([
+    client.get(pagePath('/parameters',state.parametersOffset,filter)),
+    client.get(`/parameters?${new URLSearchParams({assembly_id:assembly.id,offset:'0',limit:'1'})}`),
+    client.get(pagePath(`/assemblies/${assembly.id}/versions`,state.mechanicalOffset)),
+    client.get(pagePath(`/assemblies/${assembly.id}/selections`,state.selectionsOffset)),
+    client.get(`/assemblies/${assembly.id}/selections?offset=0&limit=1`),
+  ]);
+  return {parameters,head,mechanical,selections,selectionHead};
+}
 function missingFields(body) {
   const missing=[];
   for(const key of ['schema','assembly_id','assembly_version','source_kind','valid_from','valid_to','parent_version'])if(!(key in body))missing.push(key);
@@ -119,17 +135,7 @@ export function mountProductionParameters(ctx,client) {
       const assemblyId=state.assemblyId||selected?.assembly_id||assemblies.items[0]?.id;
       const assembly=assemblyId?assemblies.items.find(item=>item.id===assemblyId)||await client.get(`/assemblies/${assemblyId}`):null;
       if(!current()||n!==generation)return;
-      let parameters={offset:0,limit:PAGE_SIZE,items:[]},head={items:[]},mechanical={offset:0,limit:PAGE_SIZE,items:[]},selections={offset:0,limit:PAGE_SIZE,items:[]},selectionHead={items:[]};
-      if(assembly){
-        const filter={assembly_id:assembly.id};
-        [parameters,head,mechanical,selections,selectionHead]=await Promise.all([
-          client.get(pagePath('/parameters',state.parametersOffset,filter)),
-          client.get(`/parameters?${new URLSearchParams({assembly_id:assembly.id,offset:'0',limit:'1'})}`),
-          client.get(pagePath(`/assemblies/${assembly.id}/versions`,state.mechanicalOffset)),
-          client.get(pagePath(`/assemblies/${assembly.id}/selections`,state.selectionsOffset)),
-          client.get(`/assemblies/${assembly.id}/selections?offset=0&limit=1`),
-        ]);
-      }
+      const {parameters,head,mechanical,selections,selectionHead}=await loadAssemblyPages(client,state,assembly);
       if(!current()||n!==generation)return;
       const selectedId=selected?.assembly_id===assembly?.id?selected.id:head.items[0]?.id;
       const detail=selectedId?(selected?.id===selectedId?selected:await client.get(`/parameters/${selectedId}`)):null;
