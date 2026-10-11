@@ -178,17 +178,23 @@ def install_schemas(*, port, credentials, center_config, waveform_config, invers
             for table in ('ingest_messages', 'telemetry_samples'):
                 conn.execute(sql.SQL('GRANT {} ON public.{} TO {}').format(
                     permissions, sql.Identifier(table), sql.Identifier('review_' + role)))
+        # The independent reliability migration creates a foreign key into the
+        # foundation schema. Grant only that column dependency, not ownership.
+        conn.execute('GRANT REFERENCES (message_id) ON public.ingest_messages '
+                     'TO review_reliability_owner')
     steps = {
         'foundation_migrate': lambda: _owner_step(port, credentials, 'foundation_owner',
             lambda settings: PostgresTelemetryRepository(connect_kwargs=settings).migrate()),
         'foundation_grants': lambda: _with_role(port, credentials, 'foundation_owner', foundation_grants),
         'registry_migrate': lambda: _owner_step(port, credentials, 'registry_owner',
             lambda settings: registry.migrate(settings, expected_database=DATABASE)),
-        'registry_grants': lambda: _with_role(port, credentials, 'registry_owner',
+        # These reviewed helpers grant across both the owned module schema and
+        # public foundation tables; only the explicit initializer can do both.
+        'registry_grants': lambda: _with_role(port, credentials, 'bootstrap',
             lambda conn: registry.grant_roles(conn, writer='review_registry_writer', reader='review_foundation_reader')),
         'reliability_migrate': lambda: _owner_step(port, credentials, 'reliability_owner',
             lambda settings: reliable.migrate(settings, expected_database=DATABASE, limits=reliability_limits)),
-        'reliability_grants': lambda: _with_role(port, credentials, 'reliability_owner',
+        'reliability_grants': lambda: _with_role(port, credentials, 'bootstrap',
             lambda conn: reliable.grant_roles(conn, roles={'ingestor': 'review_reliable_ingestor',
                 'publisher': 'review_reliable_publisher', 'reader': 'review_reliable_reader',
                 'operator': 'review_reliable_operator'})),

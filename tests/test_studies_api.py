@@ -90,6 +90,21 @@ class StudyHttpTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/production-studies", b'{"value":NaN}', headers)[0], 400)
         self.assertEqual(self.request("POST", "/api/production-studies", b"{}", {**headers, "Content-Length": str(8 * 1024 * 1024 + 1)})[0], 413)
 
+    def test_http_rejects_unpaired_surrogate_without_receipt(self):
+        request_id = str(uuid4())
+        body = {"request_id": request_id, "kind": "motor_spectrum", "title": "\ud800",
+                "source": {"kind": "software_fixture", "description": "fixture", "references": []},
+                "payload": {"signal": [1]}}
+        status, response = self.request("POST", "/api/production-studies", json.dumps(body).encode(),
+                                        {"Content-Type": "application/json"})
+        self.assertEqual(status, 422)
+        self.assertEqual(response["error"]["code"], "invalid_json")
+        receipt_status, receipt = self.request("GET", f"/api/production-studies/requests/{request_id}")
+        self.assertEqual(receipt_status, 404)
+        self.assertEqual(receipt["error"]["code"], "not_found")
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM study_records"), 0)
+        self.assertEqual(self.db.scalar("SELECT COUNT(*) FROM study_receipts"), 0)
+
     def test_storage_failure_returns_bounded_error_and_rolls_back(self):
         with self.db.connection() as conn:
             conn.execute("""CREATE TRIGGER block_study_audit BEFORE INSERT ON audit_logs

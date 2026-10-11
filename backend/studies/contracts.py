@@ -38,9 +38,10 @@ def canonical(value):
     walk(value)
     try:
         result = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    except (ValueError, RecursionError):
+        size = len(result.encode("utf-8"))
+    except (ValueError, RecursionError, UnicodeEncodeError):
         raise StudyError("invalid_json", "invalid JSON value") from None
-    if len(result.encode("utf-8")) > MAX_JSON_BYTES:
+    if size > MAX_JSON_BYTES:
         raise StudyError("too_large", "JSON exceeds 8 MiB", 413)
     return result
 
