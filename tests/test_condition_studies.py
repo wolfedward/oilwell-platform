@@ -4,7 +4,7 @@ import math
 import unittest
 
 from backend.studies.contracts import StudyError
-from backend.studies.condition_models import train_conditions, predict_conditions
+from backend.studies.condition_models import train_conditions, predict_conditions, _centroid
 from backend.studies.condition_evaluation import evaluate_predictions
 
 
@@ -182,11 +182,32 @@ class ConditionStudiesTests(unittest.TestCase):
             train_conditions(payload)
         self.assertEqual(found.exception.code, "numeric_limit")
 
+    def test_huge_integer_is_study_error_in_training_and_prediction(self):
+        training = example()
+        training["rows"][0]["values"][0] = 10**400
+        with self.assertRaises(StudyError):
+            train_conditions(training)
+
+        artifact = train_conditions(example())["artifact"]
+        row = {key: value for key, value in example()["rows"][0].items()
+               if key not in ("partition", "label")}
+        row["values"][0] = -(10**400)
+        prediction = {"schema": "condition.prediction/1", "model_record_id": "approved-1",
+                      "artifact": artifact, "rows": [row], "confidence_min": .5, "ood_margin": .2}
+        with self.assertRaises(StudyError):
+            predict_conditions(prediction)
+
     def test_no_accepted_predictions_has_null_accuracy(self):
         rows = [{"sample_id": "one", "label": "A"}, {"sample_id": "two", "label": "B"}]
         report = evaluate_predictions(rows, [("unknown", "ood"), ("unknown", "ood")], ["A", "B"])
         self.assertEqual(report["coverage"], 0)
         self.assertIsNone(report["accepted_accuracy"])
+
+    def test_near_equal_centroid_tie_uses_lexical_label(self):
+        fitted = {"mean": [0.0], "std": [1.0], "min": [-1.0], "max": [1.0],
+                  "constant": [False]}
+        prediction = _centroid([0.0], {"A": [1 + 1e-13], "B": [1.0]}, fitted, [])
+        self.assertEqual(prediction, ("A", "centroid_tie"))
 
     def test_inputs_unchanged(self):
         payload = example()

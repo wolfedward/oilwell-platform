@@ -32,7 +32,7 @@ def string(value, name, maximum, *, forbidden=()):
 
 
 def number(value, name, lo=-LIMIT, hi=LIMIT):
-    if type(value) not in (int, float) or not math.isfinite(value) or not lo <= value <= hi:
+    if type(value) not in (int, float) or not lo <= value <= hi or not math.isfinite(value):
         fail(f"invalid finite {name}")
     return value
 

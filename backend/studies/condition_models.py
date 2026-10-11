@@ -125,9 +125,10 @@ def _centroid(values, centroids, fitted, outside):
     x = scaled(values, fitted)
     distances = [(math.fsum((a - b) ** 2 for a, b in zip(x, center)), label)
                  for label, center in centroids.items()]
-    distances.sort()
-    tied = len(distances) > 1 and math.isclose(distances[0][0], distances[1][0], rel_tol=1e-12, abs_tol=1e-12)
-    return distances[0][1], "centroid_tie" if tied else None
+    nearest = min(distance for distance, _ in distances)
+    tied_labels = [label for distance, label in distances
+                   if math.isclose(distance, nearest, rel_tol=1e-12, abs_tol=1e-12)]
+    return min(tied_labels), "centroid_tie" if len(tied_labels) > 1 else None
 
 
 def train_conditions(payload: dict) -> dict:
