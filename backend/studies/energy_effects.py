@@ -26,7 +26,7 @@ def _period(period, name):
         bounds.append((left, right))
         measured_liquid = _number(row["liquid_m3"], "liquid_m3", 0, 1e12)
         measured_energy = _number(row["energy_kwh"], "energy_kwh", 0, 1e12)
-        if row["quality"] not in counts:
+        if type(row["quality"]) is not str or row["quality"] not in counts:
             _fail("quality")
         counts[row["quality"]] += 1
         if row["quality"] == "valid":

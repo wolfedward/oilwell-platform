@@ -150,3 +150,12 @@ class EffectsTests(unittest.TestCase):
         result = evaluate_effects(payload)
         self.assertEqual(result["baseline"]["coverage_fraction"], 1)
         self.assertEqual(result["baseline"]["energy_kwh"], 9)
+
+    def test_unhashable_quality_is_typed_validation_error(self):
+        for quality in ([], {}):
+            payload = effects_example()
+            payload["baseline"]["intervals"][0]["quality"] = quality
+            with self.subTest(quality=quality):
+                with self.assertRaises(StudyError) as raised:
+                    evaluate_effects(payload)
+                self.assertEqual(raised.exception.status, 422)

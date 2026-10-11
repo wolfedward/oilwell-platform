@@ -106,6 +106,44 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(result["ranked_candidates"], [])
         self.assertEqual(result["no_feasible_evidence"]["rejection_counts"]["model_extrapolation"], 2)
 
+    def test_zero_production_does_not_meet_tiny_positive_daily_minimum(self):
+        payload = schedule_example()
+        item = payload["wells"][0]
+        item["recovery"]["support"]["duration_minutes"] = 2000
+        item["minimum_liquid_m3_per_calendar_day"] = 5e-324
+        item["candidates"] = [{"candidate_id": "never-on", "segments": [
+            {"state": "off", "duration_minutes": 1440}]}]
+        result = optimize_schedule(payload)
+        self.assertEqual(result["status"], "no_feasible_candidate")
+        self.assertEqual(result["no_feasible_evidence"]["rejection_counts"]["minimum_daily_liquid"], 1)
+
+    def test_tiny_positive_power_overload_is_not_rounded_into_feasibility(self):
+        payload = schedule_example()
+        payload["wells"] = [well("W-1"), well("W-2")]
+        payload["site_power_limit_kw"] = 1
+        for item in payload["wells"]:
+            item["recovery"]["support"]["duration_minutes"] = 2000
+            item["minimum_liquid_m3_per_calendar_day"] = 0
+            item["candidates"] = [{"candidate_id": "never-on", "segments": [
+                {"state": "off", "duration_minutes": 1440}]}]
+        payload["wells"][1]["standby_input_power_kw"] = 5e-324
+        result = optimize_schedule(payload)
+        self.assertEqual(result["status"], "no_feasible_candidate")
+        self.assertEqual(result["no_feasible_evidence"]["rejection_counts"]["site_power_limit"], 1)
+
+    def test_decimal_power_values_equal_to_declared_limit_are_feasible(self):
+        payload = schedule_example()
+        payload["wells"] = [well("W-1"), well("W-2")]
+        payload["site_power_limit_kw"] = 0.3
+        for item, power in zip(payload["wells"], (0.1, 0.2)):
+            item["standby_input_power_kw"] = power
+            item["recovery"]["support"]["duration_minutes"] = 2000
+            item["minimum_liquid_m3_per_calendar_day"] = 0
+            item["candidates"] = [{"candidate_id": "never-on", "segments": [
+                {"state": "off", "duration_minutes": 1440}]}]
+        result = optimize_schedule(payload)
+        self.assertEqual(result["status"], "feasible")
+
     def test_preexisting_shutdown_cannot_exceed_measured_recovery_duration(self):
         payload = schedule_example()
         payload["wells"][0]["initial_state_elapsed_minutes"] = 1500

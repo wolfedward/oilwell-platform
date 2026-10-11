@@ -2,6 +2,8 @@
 import datetime as dt
 import itertools
 import math
+from decimal import Decimal
+from fractions import Fraction
 
 from .contracts import StudyError, digest, fields
 from .recovery import _fail, _integer, _number, _text, _time
@@ -17,6 +19,11 @@ WELL_KEYS = ("well_id", "recovery_record_id", "parameter_basis", "initial_depth_
              "terminal_max_depth_m", "candidates", "recovery")
 PARAM_KEYS = ("equilibrium_depth_m", "initial_depth_m", "tau_minutes")
 SUPPORT_KEYS = ("depth_min_m", "depth_max_m", "duration_minutes")
+
+
+def _declared(value):
+    """Exact rational form of the validated number's JSON-visible decimal value."""
+    return Fraction(Decimal(str(value)))
 
 
 def _recovery(value, well_id):
@@ -92,11 +99,12 @@ def _candidate(well, candidate, dates):
     scenarios, support = _recovery(well["recovery"], name)
     minimum_depth, maximum_depth, max_off = support
     violations = set()
-    daily_liquid = {date: 0.0 for date in dates}
+    daily_liquid_exact = {date: Fraction(0) for date in dates}
     daily_energy = {date: 0.0 for date in dates}
     daily_starts = {date: 0 for date in dates}
     power_intervals = []
     start_events = []
+    liquid_rate_exact = _declared(well["pumping_liquid_rate_m3_h"])
     segments = candidate["segments"]
     elapsed, previous, t = well["initial_state_elapsed_minutes"], well["initial_state"], 0
     run_start = -elapsed if previous == "on" else None
@@ -136,9 +144,9 @@ def _candidate(well, candidate, dates):
             if state == "off":
                 power = well["standby_input_power_kw"]
             energy = power * (right - left) / 60
-            liquid = (well["pumping_liquid_rate_m3_h"] * (right - left) / 60) if state == "on" else 0.0
             daily_energy[date] += energy
-            daily_liquid[date] += liquid
+            if state == "on":
+                daily_liquid_exact[date] += liquid_rate_exact * (right - left) / 60
             power_intervals.append((left, right, power, startup))
         elapsed = (elapsed + duration) if state == previous else duration
         previous = state
@@ -148,8 +156,9 @@ def _candidate(well, candidate, dates):
     for date in dates:
         if daily_starts[date] > well["max_starts_per_calendar_day"]:
             violations.add("daily_start_limit")
-        if daily_liquid[date] + 1e-10 < well["minimum_liquid_m3_per_calendar_day"]:
+        if daily_liquid_exact[date] < _declared(well["minimum_liquid_m3_per_calendar_day"]):
             violations.add("minimum_daily_liquid")
+    daily_liquid = {date: float(amount) for date, amount in daily_liquid_exact.items()}
     trace, scenario_results = [], []
     for scenario_index, parameter in enumerate(scenarios):
         depth = float(well["initial_depth_m"])
@@ -193,9 +202,10 @@ def _combine(parts, dates, site_limit, max_starts):
     boundaries = sorted({point for part in parts for left, right, _, _ in part["power_intervals"]
                          for point in (left, right)})
     peak = 0.0
+    exact_site_limit = _declared(site_limit)
     positions = [0] * len(parts)
     for t in boundaries[:-1]:
-        power = 0.0
+        power = Fraction(0)
         startup_count = 0
         for index, part in enumerate(parts):
             intervals = part["power_intervals"]
@@ -204,10 +214,10 @@ def _combine(parts, dates, site_limit, max_starts):
             if positions[index] == len(intervals) or intervals[positions[index]][0] > t:
                 _fail("incomplete power intervals")
             active = intervals[positions[index]]
-            power += active[2]
+            power += _declared(active[2])
             startup_count += active[3]
-        peak = max(peak, power)
-        if power > site_limit + 1e-9:
+        peak = max(peak, float(power))
+        if power > exact_site_limit:
             violations.add("site_power_limit")
         if startup_count > max_starts:
             violations.add("simultaneous_starts")
