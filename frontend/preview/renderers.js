@@ -13,8 +13,10 @@ import {renderEnergyWorkspace} from './pages/energy.js';
 import {renderMotorPreview} from './pages/motor.js';
 import {renderWorkflowPreview} from './presenters/workflows.js';
 import {renderAdministrationPreview} from './presenters/administration.js';
+import {renderPageReviews} from './pages/review.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
+  'preview-review':renderPageReviews,
   ...Object.fromEntries(['approvals','commands','device-command','alarms','work-orders','reports'].map(id=>[id,renderWorkflowPreview])),
   ...Object.fromEntries(['users','roles','audit','system-health','acceptance-center'].map(id=>[id,renderAdministrationPreview])),
   ...Object.fromEntries(['motor-overview','motor-faults','motor-spectrum','protection-settings','protection-events'].map(id=>[id,renderMotorPreview])),
