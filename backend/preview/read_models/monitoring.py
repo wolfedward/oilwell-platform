@@ -99,8 +99,30 @@ def register(repository):
         for row in result['items']:
             row.update(unit_id=row['unit']['id'],unit_name=row['unit']['name'],group_id=row['group']['id'],group_name=row['group']['name'])
         return result
+    def detail(q,a,well_id):
+        result=service.detail(well_id)
+        if q.get('from') or q.get('to'):
+            start,end=period(ds,q)
+            result['production_history']=list(reversed(rows_for_wells(ds,'production_daily',[well_id],'day',start,end)))
+            result['latest_production']=next(iter(result['production_history']),None)
+            points=rows_for_wells(ds,'telemetry',[well_id],'measured_at',start,end,1)
+            result['latest_telemetry']=points[0] if points else None
+        return result
+    def export_wells(q,a):
+        import csv,io
+        from ..repository import Download
+        from backend.services.reports import ReportService
+        output=io.StringIO();writer=csv.writer(output);fields=['id','code','name','status','group_name','unit_name','is_low_output'];writer.writerow(fields)
+        filters={**q,'page':1,'page_size':100}
+        while True:
+            result=paged(filters,a)
+            for row in result['items']:writer.writerow([ReportService._csv_value(row.get(k,'')) for k in fields])
+            if filters['page']*100>=result['total']:break
+            filters['page']+=1
+        return Download(('\ufeff'+output.getvalue()).encode(),'text/csv; charset=utf-8','wells-preview.csv')
+    repository.register('GET',r'/api/preview/legacy/api/wells\.csv',export_wells)
     repository.register('GET',r'/api/preview/legacy/api/dashboard',lambda q,a:dashboard(ds,q))
     repository.register('GET',r'/api/preview/legacy/api/wells',paged)
-    repository.register('GET',r'/api/preview/legacy/api/wells/(?P<well_id>[\w-]+)',lambda q,a,well_id:service.detail(well_id))
+    repository.register('GET',r'/api/preview/legacy/api/wells/(?P<well_id>[\w-]+)',detail)
     repository.register('GET',r'/api/preview/legacy/api/wells/(?P<well_id>[\w-]+)/telemetry',lambda q,a,well_id:service.telemetry(well_id,q.get('from'),q.get('to'),q.get('interval','1h')))
     repository.register('GET',r'/api/preview/views/monitoring',lambda q,a:monitoring(ds,q))

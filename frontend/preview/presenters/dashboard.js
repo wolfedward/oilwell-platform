@@ -5,17 +5,19 @@ import {filterMarkup,bindFilters} from '../ui.js';
 
 export async function renderDashboardPreview(ctx){
   const query=new URLSearchParams(ctx.params).toString();
-  const api={...ctx.api,get:path=>ctx.api.get(path==='/api/dashboard'?path+(query?'?'+query:''):path)};
+  let actualRange={};
+  const api={...ctx.api,get:async path=>{const result=await ctx.api.get(path==='/api/dashboard'?path+(query?'?'+query:''):path);if(path==='/api/dashboard')actualRange=result.trend_metadata||{};return result;}};
   await renderDashboard({...ctx,api});if(!ctx.isCurrent())return;
   const wells=await ctx.api.get('/api/wells?page=1&page_size=100');if(!ctx.isCurrent())return;
-  const form=filterMarkup({wells:wells.items,from:ctx.meta.data_from,to:ctx.meta.data_to},ctx.params);
+  const form=filterMarkup({wells:wells.items,from:actualRange.start_day,to:actualRange.end_day},ctx.params);
   ctx.workspace.querySelector('.page-header').insertAdjacentHTML('afterend',form);
   const short=ctx.workspace.querySelector('.quick-entry header>span');if(short)short.textContent='6 个业务模块';
   bindFilters(ctx);
 }
 
 export async function renderWellDetailPreview(ctx){
-  await renderWellDetail(ctx);if(!ctx.isCurrent()||!ctx.permissions.has('wells.update'))return;
+  const scopedApi={...ctx.api,get:path=>{if(/^\/api\/wells\/[^/?]+(?:\/telemetry)?(?:\?|$)/.test(path)&&(ctx.params.from||ctx.params.to)){const [base,query='']=path.split('?'),q=new URLSearchParams(query);for(const key of ['from','to'])if(ctx.params[key])q.set(key,ctx.params[key]+(base.endsWith('/telemetry')?(key==='from'?'T00:00:00+08:00':'T23:59:59+08:00'):''));path=base+'?'+q;}return ctx.api.get(path);}};
+  await renderWellDetail({...ctx,api:scopedApi});if(!ctx.isCurrent()||!ctx.permissions.has('wells.update'))return;
   const id=ctx.params.id||(await ctx.api.get('/api/wells?page_size=1')).items[0]?.id;if(!id)return;
   const detail=await ctx.api.get('/api/wells/'+encodeURIComponent(id));if(!ctx.isCurrent())return;
   const button=document.createElement('button');button.className='button secondary';button.dataset.editWell='';button.textContent='编辑基础资料（演练）';

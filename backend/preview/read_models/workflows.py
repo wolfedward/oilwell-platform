@@ -8,6 +8,7 @@ from ..snapshot_policy import redact_json
 from ..repository import Download
 from .acquisition import page_query
 from .energy import report
+from .rehearsal_views import project,object_paths,history,paginated
 
 REPORTS=('production','diagnosis','data-quality','strategy','energy','work-orders')
 def csv_report(dataset,kind,query):
@@ -37,14 +38,28 @@ def register(repository):
         deadline=row.get('due_at');row['overdue']=bool(deadline and row['status'] not in ('closed','completed','cancelled') and datetime.fromisoformat(deadline.replace('Z','+00:00'))<now)
         return row
     def orders(q,a):
-        result=workflow.list_work_orders(page_query(q));result['items']=[order(x) for x in result['items']];return result
+        result=workflow.list_work_orders({'page':1,'page_size':100});rows=result['items']
+        for p in range(2,(result['total']+99)//100+1):rows+=workflow.list_work_orders({'page':p,'page_size':100})['items']
+        mapped={r['id']:project(repository,'/api/work-orders/'+r['id'],r) for r in rows}
+        for path in object_paths(repository,'/api/work-orders'):
+            identifier=path.rsplit('/',1)[-1]
+            if identifier not in mapped and history(repository,path)[0]['action']=='create':mapped[identifier]=project(repository,path,{})
+        return paginated([order(r) for r in reversed(list(mapped.values()))],q)
+    def order_detail(identifier):
+        path='/api/work-orders/'+identifier;events=history(repository,path)
+        original={} if events and events[0]['action']=='create' else workflow.get_work_order(identifier)
+        return order(project(repository,path,original))
+    def trace(identifier):
+        events=history(repository,'/api/work-orders/'+identifier)
+        if events:return {'work_order_id':identifier,'work_order':order_detail(identifier),'alarm_id':events[0]['values'].get('alarm_id'),'audit_ids':[],'approval_ids':[],'source_kind':'preview_rehearsal'}
+        return workflow.trace(identifier)
     repository.register('GET',base+'/commands',command_list)
     repository.register('GET',base+r'/commands/(?P<identifier>[\w-]+)',lambda q,a,identifier:clean(commands.get(identifier)))
     repository.register('GET',base+'/alarms',lambda q,a:workflow.list_alarms(page_query(q)))
     repository.register('GET',base+r'/alarms/(?P<identifier>[\w-]+)',lambda q,a,identifier:workflow.get_alarm(identifier))
     repository.register('GET',base+'/work-orders',orders)
-    repository.register('GET',base+r'/work-orders/(?P<identifier>[\w-]+)',lambda q,a,identifier:order(workflow.get_work_order(identifier)))
-    repository.register('GET',base+r'/work-orders/(?P<identifier>[\w-]+)/trace',lambda q,a,identifier:workflow.trace(identifier))
+    repository.register('GET',base+r'/work-orders/(?P<identifier>[\w-]+)',lambda q,a,identifier:order_detail(identifier))
+    repository.register('GET',base+r'/work-orders/(?P<identifier>[\w-]+)/trace',lambda q,a,identifier:trace(identifier))
     for kind in REPORTS:
         if kind!='energy':repository.register('GET',base+'/reports/'+kind,lambda q,a,kind=kind:report(ds,kind,q))
         repository.register('GET',base+'/reports/'+kind+r'\.csv',lambda q,a,kind=kind:Download(csv_report(ds,kind,q),'text/csv; charset=utf-8',kind+'-report.csv'))

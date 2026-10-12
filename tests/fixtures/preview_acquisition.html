@@ -2,7 +2,7 @@
 try{
  const data=PREVIEW_DATA,{renderers}=await import('../../frontend/preview/renderers.js'),{createPreviewContext}=await import('../../frontend/preview/context.js');
  const unknown=[],missing=[],checked=[],overflow=[];let current;
- const api={get:async path=>{const url=new URL(path,'http://preview');const key=url.pathname+(url.searchParams.has('view')?'?view='+url.searchParams.get('view'):'');if(!(key in data.reads)){unknown.push(key);throw Error('Unexpected '+key);}return structuredClone(data.reads[key]);},post:async()=>{throw Error('unexpected write');},raw:async()=>{throw Error('unexpected upload');},download:async()=>{}};
+ const api={get:async path=>{if(path.startsWith('/api/preview/rehearsals?'))return {version:0,values:{}};const url=new URL(path,'http://preview');const key=url.pathname+(url.searchParams.has('view')?'?view='+url.searchParams.get('view'):'');if(!(key in data.reads)){unknown.push(key);throw Error('Unexpected '+key);}return structuredClone(data.reads[key]);},post:async()=>{throw Error('unexpected write');},raw:async()=>{throw Error('unexpected upload');},download:async()=>{}};
  const tick=()=>new Promise(r=>setTimeout(r,15));
  async function click(selector,label){const el=document.querySelector(selector);if(!el){missing.push(label||selector);return;}el.click();await tick();await tick();}
  function expect(selector,label){if(!document.querySelector(selector))missing.push(label||selector);}
@@ -27,6 +27,9 @@ try{
    await click('[data-wave-tab="datasets"]','wave-datasets');await click('[data-wave-dataset]','dataset-detail');await click('[data-wave-members]','dataset-members');await click('[data-wave-files]','dataset-files');
    await click('[data-wave-tab="imports"]','wave-imports');
    expect('input[type=file]','bounded-import');
+   expect('[data-preview-wave-import]','preview-import-input-only');
+   expect('[data-import-resume]','preview-import-resume');
+   expect('[data-import-cancel]','preview-import-cancel');
   }
   if(id==='channel-mapping')expect('[data-map-form]','map-editor');
   if(id==='uplink-monitor')expect('.preview-timeline','uplink-sequence');

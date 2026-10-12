@@ -102,5 +102,16 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn('preview_telemetry_latest',plan)
         self.assertNotIn('TEMP B-TREE',plan)
 
+    def test_strategy_version_cycle_and_exact_timestamps_are_preserved(self):
+        from backend.preview.snapshot import capture_snapshot,build_business_snapshot
+        with closing(sqlite3.connect(self.source)) as db,db:
+            db.execute("INSERT INTO energy_strategies(id,well_id,name) VALUES('S1','W1','关联版本测试')")
+            db.execute("INSERT INTO strategy_versions(id,strategy_id,version_number,configuration,status) VALUES('V1','S1',1,'{}','approved')")
+            db.execute("UPDATE energy_strategies SET current_version_id='V1' WHERE id='S1'")
+            db.execute("UPDATE wells SET created_at='2026-09-10T00:00:00Z' WHERE id='W1'")
+        raw=capture_snapshot(self.source,self.root/'private');result=build_business_snapshot(Path(raw['path']),self.root/'business.db')
+        source=read_source_rows(Path(raw['path']));target=read_source_rows(Path(result['path']))
+        for table in ['energy_strategies','strategy_versions','wells']:self.assertEqual(source[table],target[table])
+
 
 if __name__ == '__main__': unittest.main()

@@ -34,6 +34,10 @@ class PreviewState:
         records=self.history(object_id)
         return records[-1] if records else {'object_id':object_id,'version':0,'values':{},'mode':'rehearsal'}
 
+    def versions(self):
+        with self.connection() as db:
+            return dict(db.execute('SELECT object_id,max(version) FROM rehearsal_events GROUP BY object_id'))
+
     def reset(self,confirmation):
         from .errors import PreviewError
         if confirmation!='RESET_REHEARSALS': raise PreviewError('confirmation_required','请明确确认重置演练')

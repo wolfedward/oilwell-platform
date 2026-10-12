@@ -28,6 +28,8 @@ try {
     }
     if(id==='production-monitor'&&!workspace.querySelector('[data-monitor-view]'))missing.push('card-table-toggle');
     if(id==='well-history'&&!workspace.querySelector('[data-export-history]'))missing.push('history-export');
+    if(id==='well-history'&&!workspace.querySelector('[data-history-metric]'))missing.push('history-metric');
+    if(id==='haulage-monitor'&&(!workspace.querySelector('[data-haulage-form]')||!workspace.textContent.includes('累计卸液')))missing.push('haulage-input-cumulative');
     if(!['wells','well-detail'].includes(id)&&(!workspace.querySelector('[name="unit_id"]')||!workspace.querySelector('[name="group_id"]')))missing.push(id+'-scope-filter');
     await window.captureEvidence?.(id);
     ctx.dispose();

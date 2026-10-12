@@ -8,6 +8,7 @@ from ..fixtures.studies import records
 from ..errors import PreviewError
 from .monitoring import period
 from .acquisition import page_query
+from .rehearsal_views import project,paginated
 
 class SnapshotStrategies(StrategyService):
     def _public(self,row):
@@ -30,17 +31,16 @@ def report(dataset,kind,query):
 def register(repository):
     ds=repository.dataset;service=SnapshotStrategies(ds,None);fixed=strategies()
     def listing(q,a):
-        pq=page_query(q);source=service.list_strategies({**pq,'page':1,'page_size':100})
+        pq=page_query(q);source=service.list_strategies({'page':1,'page_size':100})
         # Page through all original rows, never truncate a long source history.
         items=source['items']
-        for page in range(2,(source['total']+99)//100+1):items+=service.list_strategies({**pq,'page':page,'page_size':100})['items']
-        examples=[deepcopy(x) for x in fixed if all(not q.get(k) or x.get(k)==q[k] for k in ('well_id','status'))]
-        rows=examples+items;p=pq.get('page',1);size=pq.get('page_size',20)
-        return {'items':rows[(p-1)*size:p*size],'total':len(rows),'page':p,'page_size':size}
+        for page in range(2,(source['total']+99)//100+1):items+=service.list_strategies({'page':page,'page_size':100})['items']
+        rows=[project(repository,'/api/strategies/'+x['id'],deepcopy(x)) for x in fixed+items]
+        return paginated(rows,q)
     def detail(q,a,identifier):
         for row in fixed:
-            if row['id']==identifier:return deepcopy(row)
-        return service.detail(identifier)
+            if row['id']==identifier:return project(repository,'/api/strategies/'+identifier,deepcopy(row))
+        return project(repository,'/api/strategies/'+identifier,service.detail(identifier))
     repository.register('GET','/api/preview/legacy/api/strategies',listing)
     repository.register('GET',r'/api/preview/legacy/api/strategies/(?P<identifier>[\w-]+)',detail)
     repository.register('GET','/api/preview/legacy/api/reports/energy',lambda q,a:report(ds,'energy',q))

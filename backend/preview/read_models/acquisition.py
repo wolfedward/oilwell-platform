@@ -6,6 +6,7 @@ from backend.services.acquisition import AcquisitionService
 from backend.services.devices import DevicesService
 from ..errors import PreviewError
 from ..fixtures.acquisition import fixtures
+from ..repository import Download
 from .monitoring import well_scope
 
 
@@ -21,6 +22,7 @@ def fixture_read(routes,path,query):
     key=path+('?view='+query['view'] if query.get('view') else '')
     if key not in routes:raise PreviewError('not_found','此样例视图不存在',404)
     result=deepcopy(routes[key])
+    if isinstance(result,Download):return result
     if 'items' in result:
         q=page_query(query);items=result['items']
         for field in ('gateway_id','device_id','area_code','well_code','status','state','kind','purpose'):
@@ -76,6 +78,9 @@ def register(repository):
     for endpoint in ('health','quality'):
         repository.register('GET',base+'/central/'+endpoint,lambda q,a:{'status':'not_configured','summary':{},'links':[]})
     routes=fixtures(well_scope(ds,{}));install_fixtures(repository,routes)
+    from ..fixtures.acquisition import uid
+    raw=routes['/api/ingest-reliability/facts/'+uid('fact')+'/raw']['text'].encode()
+    repository.register('GET',base+'/waveforms/facts/'+uid('fact')+'/raw',lambda q,a:Download(raw,'application/json','waveform-fact-preview.json'))
 
 
 def export_fixture_reads(repository,actor):

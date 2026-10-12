@@ -2,6 +2,7 @@ from datetime import datetime,timezone
 import hashlib
 import json
 import re
+import uuid
 from .errors import PreviewError
 from .permissions import allowed_action,require_object_action
 from .snapshot_policy import redact_json
@@ -19,6 +20,8 @@ def save_rehearsal(state,actor,request_id,action,object_id,expected_version,valu
     serialized=json.dumps({'action':action,'object_id':object_id,'expected_version':expected_version,'values':values},ensure_ascii=False,sort_keys=True,allow_nan=False)
     if len(serialized.encode('utf-8'))>256*1024: raise PreviewError('body_limit','演练表单过大',413)
     fingerprint=hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    if action=='create' and object_id in {'/api/work-orders','/api/users','/api/wells','/api/roles'}:
+        object_id+='/preview-'+uuid.uuid5(uuid.NAMESPACE_URL,actor['id']+'/'+request_id).hex
     with state.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         existing=db.execute('SELECT fingerprint,result FROM rehearsal_events WHERE actor_id=? AND request_id=?',(actor['id'],request_id)).fetchone()
@@ -30,8 +33,9 @@ def save_rehearsal(state,actor,request_id,action,object_id,expected_version,valu
         if previous['version']!=expected_version: raise PreviewError('version_conflict','记录已变化，请重新加载',409)
         author=previous.get('submitted_by')
         if action in {'approve','reject','review'} and author==actor['id']: raise PreviewError('self_review','不能复核本人提交的演练记录',403)
+        if action=='close' and object_id.startswith('/api/work-orders/') and author==actor['id']:raise PreviewError('self_review','工单必须由另一操作者独立关闭',403)
         if action in {'approve','reject'} and not author: raise PreviewError('not_submitted','先创建独立的提交演练，再由另一操作者复核',409)
-        result={'id':object_id,'object_id':object_id,'request_id':request_id,'actor_id':actor['id'],'action':action,
+        result={'id':object_id.rsplit('/',1)[-1],'object_id':object_id,'request_id':request_id,'actor_id':actor['id'],'action':action,
                 'version':expected_version+1,'values':{**previous.get('values',{}),**values},'mode':'rehearsal',
                 'submitted_by':actor['id'] if action=='submit' else author,'created_at':datetime.now(timezone.utc).isoformat(),
                 'status':'input_saved' if action=='calculate_input' else 'rehearsed','device_sent':False}

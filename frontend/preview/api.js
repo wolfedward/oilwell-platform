@@ -62,7 +62,8 @@ export function createPreviewApi({fetchImpl=fetch,csrfToken=()=>'',confirmRehear
       const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=filename;
       link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);return blob;
     },
-    withSignal:signal=>createPreviewApi({...optionsForChild,signal}),
+    supportsPreviewVersionSnapshots:true,
+    withSignal:(signal,overrides={})=>createPreviewApi({...optionsForChild,...overrides,signal}),
     dispose(){disposed=true;for(const controller of controllers) controller.abort();controllers.clear();},
   };
 }

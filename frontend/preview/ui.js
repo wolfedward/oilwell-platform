@@ -9,6 +9,10 @@ export const note=text=>`<div class="preview-login-note">${esc(text)}</div>`;
 export const links=items=>`<nav class="preview-subnav">${items.map(([id,label])=>`<button class="button secondary" data-page="${esc(id)}">${esc(label)}</button>`).join('')}</nav>`;
 
 export function trend(items,{xKey='time',yKey='value',title='趋势',unit='',color='#1e6ee8'}={}){
+  const usable=p=>p.status===undefined||['valid','good','ok'].includes(p.status);
+  items=items.map(p=>usable(p)?p:{...p,[yKey]:null});
+  const times=items.map(p=>Date.parse(p[xKey])),deltas=times.slice(1).map((t,i)=>t-times[i]).filter(d=>d>0).sort((a,b)=>a-b);
+  const cadence=deltas.length?deltas[Math.floor((deltas.length-1)/2)]:Infinity;
   const valid=items.filter(p=>p[yKey]!==null&&p[yKey]!==undefined&&Number.isFinite(Number(p[yKey])));
   if(!valid.length)return components.empty('当前范围无有效观测值');
   const width=720,height=270,left=62,right=20,top=25,bottom=54;
@@ -16,7 +20,7 @@ export function trend(items,{xKey='time',yKey='value',title='趋势',unit='',col
   min-=margin;max+=margin;
   const x=i=>left+i*(width-left-right)/Math.max(1,items.length-1),y=value=>top+(max-value)/(max-min)*(height-top-bottom);
   let path='',pen=false;
-  for(let i=0;i<items.length;i++){const value=items[i][yKey];if(value===null||value===undefined||!Number.isFinite(Number(value))){pen=false;continue;}path+=`${pen?'L':'M'}${x(i)},${y(Number(value))} `;pen=true;}
+  for(let i=0;i<items.length;i++){const value=items[i][yKey];if(i&&times[i]-times[i-1]>cadence*1.5)pen=false;if(value===null||value===undefined||!Number.isFinite(Number(value))){pen=false;continue;}path+=`${pen?'L':'M'}${x(i)},${y(Number(value))} `;pen=true;}
   const ticks=Array.from({length:5},(_,i)=>{const v=min+(max-min)*i/4;return `<line x1="${left}" x2="${width-right}" y1="${y(v)}" y2="${y(v)}"/><text x="${left-8}" y="${y(v)+4}" text-anchor="end">${number(v)}</text>`;}).join('');
   const labels=items.map((p,i)=>i%Math.max(1,Math.ceil(items.length/5))===0||i===items.length-1?`<text x="${x(i)}" y="${height-bottom+22}" text-anchor="middle">${esc(String(p[xKey]).length>10?String(p[xKey]).slice(11,16):String(p[xKey]).slice(5))}</text>`:'').join('');
   const points=items.map((p,i)=>p[yKey]===null||p[yKey]===undefined||!Number.isFinite(Number(p[yKey]))?'':`<circle ${charts.pointAttributes({series:title,x:p[xKey],y:Number(p[yKey]),yUnit:unit})} cx="${x(i)}" cy="${y(Number(p[yKey]))}" r="7"/>`).join('');

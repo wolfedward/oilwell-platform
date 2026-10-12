@@ -4,6 +4,8 @@ for(const id of ['motor-overview','motor-faults','motor-spectrum','protection-se
 if(id==='motor-spectrum'){check(w.querySelector('svg'),'spectrum');const input=[...w.querySelectorAll('[data-study-chart-point]')].at(-1);input.value='200';input.dispatchEvent(new Event('input',{bubbles:true}));check(input.closest('figure').querySelector('[data-study-chart-tooltip]').textContent.includes('50.00'),'two-decimals');}
 if(id==='protection-settings'){w.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,20));check(w.textContent.includes('未下发'),'no-send');}
 if(id==='protection-events'){check(w.textContent.includes('本地人工复位'),'reset-boundary');check(w.querySelector('[data-reset-preview]')?.disabled,'reset-disabled');}
+if(id==='motor-overview'){check(w.textContent.includes('堵转测试'),'stall-case');check(w.querySelector('[data-motor-object]'),'object-link');}
+if(id==='protection-events'){check(w.textContent.includes('通信中断'),'communication-interlock');check(w.querySelector('[data-event-waveform] svg'),'event-waveform');}
 if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);await window.captureEvidence?.(id);ctx.dispose();}
 document.querySelector('#result').textContent=JSON.stringify({pages_checked:5,missing,overflow});}catch(e){document.querySelector('#result').textContent=JSON.stringify({error:e.stack});}
 </script></html>

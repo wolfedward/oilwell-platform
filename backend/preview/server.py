@@ -123,6 +123,8 @@ class PreviewHandler(BaseHTTPRequestHandler):
                     return self._json(200,self.server.page_reviews.get_page_reviews(self.server.repository.meta['page_catalog_version']))
                 if path=='/api/preview/rehearsals':
                     return self._json(200,self.server.state.current(query.get('object_id','')))
+                if path=='/api/preview/rehearsal-versions':
+                    return self._json(200,self.server.state.versions())
                 if path=='/api/preview/catalog': return self._json(200,self.server.catalog)
                 if path=='/api/preview/meta': return self._json(200,self.server.repository.meta)
                 if path.startswith('/api/preview/'):

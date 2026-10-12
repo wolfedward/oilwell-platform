@@ -19,7 +19,7 @@ export async function renderMonitoring(ctx){
   }else if(page.id==='well-realtime'){
     body=note('历史快照回看；暂停只影响当前画面，不停止设备或采集服务。')+
       `<div class="preview-subnav"><button class="button" data-pause>暂停画面</button><span data-pause-status>画面可查看</span></div>`+
-      metrics(Object.entries(current).slice(0,8).map(([key,row])=>[METRICS[key]?.[0]||key,number(row.value),row.unit||METRICS[key]?.[1]||'',row.measured_at]))+
+      metrics(Object.entries(current).slice(0,8).map(([key,row])=>[METRICS[key]?.[0]||key,number(['valid','good','ok'].includes(row.status)?row.value:null),row.unit||METRICS[key]?.[1]||'',row.measured_at+' · '+row.status]))+
       `<div class="preview-grid">${Object.keys(current).slice(0,4).map(key=>panel(METRICS[key]?.[0]||key,trend(data.telemetry.filter(p=>p.metric_code===key),{xKey:'measured_at',title:METRICS[key]?.[0]||key,unit:current[key].unit||''}))).join('')}${panel('测点质量与时点',table([['metric_code','测点'],['value','数值'],['unit','单位'],['status','质量'],['measured_at','测量时间'],['source_type','来源']],Object.values(current)),'原快照记录','wide')}</div>`;
   }else if(page.id==='well-history'){
     body=metrics([['生产记录',production.length,'日','原始日报'],['遥测点',data.telemetry.length,'条','缺测保留为空'],['最新产液',number(last?.daily_fluid),'m³',last?.day||'—'],['最新耗电',number(last?.power_kwh),'kWh',last?.day||'—']])+
@@ -38,7 +38,12 @@ export async function renderMonitoring(ctx){
       metrics([['关联罐',latest?.tank_id||'—','','独立测试标识'],['液位',number(latest?.level_m),'m','测试场景'],['容积',number(latest?.volume_m3),'m³','非现场计量'],['设计容量',number(latest?.capacity_m3),'m³','测试参考']])+
       `<div class="preview-grid">${panel('罐液位趋势',trend(data.haulage,{yKey:'level_m',title:'液位',unit:'m'}))}${panel('容积趋势',trend(data.haulage,{yKey:'volume_m3',title:'容积',unit:'m³',color:'#0fa996'}))}${panel('液位与装卸记录',table([['tank_id','罐号'],['time','时间'],['operation','记录类型'],['level_m','液位(m)'],['volume_m3','容积(m³)'],['capacity_m3','容量(m³)']],data.haulage),'补充软件测试数据','wide')}</div>`;
   }
+  if(page.id==='haulage-monitor'){
+    const latest=data.haulage.at(-1);
+    body+=metrics([['当日累计入罐',number(latest?.daily_loaded_m3),'m³','软件记录累计'],['当日累计卸液',number(latest?.daily_unloaded_m3),'m³','软件记录累计']])+panel('装卸明细与液位报警',table([['time','记录时间'],['loaded_m3','入罐(m³)'],['unloaded_m3','卸液(m³)'],['daily_unloaded_m3','累计卸液(m³)'],['low_level_m','低阈值(m)'],['high_level_m','高阈值(m)'],['alarm','液位状态']],data.haulage))+panel('装卸登记演练',`<form class="preview-filter" data-haulage-form><label>罐号<input name="tank_id" value="${esc(latest?.tank_id||'')}" readonly></label><label>记录时间<input name="recorded_at" type="datetime-local" value="${esc((latest?.time||'').slice(0,16))}" required></label><label>操作<select name="operation"><option value="unload">卸液</option><option value="load">入罐</option></select></label><label>数量(m³)<input name="volume_m3" type="number" min="0.01" max="15" step="0.01" required></label><label>说明<input name="reason" minlength="2" required></label><button class="button primary">保存登记演练</button></form><p data-haulage-receipt></p>`,'只保存登记，不改写罐位曲线');
+  }
   workspace.innerHTML=head+filter+body;bindFilters(ctx);
+  const haulageForm=workspace.querySelector('[data-haulage-form]');if(haulageForm)haulageForm.onsubmit=async e=>{e.preventDefault();if(!haulageForm.reportValidity())return;const result=await ctx.actions.confirmRehearsal({action:'draft',objectId:'haulage/'+well.id,values:{...Object.fromEntries(new FormData(haulageForm)),well_id:well.id}});if(result&&ctx.isCurrent())workspace.querySelector('[data-haulage-receipt]').textContent='装卸登记演练已保存，原始曲线和累计量保持不变。';};
   if(page.id==='production-monitor'){
     const matrix=workspace.querySelector('.preview-well-matrix');const rows=document.createElement('div');rows.hidden=true;
     rows.innerHTML=table([['code','井号'],['name','井名'],['group_name','井组'],['status','状态'],['is_low_output','低产井']],scopeWells);matrix.after(rows);
@@ -46,15 +51,19 @@ export async function renderMonitoring(ctx){
     toggle.onclick=()=>{rows.hidden=!rows.hidden;matrix.hidden=!rows.hidden;toggle.textContent=rows.hidden?'切换列表':'切换卡片';};
   }
   if(page.id==='well-history'){
+    const keys=Object.keys(current),selectedMetric=keys.includes(params.metric)?params.metric:keys[0],samples=data.telemetry.filter(r=>r.metric_code===selectedMetric);
+    const history=document.createElement('section');history.innerHTML=panel('历史遥测参数',`<label>选择测点<select data-history-metric>${keys.map(key=>`<option value="${esc(key)}" ${key===selectedMetric?'selected':''}>${esc(METRICS[key]?.[0]||key)} (${esc(current[key].unit||'')})</option>`).join('')}</select></label>`+note('最多显示范围内最后 600 个原始遥测点；质量无效点不参与曲线，超过中位采样间隔 1.5 倍处断线。原始数值仍保留在下表。')+trend(samples,{xKey:'measured_at',title:METRICS[selectedMetric]?.[0]||selectedMetric||'遥测',unit:current[selectedMetric]?.unit||''})+table([['measured_at','测量时间'],['metric_code','测点'],['value','原始数值'],['unit','单位'],['status','质量'],['source_type','来源']],samples));workspace.append(history);
+    history.querySelector('[data-history-metric]').onchange=e=>ctx.navigate(page.id,{...params,metric:e.target.value});
     const button=document.createElement('button');button.className='button secondary';button.dataset.exportHistory='';button.textContent='导出当前历史明细';workspace.querySelector('.preview-filter').append(button);
     button.type='button';button.onclick=()=>{
-      const fields=['day','well_id','daily_fluid','daily_oil','power_kwh','pump_efficiency','stroke_m','runtime_hours'];
+      const fields=['record_type','day','measured_at','well_id','metric_code','value','unit','status','daily_fluid','daily_oil','power_kwh','pump_efficiency','stroke_m','runtime_hours'];
       const cell=value=>'"'+String(value??'').replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';
-      const csv='\ufeff'+[fields,...production.map(row=>fields.map(key=>row[key]))].map(row=>row.map(cell).join(',')).join('\r\n');
+      const rows=[...production.map(r=>({...r,record_type:'production_daily'})),...samples.map(r=>({...r,record_type:'telemetry'}))];
+      const csv='\ufeff'+[fields,...rows.map(row=>fields.map(key=>row[key]))].map(row=>row.map(cell).join(',')).join('\r\n');
       const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));link.download='历史参数-页面预览.csv';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);
     };
   }
-  workspace.querySelectorAll('[data-well]').forEach(button=>button.onclick=()=>ctx.navigate('well-detail',{id:button.dataset.well}));
+  workspace.querySelectorAll('[data-well]').forEach(button=>button.onclick=()=>ctx.navigate('well-detail',{...params,from:data.from,to:data.to,id:button.dataset.well,well_id:button.dataset.well}));
   const pause=workspace.querySelector('[data-pause]');if(pause)pause.onclick=()=>{const paused=pause.textContent==='暂停画面';pause.textContent=paused?'继续画面':'暂停画面';workspace.querySelector('[data-pause-status]').textContent=paused?'画面已暂停，历史数据保持不变':'画面可查看';};
   const form=workspace.querySelector('[data-status-form]');if(form)form.onsubmit=async event=>{event.preventDefault();if(!well||!form.reportValidity())return;const saved=await ctx.actions?.confirmRehearsal({action:'edit',objectId:'well-status/'+well.id,values:Object.fromEntries(new FormData(form))});if(saved){let receipt=workspace.querySelector('[data-state-receipt]');if(!receipt){receipt=document.createElement('p');receipt.dataset.stateReceipt='';form.after(receipt);}receipt.textContent='状态演练已保存：'+form.elements.status.selectedOptions[0].text+'（原始历史不变）';}};
 }

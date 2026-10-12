@@ -1,0 +1,10 @@
+<!doctype html><html><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><div id="app"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const {createPreviewActions}=await import('../../frontend/preview/actions.js');const {trend}=await import('../../frontend/preview/ui.js');
+ let stateGets=0;const bodies=[];const actions=createPreviewActions({api:{get:async()=>{stateGets++;return {version:99};},post:async(path,body)=>{bodies.push(JSON.stringify(body));if(bodies.length===1)throw new Error('响应丢失，请重试');return {mode:'rehearsal',version:3};}}});
+ const saved=actions.confirmRehearsal({action:'edit',objectId:'S1',values:{title:'旧表单'},expectedVersions:{S1:2}});
+ document.querySelector('[data-rehearsal-submit]').click();await new Promise(r=>setTimeout(r,20));document.querySelector('[data-rehearsal-submit]').click();await saved;
+ document.querySelector('#app').innerHTML=trend([{time:'2026-09-12T00:00:00Z',value:1,status:'valid'},{time:'2026-09-12T01:00:00Z',value:999,status:'invalid'},{time:'2026-09-12T02:00:00Z',value:2,status:'valid'},{time:'2026-09-12T10:00:00Z',value:3,status:'valid'}]);
+ document.querySelector('#result').textContent=JSON.stringify({same_retry_body:bodies[0]===bodies[1],expected_version:JSON.parse(bodies[0]).expected_version,state_gets:stateGets,quality_points:document.querySelectorAll('circle').length,quality_segments:(document.querySelector('.chart-line').getAttribute('d').match(/M/g)||[]).length});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></html>

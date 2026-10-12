@@ -48,6 +48,8 @@ def describe(path: Path):
         violations=[list(r) for r in db.execute('PRAGMA foreign_key_check')]
         if integrity!='ok': raise ValueError('快照完整性失败')
         if violations: raise ValueError('快照外键检查失败')
+        if db.execute('SELECT 1 FROM energy_strategies s JOIN strategy_versions v ON v.id=s.current_version_id WHERE v.strategy_id<>s.id LIMIT 1').fetchone():
+            raise ValueError('快照策略版本归属不一致')
         tables={}
         for table,columns in table_columns(db).items():
             keys=[r[1] for r in sorted(db.execute(f'PRAGMA table_info("{table}")'),key=lambda r:r[5]) if r[5]]
@@ -85,6 +87,11 @@ def build_business_snapshot(raw_snapshot: Path, target: Path) -> dict:
         with closing(sqlite3.connect(target)) as dst:
             dst.executescript(SCHEMA.read_text(encoding='utf-8'))
             for table in EXCLUDED_TABLES: dst.execute(f'DROP TABLE "{table}"')
+            # Restore complete historical rows, not new live inserts: insert
+            # triggers would normalize timestamps or reject cyclic references
+            # before the other table has been copied. These are target-owned DDL.
+            triggers=dst.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+            for name,_ in triggers:dst.execute('DROP TRIGGER "'+name+'"')
             for table,columns in tables.items():
                 if table in EXCLUDED_TABLES: continue
                 names=','.join('"'+c+'"' for c in columns)
@@ -92,6 +99,7 @@ def build_business_snapshot(raw_snapshot: Path, target: Path) -> dict:
                 dst.executemany(f'INSERT INTO "{table}" ({names}) VALUES ({placeholders})',
                                 (sanitize_row(table,columns,row) for row in src.execute(f'SELECT {names} FROM "{table}"')))
             dst.commit()
+            for _,sql in triggers:dst.execute(sql)
             # Owned, audited query indexes only; never execute source database DDL.
             for name,expression in {
                 'telemetry_latest':'telemetry(well_id,measured_at DESC,id DESC)',
