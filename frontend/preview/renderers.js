@@ -3,6 +3,10 @@
 import {renderDashboardPreview,renderWellDetailPreview} from './presenters/dashboard.js';
 import {renderWellList} from '../pages/wells.js';
 import {renderMonitoring} from './pages/monitoring.js';
+import {renderAcquisitionPreview} from './presenters/acquisition.js';
+import {renderAcquisitionConfiguration} from './pages/acquisition.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
-  ...Object.fromEntries(['production-monitor','well-realtime','well-history','well-status','fluid-level','haulage-monitor'].map(id=>[id,renderMonitoring]))};
+  ...Object.fromEntries(['production-monitor','well-realtime','well-history','well-status','fluid-level','haulage-monitor'].map(id=>[id,renderMonitoring])),
+  ...Object.fromEntries(['acquisition','data-quality','devices','field-registry','ingest-reliability','waveforms'].map(id=>[id,renderAcquisitionPreview])),
+  'channel-mapping':renderAcquisitionConfiguration,'uplink-monitor':renderAcquisitionConfiguration};

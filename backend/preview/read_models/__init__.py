@@ -2,5 +2,6 @@
 
 
 def register_all(repository):
-    from . import monitoring
+    from . import monitoring,acquisition
     monitoring.register(repository)
+    acquisition.register(repository)

@@ -29,7 +29,8 @@ export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}
     const staging=document.createElement('section');staging.className='preview-page';
     context=createPreviewContext({page,params,session,workspace:staging,generation:()=>thisGeneration===generation&&!disposed,api,meta,navigate,actions});
     const local=context;
-    workspace.innerHTML=local.pageHeader(page)+components.skeleton(6);
+    staging.innerHTML=local.pageHeader(page)+components.skeleton(6);
+    workspace.replaceChildren(staging);
     try {
       const renderer=renderers[page.id];
       const scenario=params.scenario||'normal';

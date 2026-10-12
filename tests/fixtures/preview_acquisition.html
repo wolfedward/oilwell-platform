@@ -1,0 +1,38 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/preview/preview.css"><main id="app"><div id="workspace" class="workspace"></div></main><div id="toastRegion"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const data=PREVIEW_DATA,{renderers}=await import('../../frontend/preview/renderers.js'),{createPreviewContext}=await import('../../frontend/preview/context.js');
+ const unknown=[],missing=[],checked=[],overflow=[];let current;
+ const api={get:async path=>{const url=new URL(path,'http://preview');const key=url.pathname+(url.searchParams.has('view')?'?view='+url.searchParams.get('view'):'');if(!(key in data.reads)){unknown.push(key);throw Error('Unexpected '+key);}return structuredClone(data.reads[key]);},post:async()=>{throw Error('unexpected write');},raw:async()=>{throw Error('unexpected upload');},download:async()=>{}};
+ const tick=()=>new Promise(r=>setTimeout(r,15));
+ async function click(selector,label){const el=document.querySelector(selector);if(!el){missing.push(label||selector);return;}el.click();await tick();await tick();}
+ function expect(selector,label){if(!document.querySelector(selector))missing.push(label||selector);}
+ const ids=['acquisition','data-quality','devices','field-registry','ingest-reliability','waveforms','channel-mapping','uplink-monitor'];
+ for(const id of ids){
+  const workspace=document.querySelector('#workspace');const ctx=createPreviewContext({page:{id,label:id,group:'测试'},params:{},workspace,session:{actor:data.actor,capabilities:{registry:{enabled:true,status:'ready'},ingest_reliability:{enabled:true,status:'ready'},waveforms:{enabled:true,status:'ready'}}},generation:()=>current===ctx,api,meta:{},navigate:()=>{},actions:{confirmRehearsal:async()=>null}});current=ctx;
+  await renderers[id](ctx);await tick();checked.push(id);
+  if(id==='acquisition'){await click('[data-message-id]','message-detail');expect('[role=dialog]','message-modal');await click('[aria-label="关闭"]','close-message');}
+  if(id==='devices'){await renderers[id]({...ctx,params:{id:'D1'}});expect('table','device-channels');}
+  if(id==='field-registry'){
+   await click('[data-registry-device]','registry-detail');
+   for(const tab of ['state','bindings','assignments','maps','audit'])await click('[data-action="history-'+tab+'"]','registry-'+tab);
+   await click('[data-action="history-maps"]');await click('[data-action="view-map"]','map-snapshot');expect('[role=dialog]','map-dialog');await click('[aria-label="关闭"]','close-map');
+   await click('[data-action="bind-device"]','binding-editor');expect('[role=dialog]','binding-dialog');await click('[aria-label="关闭"]','close-binding');
+  }
+  if(id==='ingest-reliability'){await click('[data-ingest-select="cases"]','case-detail');await click('[data-ingest-raw="preview"]','raw-preview');expect('[data-ingest-raw-output],textarea,pre','raw-content');await click('[data-ingest-select="receipts"]','receipt-detail');}
+  if(id==='waveforms'){
+   await click('[data-wave-select]','capture-detail');expect('[data-wave-stream]','wave-stream');expect('[data-wave-path]','wave-chart');
+   for(const tab of ['provenance','facts','outcomes','evaluations'])await click('[data-wave-history="'+tab+'"]','wave-'+tab);
+   await click('[data-wave-evidence]','calibration-detail');
+   await click('[data-wave-tab="pairs"]','wave-pairs');await click('[data-wave-pair]','pair-detail');await click('[data-wave-xy]','pair-xy');expect('[data-wave-path]','pair-xy-curve');
+   await click('[data-wave-tab="datasets"]','wave-datasets');await click('[data-wave-dataset]','dataset-detail');await click('[data-wave-members]','dataset-members');await click('[data-wave-files]','dataset-files');
+   await click('[data-wave-tab="imports"]','wave-imports');
+   expect('input[type=file]','bounded-import');
+  }
+  if(id==='channel-mapping')expect('[data-map-form]','map-editor');
+  if(id==='uplink-monitor')expect('.preview-timeline','uplink-sequence');
+  if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);
+  await window.captureEvidence?.(id);ctx.dispose();
+ }
+ document.querySelector('#result').textContent=JSON.stringify({pages_checked:checked,missing_subviews:missing,unknown_reads:unknown,overflow});
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({error:e.stack});}
+</script></html>
