@@ -1,0 +1,16 @@
+from copy import deepcopy
+import math
+from .acquisition import STAMP
+
+def strategies():
+    model={'baseline':2.1,'capacity':11.8,'tau_minutes':48,'r_squared':.987,'observation_count':13,'formula':'q(t)=q₀+C(1−exp(−t/τ))','model_version':'fixed-software-reference-v1'}
+    points=[{'shut_in_minutes':i*15,'liquid_rate_m3_day':round(2.1+11.8*(1-math.exp(-i*15/48))+.09*math.sin(i),4)} for i in range(13)]
+    candidates=[{'on_minutes':60,'off_minutes':60,'starts_per_day':12,'predicted_liquid_m3':8.3,'predicted_energy_kwh':168,'saving_rate':.23,'feasible':True,'violations':[]},{'on_minutes':90,'off_minutes':60,'starts_per_day':9.6,'predicted_liquid_m3':9.4,'predicted_energy_kwh':192,'saving_rate':.12,'feasible':True,'violations':[]},{'on_minutes':20,'off_minutes':15,'starts_per_day':41.14,'predicted_liquid_m3':7.2,'predicted_energy_kwh':160,'saving_rate':.26,'feasible':False,'violations':['每日启动次数超过测试约束 12 次']}]
+    config={'recovery_test_id':'preview-RT-019','recovery_tested_at':STAMP,'strategy_version_id':'preview-SV-001','recovery_model':model,'recovery_observations':points,'recovery_fitted_curve':[{'shut_in_minutes':i*3,'liquid_rate_m3_day':2.1+11.8*(1-math.exp(-i*3/48))} for i in range(61)],'selected_candidate':candidates[0],'ranked_candidates':candidates,'constraints':{'min_on_minutes':20,'max_on_minutes':120,'min_off_minutes':15,'max_off_minutes':180,'min_liquid_m3_day':7,'max_starts_per_day':12,'motor_kw':18.5}}
+    base={'id':'preview-STR-001','well_id':'preview-TEST-019','well_name':'低产测试井 019','name':'低产测试井 019 间抽制度样例','status':'approved','version':2,'configuration_version':1,'current_version_id':'preview-SV-001','created_by':'preview-fixture-author','submitted_by':'preview-fixture-author','decision_by':'preview-fixture-reviewer','created_at':STAMP,'updated_at':STAMP,'submitted_at':STAMP,'decision_at':STAMP,'effective_at':None,'source_type':'software_fixture','source_kind':'software_fixture','configuration':config,'versions':[{'id':'preview-SV-001','version_number':1,'status':'approved','created_at':STAMP}],'approvals':[{'id':'preview-AP-001','object_version':2,'decision':'approved','comment':'独立复核：固定软件测试制度，无设备执行资格','decided_at':STAMP}],'effect_trace':{'valid_for_comparison':False,'conclusion':'此固定制度未下发，效果页另列软件比较样例，不代表本策略实际节能量。'}}
+    draft=deepcopy(base);draft.update(id='preview-STR-002',name='低产测试井 019 待调整草稿',status='draft',version=1,current_version_id='preview-SV-002',approvals=[]);draft['configuration']['strategy_version_id']='preview-SV-002';draft['versions'][0].update(id='preview-SV-002',status='draft')
+    return [base,draft]
+
+def effects():
+    return [{'id':'preview-effect-1','well':'测试井 019','baseline_from':'2026-09-01','baseline_to':'2026-09-07','evaluation_from':'2026-09-08','evaluation_to':'2026-09-14','baseline_energy_kwh':1480,'after_energy_kwh':1310,'baseline_liquid_m3':87.1,'after_liquid_m3':85.8,'coverage':.95,'conclusion':'描述性用电差异，不能认定因果节能','field_validation':False},
+            {'id':'preview-effect-2','well':'测试井 020','baseline_from':'2026-09-01','baseline_to':'2026-09-07','evaluation_from':'2026-09-08','evaluation_to':'2026-09-14','baseline_energy_kwh':None,'after_energy_kwh':310,'baseline_liquid_m3':None,'after_liquid_m3':29.1,'coverage':.43,'conclusion':'覆盖不足，不计算节电率','field_validation':False}]

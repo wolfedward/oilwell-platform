@@ -8,8 +8,12 @@ import {renderAcquisitionConfiguration} from './pages/acquisition.js';
 import {renderDynagraphPreview} from './presenters/dynagraphs.js';
 import {renderDynagraphWorkspace} from './pages/dynagraphs.js';
 import {renderStudiesPreview} from './presenters/studies.js';
+import {renderEnergyPreview} from './presenters/energy.js';
+import {renderEnergyWorkspace} from './pages/energy.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
+  ...Object.fromEntries(['energy-overview','recovery-analysis','strategy-center','strategy-editor'].map(id=>[id,renderEnergyPreview])),
+  'multiwell-schedule':renderEnergyWorkspace,'energy-effects':renderEnergyWorkspace,
   ...Object.fromEntries(['engineering-overview','condition-lab','recovery-lab','motor-lab','study-review'].map(id=>[id,renderStudiesPreview])),
   ...Object.fromEntries(['production-monitor','well-realtime','well-history','well-status','fluid-level','haulage-monitor'].map(id=>[id,renderMonitoring])),
   ...Object.fromEntries(['acquisition','data-quality','devices','field-registry','ingest-reliability','waveforms'].map(id=>[id,renderAcquisitionPreview])),

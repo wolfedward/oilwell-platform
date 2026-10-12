@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/preview/preview.css"><main id="app"><div id="workspace" class="workspace"></div></main><pre id="result" hidden>pending</pre><script type="module">
+try{const data=PREVIEW_DATA,{renderers}=await import('../../frontend/preview/renderers.js'),{createPreviewContext}=await import('../../frontend/preview/context.js');const missing=[],unknown_reads=[],overflow=[],check=(v,n)=>{if(!v)missing.push(n);};let current;
+const api={get:async p=>{const k=p.split('?')[0];if(!(k in data.reads)){unknown_reads.push(k);throw Error(k);}return structuredClone(data.reads[k]);},post:async()=>{throw Error('engine request');}};
+for(const id of ['energy-overview','recovery-analysis','strategy-center','strategy-editor','multiwell-schedule','energy-effects']){const w=document.querySelector('#workspace'),ctx=createPreviewContext({workspace:w,page:{id,label:id},params:id==='strategy-editor'?{well_id:'W1'}:{},session:{actor:data.actor},generation:()=>current===ctx,api,meta:{},navigate:()=>{},actions:{confirmRehearsal:async()=>({mode:'rehearsal'})}});current=ctx;await renderers[id](ctx);
+check(w.querySelector('h2'),'content-'+id);if(id==='recovery-analysis'){check(w.querySelector('svg'),'recovery-curve');check(w.textContent.includes('m³/d'),'rate-unit');}
+if(id==='strategy-center'){check(w.textContent.includes('preview-SV-001'),'version');check(w.textContent.includes('独立复核'),'approval');}
+if(id==='strategy-editor'){w.querySelector('#strategyOptimizeForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,20));check(w.textContent.includes('尚未计算'),'no-calculation');}
+if(id==='multiwell-schedule')check(w.querySelector('svg'),'timeline');if(id==='energy-effects')check(w.textContent.includes('覆盖不足'),'missing-coverage');
+if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);await window.captureEvidence?.(id);ctx.dispose();}
+document.querySelector('#result').textContent=JSON.stringify({pages_checked:6,missing,unknown_reads,overflow});}catch(e){document.querySelector('#result').textContent=JSON.stringify({error:e.stack});}
+</script></html>

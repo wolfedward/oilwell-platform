@@ -2,8 +2,9 @@
 
 
 def register_all(repository):
-    from . import monitoring,acquisition,dynagraphs,studies
+    from . import monitoring,acquisition,dynagraphs,studies,energy
     monitoring.register(repository)
     acquisition.register(repository)
     dynagraphs.register(repository)
     studies.register(repository)
+    energy.register(repository)
