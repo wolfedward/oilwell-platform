@@ -1,5 +1,6 @@
 """Temporary-only fixtures. Never reads installed database configuration."""
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def make_source(root: Path) -> Path:
     path = root / 'source.db'
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript((ROOT / 'backend/schema.sql').read_text(encoding='utf-8'))
         db.executescript("""
         INSERT INTO units(id,name) VALUES ('U1','测试采油区');
@@ -33,7 +34,7 @@ def make_source(root: Path) -> Path:
 
 
 def read_source_rows(path: Path) -> dict:
-    with sqlite3.connect(path.resolve().as_uri()+'?mode=ro', uri=True) as db:
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
         tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
         return {table:[dict(row) for row in db.execute('SELECT * FROM "'+table+'"')] for table in tables}
