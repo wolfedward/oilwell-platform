@@ -1,0 +1,37 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/preview/preview.css"><main id="workspace" class="workspace"></main><pre id="result" hidden>pending</pre><script type="module">
+try {
+  const {renderMonitoring}=await import('../../frontend/preview/pages/monitoring.js');
+  const {renderDashboardPreview}=await import('../../frontend/preview/presenters/dashboard.js');
+  const {renderWellList}=await import('../../frontend/pages/wells.js');
+  const {renderWellDetailPreview}=await import('../../frontend/preview/presenters/dashboard.js');
+  const {createPreviewContext}=await import('../../frontend/preview/context.js');
+  const data=PREVIEW_DATA;
+  const api={get:async path=>{
+    const p=path.split('?')[0];
+    if(p==='/api/dashboard')return data.dashboard;
+    if(p==='/api/wells')return data.wells;
+    if(p==='/api/wells/W1/telemetry')return data.telemetry;
+    if(p==='/api/wells/W1')return data.detail;
+    if(p==='/api/preview/views/monitoring')return data.monitoring;
+    throw Error('Unexpected path: '+path);
+  }};
+  const ids=['dashboard','wells','well-detail','production-monitor','well-realtime','well-history','well-status','fluid-level','haulage-monitor'];const checked=[],empty=[],overflow=[],missing=[];
+  for(const id of ids){
+    const workspace=document.querySelector('#workspace');const ctx=createPreviewContext({page:{id,label:id,group:'测试'},params:{id:'W1',well_id:'W1'},session:{actor:{id:'preview-user-1',permissions:['wells.read','wells.update']}},workspace,generation:()=>true,api,meta:{data_to:'2026-09-12'},navigate:()=>{},actions:{confirmRehearsal:async()=>null}});
+    const render={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview}[id]||renderMonitoring;
+    await render(ctx);checked.push(id);
+    if(!workspace.querySelector('table,svg,.metric-card')||workspace.textContent.length<120)empty.push(id);
+    if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);
+    if(id==='well-detail'){
+      const button=workspace.querySelector('[data-edit-well]');
+      if(!button)missing.push('well-edit');else{button.click();if(!document.querySelector('[data-well-edit-form]'))missing.push('well-edit-modal');document.querySelector('[aria-label="关闭"]')?.click();}
+    }
+    if(id==='production-monitor'&&!workspace.querySelector('[data-monitor-view]'))missing.push('card-table-toggle');
+    if(id==='well-history'&&!workspace.querySelector('[data-export-history]'))missing.push('history-export');
+    if(!['wells','well-detail'].includes(id)&&(!workspace.querySelector('[name="unit_id"]')||!workspace.querySelector('[name="group_id"]')))missing.push(id+'-scope-filter');
+    await window.captureEvidence?.(id);
+    ctx.dispose();
+  }
+  document.querySelector('#result').textContent=JSON.stringify({pages_checked:checked,empty_pages:empty,overflow,missing});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></html>

@@ -61,7 +61,7 @@ export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}
     if(nav){event.preventDefault();const id=nav.dataset.nav||nav.dataset.tab;void navigate(id,tabs.get(id)?.params||{});return;}
     const target=event.target.closest('button[data-page]');
     if(target&&catalog.some(p=>p.id===target.dataset.page)){
-      event.preventDefault();const params={};for(const [key,value] of Object.entries(target.dataset)){if(key.startsWith('param'))params[key.slice(5).replace(/[A-Z]/g,(x,i)=>(i?'_':'')+x.toLowerCase())]=value;}
+      event.preventDefault();const params=target.dataset.id?{id:target.dataset.id}:{};for(const [key,value] of Object.entries(target.dataset)){if(key.startsWith('param'))params[key.slice(5).replace(/[A-Z]/g,(x,i)=>(i?'_':'')+x.toLowerCase())]=value;}
       void navigate(target.dataset.page,params);
     }
     if(event.target.closest('[data-logout]')){dispose();onLogout?.();}

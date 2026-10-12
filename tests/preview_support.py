@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,12 +46,17 @@ def find_secrets_in_served_snapshot(manifest: dict) -> list[str]:
     return [token for token in ('TEST-SECRET-HASH','TEST-SECRET-SALT','TEST-SECRET-TOKEN') if token in content]
 
 
-def run_browser(case: str, *, width: int = 1366, height: int = 768) -> dict:
+def run_browser(case: str, *, width: int = 1366, height: int = 768, data=None, screenshot_dir=None) -> dict:
     fixture = ROOT / 'tests/fixtures' / ('preview_'+case+'.html')
     runtime=Path(os.environ['USERPROFILE'])/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
     env={**os.environ,'NODE_PATH':str(runtime/'node_modules')}
-    result = subprocess.run([str(runtime/'bin/node.exe'),str(ROOT/'tests/fixtures/preview_runner.cjs'),fixture.as_uri(),str(width),str(height)],
-                            cwd=ROOT,env=env,capture_output=True,text=True,encoding='utf-8',timeout=60)
+    with tempfile.TemporaryDirectory(prefix='preview-browser-') as temporary:
+        if data is not None:
+            text=fixture.read_text(encoding='utf-8').replace('../../',ROOT.as_uri()+'/')
+            text=text.replace('PREVIEW_DATA',json.dumps(data,ensure_ascii=False).replace('<','\\u003c'))
+            fixture=Path(temporary)/'fixture.html';fixture.write_text(text,encoding='utf-8')
+        result = subprocess.run([str(runtime/'bin/node.exe'),str(ROOT/'tests/fixtures/preview_runner.cjs'),fixture.as_uri(),str(width),str(height),'',str(screenshot_dir or '')],
+                                cwd=ROOT,env=env,capture_output=True,text=True,encoding='utf-8',timeout=60)
     if result.returncode:
         raise AssertionError(result.stderr)
     return json.loads(result.stdout)

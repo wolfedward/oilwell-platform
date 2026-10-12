@@ -157,6 +157,8 @@ def create_preview_server(root: Path,host: str='127.0.0.1',port: int=8772):
     meta={'mode':'preview','control_enabled':False,'snapshot_id':manifest['snapshot_id'],'snapshot_at':manifest['captured_at'],
           'data_from':manifest['data_from'],'data_to':manifest['data_to'],'source_kind':'software_fixture','page_catalog_version':'1'}
     repository=PreviewRepository(PreviewDataset(root/'business.db'),meta)
+    from .read_models import register_all
+    register_all(repository)
     server=ThreadingHTTPServer((host,port),PreviewHandler)
     server.daemon_threads=True
     server.auth=auth; server.repository=repository; server.catalog=load_catalog()

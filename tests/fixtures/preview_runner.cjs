@@ -1,11 +1,16 @@
 const {chromium} = require('playwright');
 (async () => {
-  const [url, width = '1366', height = '768', screenshot = ''] = process.argv.slice(2);
+  const [url, width = '1366', height = '768', screenshot = '', screenshotDir=''] = process.argv.slice(2);
   const browser = await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     headless:true,timeout:10000,args:['--allow-file-access-from-files','--disable-gpu']});
   try {
     const page = await browser.newPage({viewport:{width:Number(width),height:Number(height)},locale:'zh-CN'});
     const errors=[];
+    await page.exposeFunction('captureEvidence',async label=>{
+      if(!screenshotDir||!/^[a-z-]+$/.test(label))return;
+      const fs=require('node:fs'),path=require('node:path');fs.mkdirSync(screenshotDir,{recursive:true});
+      await page.screenshot({path:path.join(screenshotDir,label+'-'+width+'.png'),fullPage:true});
+    });
     page.on('pageerror',error=>errors.push(error.message));
     await page.goto(url,{waitUntil:'domcontentloaded',timeout:15000});
     await page.waitForFunction(()=>document.querySelector('#result')?.textContent !== 'pending',null,{timeout:35000});

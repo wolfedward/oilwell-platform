@@ -5,13 +5,16 @@ try {
   const catalog=await loadCatalog('../../frontend/preview/catalog.json');
   let resolve;
   const renderers={dashboard:async ctx=>{ctx.workspace.innerHTML=ctx.pageHeader(ctx.page);},
-    'well-detail':async ctx=>{ctx.workspace.innerHTML=ctx.pageHeader(ctx.page)+`<p data-well>${ctx.escapeHtml(ctx.params.id)}</p>`;},
+    'well-detail':async ctx=>{ctx.workspace.innerHTML=ctx.pageHeader(ctx.page)+`<p data-well>${ctx.escapeHtml(ctx.params.id)}</p><button data-page="well-detail" data-id="W2">查看二号井</button>`;},
     wells:async ctx=>{await new Promise(r=>resolve=r);ctx.workspace.innerHTML='<h1>late</h1>';}};
   const app=await mountPreviewShell({root:document.querySelector('#app'),catalog,api:{dispose(){}},meta:{data_from:'2026-09-10',data_to:'2026-09-12'},session:{actor:{id:'preview-user-1',display_name:'管理员',role_code:'administrator',permissions:[]}},renderers});
   await app.navigate('well-detail',{id:'W1',from:'2026-09-10'});
   const roundtrip=location.hash.includes('id=W1')&&document.querySelector('[data-well]').textContent==='W1';
+  document.querySelector('[data-id=W2]').click();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const legacyId=document.querySelector('[data-well]').textContent==='W2';
   const pending=app.navigate('wells');await app.navigate('dashboard');resolve();await pending;
-  document.querySelector('#result').textContent=JSON.stringify({catalog_pages:catalog.length,groups:document.querySelectorAll('[data-nav-group]').length,legacy_query_roundtrip:roundtrip,late_response_replaced_current:document.querySelector('#workspace').textContent.includes('late'),horizontal_overflow:document.documentElement.scrollWidth>innerWidth,preview_notice:document.body.textContent.includes('页面预览 · 测试数据')});
+  document.querySelector('#result').textContent=JSON.stringify({catalog_pages:catalog.length,groups:document.querySelectorAll('[data-nav-group]').length,legacy_query_roundtrip:roundtrip&&legacyId,late_response_replaced_current:document.querySelector('#workspace').textContent.includes('late'),horizontal_overflow:document.documentElement.scrollWidth>innerWidth,preview_notice:document.body.textContent.includes('页面预览 · 测试数据')});
   app.dispose();
 } catch(error) {document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
 </script></html>
