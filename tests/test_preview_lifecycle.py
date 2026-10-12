@@ -3,6 +3,20 @@ from pathlib import Path
 from unittest.mock import patch
 from tests.preview_support import make_source,ROOT
 class PreviewLifecycleTests(unittest.TestCase):
+    def test_repackage_stopped_preview_preserves_data_accounts_and_state(self):
+        from tools.page_preview import prepare,repackage,verify_code
+        from backend.preview.snapshot import file_hash
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);target=base/'install';prepare(make_source(base),target,code_source=ROOT,revision=None)
+            hashes={name:file_hash(target/name) for name in ['business.db','private/accounts.json','private/source.db']}
+            (target/'state.db').write_bytes(b'owned-state-must-survive')
+            result=repackage(target,code_source=ROOT,revision=None)
+            self.assertNotEqual(result['code_path'],'code');verify_code(target)
+            self.assertEqual((target/'state.db').read_bytes(),b'owned-state-must-survive')
+            self.assertEqual(hashes,{name:file_hash(target/name) for name in hashes})
+            self.assertTrue((target/'code/preview.html').exists())
+            with patch('tools.page_preview.status',return_value={'status':'ready'}):
+                with self.assertRaisesRegex(ValueError,'停止'):repackage(target,code_source=ROOT,revision=None)
     def test_prepare_refuses_existing_and_validates_package(self):
         from tools.page_preview import prepare,verify_code
         with tempfile.TemporaryDirectory() as tmp:

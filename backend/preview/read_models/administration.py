@@ -20,7 +20,8 @@ def register(repository):
         for row in rows:row['details']=json.loads(row.pop('details_json') or '{}')
         return {'items':rows,'total':total,'page':p,'page_size':size}
     def evidence(q,a):
-        return {'requirements':[{'code':code,'year':'第 '+code[1]+' 年度','title':TASK_TITLES[code],'route':next(p['id'] for p in catalog if code in p['annual_tasks']),'evidence':[{'label':'关联设计页面（非研发完成证明）','count':sum(code in p['annual_tasks'] for p in catalog),'latest_id':None}]} for code in sorted(ANNUAL_TASKS)],'integrity':{'database':ds.scalar('PRAGMA integrity_check'),'foreign_keys':'passed' if not ds.query_all('PRAGMA foreign_key_check') else 'failed'},'generated_at':datetime.now(timezone.utc).isoformat(),'source_kind':'catalog_mapping'}
+        integrity={'database':repository.meta.get('snapshot_integrity','not_checked'),'foreign_keys':'passed' if repository.meta.get('snapshot_foreign_key_violations')==0 else 'not_checked','verified_at':repository.meta.get('snapshot_verified_at'),'basis':'启动时核验固定只读快照；不是每次页面请求重扫'}
+        return {'requirements':[{'code':code,'year':'第 '+code[1]+' 年度','title':TASK_TITLES[code],'route':next(p['id'] for p in catalog if code in p['annual_tasks']),'evidence':[{'label':'关联设计页面（非研发完成证明）','count':sum(code in p['annual_tasks'] for p in catalog),'latest_id':None}]} for code in sorted(ANNUAL_TASKS)],'integrity':integrity,'generated_at':datetime.now(timezone.utc).isoformat(),'source_kind':'catalog_mapping'}
     base='/api/preview/legacy/api'
     repository.register('GET',base+'/users',lambda q,a:ds.query_all('SELECT u.id,u.username,u.display_name,u.role_id,r.code AS role_code,u.status,u.version FROM users u LEFT JOIN roles r ON r.id=u.role_id ORDER BY u.id'))
     repository.register('GET',base+'/roles',roles)

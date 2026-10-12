@@ -59,6 +59,19 @@ def verify_code(target):
         if not allowed(name) or not path.resolve().is_relative_to(code) or path.is_symlink() or file_hash(path)!=digest:raise ValueError('代码摘要不匹配: '+name)
     return data
 
+def repackage(target,*,code_source=ROOT,revision='HEAD'):
+    target,previous,old_code=installation(target)
+    if status(target)['status']!='stopped':raise ValueError('请先停止所属预览实例再更新固定代码')
+    verify_code(target);verify_manifest(target)
+    folder='code-'+secrets.token_hex(8)
+    code=package(Path(code_source),target/folder,revision)
+    updated={**previous,**code,'code_path':folder}
+    (target/'private'/('installation-before-'+secrets.token_hex(8)+'.json')).write_bytes((target/'installation.json').read_bytes())
+    pending=target/('installation-'+secrets.token_hex(8)+'.json')
+    pending.write_text(json.dumps(updated,ensure_ascii=False,indent=2),encoding='utf-8')
+    pending.replace(target/'installation.json')
+    return {k:v for k,v in updated.items() if k!='files'}
+
 def request(port,path='/api/preview/health',method='GET',token=None):
     conn=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
     try:
@@ -131,10 +144,11 @@ def serve(target,instance_id):
     finally:server.server_close()
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['prepare','launch','status','stop','serve']);p.add_argument('--target',type=Path,required=True);p.add_argument('--source-db',type=Path);p.add_argument('--revision',default='HEAD');p.add_argument('--instance-id');p.add_argument('--port',type=int,default=8772);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['prepare','repackage','launch','status','stop','serve']);p.add_argument('--target',type=Path,required=True);p.add_argument('--source-db',type=Path);p.add_argument('--revision',default='HEAD');p.add_argument('--instance-id');p.add_argument('--port',type=int,default=8772);a=p.parse_args()
     if a.action=='prepare':
         if not a.source_db:p.error('prepare 需要显式 --source-db')
         result=prepare(a.source_db,a.target,revision=a.revision,progress=lambda text:print(json.dumps({'stage':text},ensure_ascii=False),flush=True))
+    elif a.action=='repackage':result=repackage(a.target,revision=a.revision)
     elif a.action=='serve':serve(a.target,a.instance_id);return
     else:result=launch(a.target,port=a.port) if a.action=='launch' else status(a.target) if a.action=='status' else stop(a.target)
     print(json.dumps(result,ensure_ascii=False))

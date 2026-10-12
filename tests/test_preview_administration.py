@@ -2,6 +2,17 @@ import tempfile,unittest
 from pathlib import Path
 from tests.preview_support import make_source
 class AdministrationPreviewTests(unittest.TestCase):
+    def test_pages_use_verified_immutable_snapshot_evidence_without_rescanning(self):
+        from unittest.mock import patch
+        from backend.preview.dataset import PreviewDataset
+        from backend.preview.repository import PreviewRepository
+        from backend.preview.read_models.administration import register
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=PreviewRepository(PreviewDataset(make_source(Path(tmp))),{'snapshot_integrity':'ok','snapshot_foreign_key_violations':0,'snapshot_verified_at':'2026-10-12T06:00:00Z'});register(repo)
+            with patch.object(repo.dataset,'scalar',side_effect=AssertionError('page must not rescan a GB-sized snapshot')):
+                result=repo.read('/api/preview/legacy/api/acceptance/evidence',{}, {})
+            self.assertEqual(result['integrity']['database'],'ok')
+            self.assertEqual(result['integrity']['verified_at'],'2026-10-12T06:00:00Z')
     def test_non_admin_read_and_write_rejected(self):
         from backend.preview.dataset import PreviewDataset
         from backend.preview.repository import PreviewRepository

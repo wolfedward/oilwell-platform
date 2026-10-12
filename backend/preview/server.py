@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import json
 import mimetypes
 import threading
+from datetime import datetime,timezone
 from pathlib import Path
 from urllib.parse import urlsplit,unquote,parse_qs
 from .auth import PreviewAuth
@@ -140,7 +141,7 @@ class PreviewHandler(BaseHTTPRequestHandler):
             return self._static(path)
         except PreviewError as error:
             self._json(error.status,{'code':error.code,'message':str(error),'details':error.details},error=True)
-        except (BrokenPipeError,ConnectionResetError): pass
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError): pass
         except Exception:
             self._json(500,{'code':'preview_error','message':'预览处理失败，请检查本机日志','details':None},error=True)
 
@@ -172,6 +173,7 @@ def create_preview_server(root: Path,host: str='127.0.0.1',port: int=8772):
     manifest=verify_manifest(root)
     auth=PreviewAuth(root/'private/accounts.json')
     meta={'mode':'preview','control_enabled':False,'snapshot_id':manifest['snapshot_id'],'snapshot_at':manifest['captured_at'],
+          'snapshot_integrity':manifest['integrity'],'snapshot_foreign_key_violations':len(manifest['foreign_key_violations']),'snapshot_verified_at':datetime.now(timezone.utc).isoformat(),
           'data_from':manifest['data_from'],'data_to':manifest['data_to'],'source_kind':'software_fixture','page_catalog_version':install.get('code_sha256','1')[:12]}
     repository=PreviewRepository(PreviewDataset(root/'business.db'),meta)
     from .read_models import register_all

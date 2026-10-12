@@ -17,4 +17,5 @@ def main():
     evidence={'revision':code['revision'],'snapshot_at':manifest['captured_at'],'tables':{k:v['rows'] for k,v in manifest['tables'].items()},**result}
     a.output.write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps({'pages_checked':len(result['pages']),'failures':len(result['failures']),'page_errors':len(result['page_errors']),'outside_preview_requests':len(result['outside_preview_requests']),'overflow':len(result['overflow']),'report':str(a.output)},ensure_ascii=False))
+    if any(result[k] for k in ['failures','page_errors','outside_preview_requests','overflow']):raise SystemExit(1)
 if __name__=='__main__':main()

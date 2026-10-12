@@ -8,7 +8,7 @@ try{await page.waitForFunction(({label})=>document.title===label+' · 油井平�
 const text=await page.locator('#workspace').innerText();if(/页面读取失败|页面正在制作|预览处理失败/.test(text))result.failures.push({id:item.id,width,text:text.slice(0,500)});
 const alerts=await page.locator('#workspace .study-alert-error,#workspace .inversion-error,#workspace [role=alert]').allTextContents();for(const alert of alerts)if(alert.trim())result.failures.push({id:item.id,width,error:alert});
 if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))result.overflow.push({id:item.id,width});
-if(config.screens){fs.mkdirSync(config.screens,{recursive:true});await page.locator('#workspace').evaluate(el=>el.scrollTop=0);await page.screenshot({path:path.join(config.screens,item.id+'-'+width+'.png'),fullPage:true});await page.locator('#workspace').evaluate(el=>el.scrollTop=el.scrollHeight);await page.screenshot({path:path.join(config.screens,item.id+'-'+width+'-bottom.png'),fullPage:true});await page.locator('#workspace').evaluate(el=>el.scrollTop=0);}
+if(config.screens){fs.mkdirSync(config.screens,{recursive:true});await page.locator('#workspace').evaluate(el=>{el.style.scrollBehavior='auto';el.scrollTop=0;});await page.screenshot({path:path.join(config.screens,item.id+'-'+width+'.png'),fullPage:true});await page.locator('#workspace').evaluate(el=>el.scrollTop=el.scrollHeight);await page.screenshot({path:path.join(config.screens,item.id+'-'+width+'-bottom.png'),fullPage:true});await page.locator('#workspace').evaluate(el=>el.scrollTop=0);}
 result.pages.push({id:item.id,width,characters:text.length});}
 await page.goto(config.url+'/assets/open-interface/index.html#hardware');await page.waitForSelector('#hardware');result.open_interface_entries=1;
 await context.close();}
