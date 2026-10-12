@@ -10,8 +10,10 @@ import {renderDynagraphWorkspace} from './pages/dynagraphs.js';
 import {renderStudiesPreview} from './presenters/studies.js';
 import {renderEnergyPreview} from './presenters/energy.js';
 import {renderEnergyWorkspace} from './pages/energy.js';
+import {renderMotorPreview} from './pages/motor.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
+  ...Object.fromEntries(['motor-overview','motor-faults','motor-spectrum','protection-settings','protection-events'].map(id=>[id,renderMotorPreview])),
   ...Object.fromEntries(['energy-overview','recovery-analysis','strategy-center','strategy-editor'].map(id=>[id,renderEnergyPreview])),
   'multiwell-schedule':renderEnergyWorkspace,'energy-effects':renderEnergyWorkspace,
   ...Object.fromEntries(['engineering-overview','condition-lab','recovery-lab','motor-lab','study-review'].map(id=>[id,renderStudiesPreview])),
