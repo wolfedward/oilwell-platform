@@ -4,13 +4,20 @@ import {bindChartInteractions} from '../charts.js';
 import {createPreviewContext} from './context.js';
 import {renderers as installedRenderers} from './renderers.js';
 
-export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}},renderers=installedRenderers,onLogout,actions}) {
+export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}},renderers=installedRenderers,onLogout,onActorChange,actions}) {
   const groups=[...new Set(catalog.map(p=>p.group))];
   let generation=0,context=null,disposed=false;const tabs=new Map();
   root.innerHTML=`<div class="app-shell preview-shell"><header class="topbar"><a class="brand" href="#/dashboard"><img src="/assets/heneng-logo.png" alt="合能科技"><span><strong>油井数字智能化平台</strong><small>OIL WELL DIGITAL INTELLIGENCE</small></span></a><span class="preview-tag">页面预览 · 测试数据</span><span class="preview-top-note">先审页面，后接入业务</span><div class="top-actions"><span>${esc(session.actor.display_name||'预览用户')}</span><button class="text-button" data-logout>退出</button></div></header>
     <div class="preview-toolbar"><div class="preview-dates">数据日期 <b>${esc(meta.data_from||'—')} — ${esc(meta.data_to||'—')}</b></div><div class="tabs" data-tabs></div><label>页面场景 <select data-scenario><option value="normal">正常数据</option><option value="empty">空数据</option><option value="error">读取错误</option><option value="denied">无权限</option><option value="stale">陈旧数据</option><option value="unconnected">未接入</option></select></label></div>
     <div class="main-layout"><aside class="sidebar preview-sidebar"><div class="sidebar-head"><span>井</span><div><strong>完整业务工作台</strong><small>55 PAGES · REVIEW FIRST</small></div></div><nav>${groups.map(group=>`<details open data-nav-group><summary>${esc(group)}</summary>${catalog.filter(p=>p.group===group&&!p.hidden).map(p=>`<button data-nav="${p.id}"><span>${esc(p.label[0])}</span><div><strong>${esc(p.label)}</strong></div></button>`).join('')}</details>`).join('')}<a class="preview-open-link" href="/assets/open-interface/index.html#hardware" target="_blank" rel="noopener">厂家开放接口与设备参考 ↗</a></nav></aside><main id="workspace" class="workspace" tabindex="-1"></main></div></div>`;
   const workspace=root.querySelector('#workspace');
+  if(session.can_switch_actor){
+    const select=document.createElement('select');select.setAttribute('aria-label','预览操作者');select.className='preview-role';
+    for(const [value,label] of [['administrator','系统管理员'],['production_engineer','生产工程师'],['algorithm_engineer','算法工程师'],['maintenance_engineer','设备运维'],['reviewer','业务复核员']])select.add(new Option(label,value));
+    select.value=session.actor.role_code;
+    select.onchange=()=>{if(window.confirm('切换到另一位预览操作者；当前未保存表单将关闭。'))onActorChange?.(select.value);else select.value=session.actor.role_code;};
+    root.querySelector('.top-actions').prepend(select);
+  }
   async function render(page,params) {
     if(disposed)return;
     const thisGeneration=++generation;context?.dispose();

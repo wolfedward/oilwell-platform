@@ -1,0 +1,18 @@
+<!doctype html><html><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><div id="app"></div><pre id="result" hidden>pending</pre><script type="module">
+try {
+  const {createPreviewActions}=await import('../../frontend/preview/actions.js');
+  const writes=[];const actions=createPreviewActions({api:{get:async()=>({version:0}),post:async(path,body)=>{writes.push(body);return {id:'S1',version:1,mode:'rehearsal'};}},isCurrent:()=>true});
+  const cancelled=actions.confirmRehearsal({action:'patch',path:'/api/strategies/S1',values:{name:'保留草稿'}});
+  document.querySelector('[data-rehearsal-cancel]').click();await cancelled;
+  const count=writes.length;
+  const submitted=actions.confirmRehearsal({action:'patch',path:'/api/strategies/S1',values:{name:'保留草稿'}});
+  const notice=document.querySelector('.modal').textContent.includes('未发送至设备');
+  document.querySelector('[data-rehearsal-submit]').click();await submitted;
+  const submittedWrites=writes.length;
+  const controller=new AbortController();
+  const cancelledContext=actions.confirmRehearsal({action:'patch',path:'/api/strategies/S1',values:{name:'离开页面'},signal:controller.signal});
+  controller.abort();
+  await cancelledContext;
+  document.querySelector('#result').textContent=JSON.stringify({cancelled_writes:count,submitted_writes:submittedWrites,not_sent_notice:notice,writes_after_cancelled_context:writes.length-submittedWrites});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></html>

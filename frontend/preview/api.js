@@ -20,7 +20,7 @@ export function createPreviewApi({fetchImpl=fetch,csrfToken=()=>'',confirmRehear
     const mapped=previewPath(path), method=(options.method||'GET').toUpperCase();
     if(disposed||parentSignal?.aborted) throw new ApiError('页面已退出',{code:'cancelled'});
     if(method!=='GET'&&!path.startsWith('/api/preview/')) {
-      const result=await confirmRehearsal({action:method.toLowerCase(),path,values:options.body});
+      const result=await confirmRehearsal({action:method.toLowerCase(),path,values:options.body,signal:parentSignal});
       if(disposed||parentSignal?.aborted||!result) throw new ApiError('已取消流程演练',{code:'cancelled'});
       return result;
     }

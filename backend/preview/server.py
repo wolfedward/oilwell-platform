@@ -12,6 +12,8 @@ from .dataset import PreviewDataset
 from .errors import PreviewError
 from .repository import PreviewRepository
 from .snapshot import verify_manifest
+from .state import PreviewState
+from .rehearsals import save_rehearsal
 
 ROOT=Path(__file__).resolve().parents[2]
 COOKIE='oilwell_page_preview'
@@ -93,7 +95,23 @@ class PreviewHandler(BaseHTTPRequestHandler):
                         self.server.auth.logout(self._token())
                         return self._json(200,{'signed_out':True},{'Set-Cookie':f'{COOKIE}=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/api/preview/'})
                     if self.command=='GET': return self._json(200,session)
+                if write and path in {'/api/preview/actor','/api/preview/rehearsals','/api/preview/rehearsals/reset'}:
+                    body=self._body()
+                    # Refresh authority under the same lock as logout/actor
+                    # changes and hold it through the local commit.
+                    with self.server.auth.lock:
+                        session=self.server.auth.session(self._token())
+                        if not hmac.compare_digest(self.headers.get('X-Preview-CSRF',''),session['csrf_token']):
+                            raise PreviewError('invalid_csrf','操作者已改变，请重新提交',403)
+                        if path=='/api/preview/rehearsals/reset':
+                            if session['actor']['role_code']!='administrator':raise PreviewError('forbidden','仅管理员可重置演练',403)
+                            self.server.state.reset(body.get('confirmation'));result={'reset':True,'snapshot_unchanged':True}
+                        elif path=='/api/preview/actor': result=self.server.auth.switch_actor(self._token(),body.get('role_code'))
+                        else: result=save_rehearsal(self.server.state,session['actor'],body.get('request_id'),body.get('action'),body.get('object_id'),body.get('expected_version'),body.get('values'))
+                    return self._json(200,result)
                 if write: raise PreviewError('control_disabled','该预览动作尚未开放',403)
+                if path=='/api/preview/rehearsals':
+                    return self._json(200,self.server.state.current(query.get('object_id','')))
                 if path=='/api/preview/catalog': return self._json(200,self.server.catalog)
                 if path=='/api/preview/meta': return self._json(200,self.server.repository.meta)
                 if path.startswith('/api/preview/'):
@@ -142,5 +160,6 @@ def create_preview_server(root: Path,host: str='127.0.0.1',port: int=8772):
     server=ThreadingHTTPServer((host,port),PreviewHandler)
     server.daemon_threads=True
     server.auth=auth; server.repository=repository; server.catalog=load_catalog()
+    server.state=PreviewState(root/'state.db'); repository.state=server.state
     server.code_root=(root/'code').resolve() if (root/'code').is_dir() else ROOT
     return server

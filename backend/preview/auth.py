@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 from .errors import PreviewError
+from .permissions import role_permissions
 
 ROLES=(('administrator','系统管理员'),('production_engineer','生产工程师'),('algorithm_engineer','算法工程师'),('maintenance_engineer','设备运维'),('reviewer','业务复核员'))
 
@@ -45,8 +46,8 @@ class PreviewAuth:
             self.failures.pop(username,None)
             token=secrets.token_urlsafe(32)
             actor={key:account[key] for key in ('id','display_name','role_code')}
-            actor['permissions']=list(account.get('permissions',[]))
-            self.sessions[token]={'actor':actor,'csrf_token':secrets.token_urlsafe(32),'expires':self.clock()+8*3600}
+            actor['permissions']=role_permissions(account['role_code'])
+            self.sessions[token]={'actor':actor,'can_switch_actor':account['role_code']=='administrator','csrf_token':secrets.token_urlsafe(32),'expires':self.clock()+8*3600}
             return token,self.session(token)
 
     def session(self,token):
@@ -55,7 +56,20 @@ class PreviewAuth:
             if not value or value['expires']<=self.clock():
                 self.sessions.pop(token,None)
                 raise PreviewError('unauthenticated','请登录独立页面预览',401)
-            return {'actor':dict(value['actor']),'csrf_token':value['csrf_token']}
+            return {'actor':dict(value['actor']),'csrf_token':value['csrf_token'],'can_switch_actor':value['can_switch_actor'],
+                    'capabilities':{name:{'enabled':True,'status':'ready','mode':'preview'} for name in ('registry','ingest_reliability','waveforms','production_inversion','production_studies')}}
+
+    def switch_actor(self,token,role_code):
+        with self.lock:
+            current=self.session(token)
+            if not current['can_switch_actor']: raise PreviewError('forbidden','仅管理员预览会话可切换操作者',403)
+            account=next((x for x in self.accounts if x['role_code']==role_code),None)
+            if not account: raise PreviewError('invalid_role','预览岗位不存在')
+            actor={key:account[key] for key in ('id','display_name','role_code')}
+            actor['permissions']=role_permissions(role_code)
+            self.sessions[token]['actor']=actor
+            self.sessions[token]['csrf_token']=secrets.token_urlsafe(32)
+            return self.session(token)
 
     def logout(self,token):
         with self.lock: self.sessions.pop(token,None)

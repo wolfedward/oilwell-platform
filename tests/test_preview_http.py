@@ -78,6 +78,24 @@ class PreviewHTTPTests(unittest.TestCase):
         self.server.auth.sessions[token]['expires']=0
         self.assertEqual(self.request('/api/preview/catalog',headers=headers)[0],401)
 
+    def test_role_switch_invalidates_old_write_token_and_rehearsal_persists(self):
+        from backend.preview.snapshot import file_hash
+        headers=self.login(); before=file_hash(self.root/'business.db')
+        body={'request_id':'http-request-001','object_id':'S1','action':'submit','expected_version':0,'values':{'on_minutes':40}}
+        status,_,payload=self.request('/api/preview/rehearsals','POST',body,headers)
+        self.assertEqual(status,200,payload)
+        status,_,payload=self.request('/api/preview/actor','POST',{'role_code':'reviewer'},headers)
+        self.assertEqual(status,200,payload)
+        switched=json.loads(payload)['data']
+        self.assertEqual(switched['actor']['role_code'],'reviewer')
+        self.assertNotEqual(switched['actor']['id'],'preview-user-1')
+        self.assertEqual(self.request('/api/preview/rehearsals','POST',body,headers)[0],403)
+        headers['X-Preview-CSRF']=switched['csrf_token']
+        status,_,payload=self.request('/api/preview/rehearsals','POST',{'request_id':'http-request-002','object_id':'S1','action':'approve','expected_version':1,'values':{}},headers)
+        self.assertEqual(status,200,payload)
+        self.assertFalse(json.loads(payload)['data']['device_sent'])
+        self.assertEqual(file_hash(self.root/'business.db'),before)
+
     def test_static_symlink_cannot_expose_private_file(self):
         code=self.root/'code'; (code/'frontend').mkdir(parents=True)
         link=code/'frontend/leak.json'
