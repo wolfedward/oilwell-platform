@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/preview/preview.css"><main id="app"><div id="workspace" class="workspace"></div></main><pre id="result" hidden>pending</pre><script type="module">
+try{
+const data=PREVIEW_DATA,{renderers}=await import('../../frontend/preview/renderers.js'),{createPreviewContext}=await import('../../frontend/preview/context.js');
+const missing=[],unknown_reads=[],overflow=[],check=(x,n)=>{if(!x)missing.push(n);},tick=()=>new Promise(r=>setTimeout(r,25));let current;
+const api={get:async p=>{const key=p.split('?')[0];if(!(key in data.reads)){unknown_reads.push(key);throw Error(key);}return structuredClone(data.reads[key]);},post:async()=>{throw Error('real engine requested');},download:async()=>{}};api.request=async(p,o)=>{if(o?.method&&o.method!=='GET')throw Error('real engine requested');return api.get(p);};
+for(const id of ['engineering-overview','condition-lab','recovery-lab','motor-lab','study-review']){
+ const workspace=document.querySelector('#workspace'),ctx=createPreviewContext({workspace,page:{id,label:id},params:{},session:{actor:data.actor,capabilities:{production_studies:{enabled:true,status:'ready'}}},generation:()=>current===ctx,api,meta:{},navigate:()=>{},actions:{confirmRehearsal:async()=>({mode:'rehearsal'})}});current=ctx;await renderers[id](ctx);
+ for(const row of data.reads['/api/production-studies']){workspace.querySelector(`[data-study-record="${row.id}"]`)?.click();await tick();check(workspace.querySelector('.study-detail h2')?.textContent===row.title,'detail-'+row.kind);check(workspace.textContent.includes(row.algorithm_version),'version-'+row.kind);}
+ const example=workspace.querySelector('[data-study-example]');if(example){example.click();await tick();workspace.querySelector('[data-study-create]')?.click();await tick();check(workspace.textContent.includes('尚未计算'),'not-computed-'+id);}
+ check(!workspace.querySelector('.study-alert-error'),'no-error-'+id);
+ if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);await window.captureEvidence?.(id);ctx.dispose();
+}
+document.querySelector('#result').textContent=JSON.stringify({pages_checked:5,missing,unknown_reads,overflow});
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({error:e.stack});}
+</script></html>

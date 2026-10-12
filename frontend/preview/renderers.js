@@ -7,8 +7,10 @@ import {renderAcquisitionPreview} from './presenters/acquisition.js';
 import {renderAcquisitionConfiguration} from './pages/acquisition.js';
 import {renderDynagraphPreview} from './presenters/dynagraphs.js';
 import {renderDynagraphWorkspace} from './pages/dynagraphs.js';
+import {renderStudiesPreview} from './presenters/studies.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
+  ...Object.fromEntries(['engineering-overview','condition-lab','recovery-lab','motor-lab','study-review'].map(id=>[id,renderStudiesPreview])),
   ...Object.fromEntries(['production-monitor','well-realtime','well-history','well-status','fluid-level','haulage-monitor'].map(id=>[id,renderMonitoring])),
   ...Object.fromEntries(['acquisition','data-quality','devices','field-registry','ingest-reliability','waveforms'].map(id=>[id,renderAcquisitionPreview])),
   'channel-mapping':renderAcquisitionConfiguration,'uplink-monitor':renderAcquisitionConfiguration,
