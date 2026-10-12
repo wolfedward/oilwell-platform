@@ -47,8 +47,10 @@ def find_secrets_in_served_snapshot(manifest: dict) -> list[str]:
 
 def run_browser(case: str, *, width: int = 1366, height: int = 768) -> dict:
     fixture = ROOT / 'tests/fixtures' / ('preview_'+case+'.html')
-    result = subprocess.run(['node',str(ROOT/'tests/fixtures/preview_runner.cjs'),fixture.as_uri(),str(width),str(height)],
-                            cwd=ROOT,capture_output=True,text=True,encoding='utf-8',timeout=60)
+    runtime=Path(os.environ['USERPROFILE'])/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
+    env={**os.environ,'NODE_PATH':str(runtime/'node_modules')}
+    result = subprocess.run([str(runtime/'bin/node.exe'),str(ROOT/'tests/fixtures/preview_runner.cjs'),fixture.as_uri(),str(width),str(height)],
+                            cwd=ROOT,env=env,capture_output=True,text=True,encoding='utf-8',timeout=60)
     if result.returncode:
         raise AssertionError(result.stderr)
     return json.loads(result.stdout)
