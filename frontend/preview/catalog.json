@@ -1,0 +1,1139 @@
+[
+  {
+    "id": "dashboard",
+    "label": "综合看板",
+    "group": "综合总览",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-05",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "engineering-overview",
+    "label": "工程总览",
+    "group": "综合总览",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-05",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "wells",
+    "label": "油井台账",
+    "group": "采油监控",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "well-detail",
+    "label": "单井工作台",
+    "group": "采油监控",
+    "origin": "demo",
+    "hidden": true,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "production-monitor",
+    "label": "采油系统监控",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "well-realtime",
+    "label": "油井实时数据",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "well-history",
+    "label": "油井历史参数",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "well-status",
+    "label": "运行状态维护",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "fluid-level",
+    "label": "动液面监控",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "haulage-monitor",
+    "label": "单井拉油罐监控",
+    "group": "采油监控",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "acquisition",
+    "label": "采集实况",
+    "group": "采集与设备",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "data-quality",
+    "label": "数据质量",
+    "group": "采集与设备",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "devices",
+    "label": "测控终端",
+    "group": "采集与设备",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "field-registry",
+    "label": "生产设备台账",
+    "group": "采集与设备",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "ingest-reliability",
+    "label": "接收异常与回执",
+    "group": "采集与设备",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "waveforms",
+    "label": "同步波形与数据集",
+    "group": "采集与设备",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "channel-mapping",
+    "label": "点表与采集配置",
+    "group": "采集与设备",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "uplink-monitor",
+    "label": "上行链路监控",
+    "group": "采集与设备",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-02",
+      "Y1-03",
+      "Y2-02"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "dynagraphs",
+    "label": "功图档案",
+    "group": "功图管理与诊断",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "dynagraph-analysis",
+    "label": "功图智能分析",
+    "group": "功图管理与诊断",
+    "origin": "demo",
+    "hidden": true,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "diagnosis-review",
+    "label": "诊断人工复核",
+    "group": "功图管理与诊断",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "dynagraph-tracking",
+    "label": "功图跟踪对比",
+    "group": "功图管理与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "production-metering",
+    "label": "产液量计量分析",
+    "group": "功图管理与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "card-alarm-rules",
+    "label": "功图报警规则",
+    "group": "功图管理与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "standard-cards",
+    "label": "标准功图设置",
+    "group": "功图管理与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "production-parameters",
+    "label": "机械参数中心",
+    "group": "算法与模型",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "production-inversion",
+    "label": "反演与双图验证",
+    "group": "算法与模型",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "production-results",
+    "label": "反演结果与版本",
+    "group": "算法与模型",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "condition-lab",
+    "label": "工况模型研究",
+    "group": "算法与模型",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "study-review",
+    "label": "研究成果复核",
+    "group": "算法与模型",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-01",
+      "Y1-04",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "energy-overview",
+    "label": "节能总览",
+    "group": "节能优化",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "recovery-analysis",
+    "label": "渗流恢复分析",
+    "group": "节能优化",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "strategy-center",
+    "label": "策略中心",
+    "group": "节能优化",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "strategy-editor",
+    "label": "策略编辑",
+    "group": "节能优化",
+    "origin": "demo",
+    "hidden": true,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "recovery-lab",
+    "label": "恢复与调度研究",
+    "group": "节能优化",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "multiwell-schedule",
+    "label": "多井开停调度",
+    "group": "节能优化",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "energy-effects",
+    "label": "节能效果追踪",
+    "group": "节能优化",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y2-01",
+      "Y3-02",
+      "Y3-06"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "motor-overview",
+    "label": "电机运行总览",
+    "group": "电机保护与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "motor-faults",
+    "label": "电机故障特征",
+    "group": "电机保护与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "motor-spectrum",
+    "label": "定子电流频谱",
+    "group": "电机保护与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "protection-settings",
+    "label": "保护整定",
+    "group": "电机保护与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "protection-events",
+    "label": "保护事件与回放",
+    "group": "电机保护与诊断",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "motor-lab",
+    "label": "电机与保护研究",
+    "group": "电机保护与诊断",
+    "origin": "development",
+    "hidden": false,
+    "annual_tasks": [
+      "Y3-01",
+      "Y3-02",
+      "Y3-03",
+      "Y3-04"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "approvals",
+    "label": "审批中心",
+    "group": "协同处置",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "commands",
+    "label": "指令中心",
+    "group": "协同处置",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "device-command",
+    "label": "指令详情",
+    "group": "协同处置",
+    "origin": "demo",
+    "hidden": true,
+    "annual_tasks": [
+      "Y1-03",
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "alarms",
+    "label": "报警中心",
+    "group": "协同处置",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "work-orders",
+    "label": "工单闭环",
+    "group": "协同处置",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y1-04",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "reports",
+    "label": "业务报表",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "users",
+    "label": "用户管理",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "roles",
+    "label": "角色权限",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "audit",
+    "label": "审计日志",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "system-health",
+    "label": "系统运行",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "acceptance-center",
+    "label": "年度技术任务验证",
+    "group": "报表与系统管理",
+    "origin": "demo",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  },
+  {
+    "id": "preview-review",
+    "label": "页面审查清单",
+    "group": "报表与系统管理",
+    "origin": "new",
+    "hidden": false,
+    "annual_tasks": [
+      "Y1-03",
+      "Y3-05"
+    ],
+    "content_version": "1",
+    "scenarios": [
+      "normal",
+      "empty",
+      "error",
+      "denied",
+      "stale",
+      "unconnected"
+    ]
+  }
+]
