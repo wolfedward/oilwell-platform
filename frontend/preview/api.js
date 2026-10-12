@@ -1,6 +1,6 @@
 import {ApiError} from '../api.js';
 
-const READ_PREFIXES=['dashboard','wells','acquisition','data-quality','central','devices','dynagraphs','diagnoses','model-runs','strategies','commands','alarms','work-orders','reports','users','roles','audit','health','acceptance','registry','ingest','ingest-reliability','waveforms','inversion','studies','production'];
+const READ_PREFIXES=['dashboard','wells','acquisition','data-quality','central','devices','dynagraphs','diagnoses','model-runs','strategies','commands','alarms','work-orders','reports','users','roles','audit','health','acceptance','registry','ingest','ingest-reliability','waveforms','inversion','production-inversion','studies','production'];
 
 function previewPath(path) {
   if(typeof path!=='string'||!path.startsWith('/api/')||path.startsWith('//')||/[\\\u0000-\u0020#]/.test(path)) throw new ApiError('只允许预览接口',{code:'invalid_path'});

@@ -1,0 +1,28 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/preview/preview.css"><main id="app"><div id="workspace" class="workspace"></div></main><div id="toastRegion"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const data=PREVIEW_DATA,{renderers}=await import('../../frontend/preview/renderers.js'),{createPreviewContext}=await import('../../frontend/preview/context.js'),{bindChartInteractions}=await import('../../frontend/charts.js');
+ const unknown=[],missing=[],checked=[],overflow=[];let current;
+ const get=async path=>{const url=new URL(path,'http://preview');const key=url.pathname+(url.searchParams.has('view')?'?view='+url.searchParams.get('view'):'');if(!(key in data.reads)){unknown.push(key);throw Error('Unexpected '+key);}const row=structuredClone(data.reads[key]);if(row.items&&url.searchParams.has('limit'))row.limit=Number(url.searchParams.get('limit'));if(row.items&&url.searchParams.has('page_size'))row.page_size=Number(url.searchParams.get('page_size'));return row;};
+ const api={get,request:async(path,opts)=>{if(opts?.method&&opts.method!=='GET')throw Error('unexpected engine request');return get(path);},post:async()=>{throw Error('unexpected write');},download:async()=>{}};
+ const tick=()=>new Promise(r=>setTimeout(r,20));const check=(v,n)=>{if(!v)missing.push(n);};
+ async function click(selector){const el=document.querySelector(selector);check(el,selector);el?.click();await tick();await tick();}
+ const ids=['dynagraphs','dynagraph-analysis','diagnosis-review','dynagraph-tracking','production-metering','card-alarm-rules','standard-cards','production-parameters','production-inversion','production-results'];
+ for(const id of ids){
+  const workspace=document.querySelector('#workspace');const ctx=createPreviewContext({page:{id,label:id,group:'测试'},params:['dynagraph-analysis','diagnosis-review'].includes(id)?{id:'preview-card-normal'}:{},workspace,session:{actor:data.actor,capabilities:{production_inversion:{enabled:true,status:'ready'},waveforms:{enabled:true,status:'ready'}}},generation:()=>current===ctx,api,meta:{},navigate:()=>{},actions:{confirmRehearsal:async()=>({mode:'rehearsal'})}});current=ctx;
+  await renderers[id](ctx);await tick();await tick();checked.push(id);bindChartInteractions(workspace);
+  if(id==='dynagraph-analysis'){
+   const chart=workspace.querySelector('.dynagraph-plot svg');check(chart,'dual-chart');const axis=chart?.querySelector('.chart-grid')?.innerHTML;
+   await click('#toggleMeasured');check(chart?.querySelector('.chart-grid')?.innerHTML===axis,'shared-axes-stable');await click('#toggleMeasured');
+   const p=workspace.querySelector('[data-chart-point]');check(/^[-]?\d+\.\d{2}$/.test(p?.dataset.x)&&/^[-]?\d+\.\d{2}$/.test(p?.dataset.y),'two-decimal-coordinates');p?.focus();await tick();check(workspace.querySelector('[role=tooltip]:not([hidden])'),'keyboard-tooltip');
+   await click('#analysisRun');check(workspace.querySelector('[data-input-saved]')?.textContent.includes('尚未计算'),'no-fake-calculation');
+  }
+  if(id==='diagnosis-review'){await click('#createReview');const select=document.querySelector('#reviewCondition');check(select?.options.length>=21,'condition-library');if(select){select.value='custom';select.dispatchEvent(new Event('change',{bubbles:true}));}check(!document.querySelector('#customConditionField')?.hidden,'custom-condition');await click('[aria-label="关闭"]');}
+  if(id==='standard-cards'){check(workspace.querySelectorAll('[data-profile]').length>=22,'all-profiles');for(const p of ['normal','rod_break','supply_shortage','traveling_valve_leak','pump_collision'])check(workspace.querySelector('[data-profile="'+p+'"] svg'),'shape-'+p);}
+  if(id==='production-inversion'){check(workspace.querySelector('[data-inversion-preflight]'),'preflight');check(workspace.querySelectorAll('[data-preview-run]').length===2,'stored-and-blocked-examples');}
+  if(id==='production-results'){const button=[...workspace.querySelectorAll('button')].find(b=>b.textContent==='查看结果');check(button,'result-detail-button');if(button){button.click();await tick();await tick();}check(workspace.querySelector('svg'),'result-curves');check(!workspace.querySelector('.inversion-error'),'result-no-error');}
+  if(document.documentElement.scrollWidth>innerWidth)overflow.push(id);
+  await window.captureEvidence?.(id);ctx.dispose();
+ }
+ document.querySelector('#result').textContent=JSON.stringify({pages_checked:checked,missing,unknown_reads:unknown,overflow});
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({error:e.stack});}
+</script></html>
