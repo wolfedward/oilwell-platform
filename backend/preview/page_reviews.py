@@ -4,8 +4,8 @@ import json
 from .errors import PreviewError
 OPEN_INTERFACE={'id':'open-interface','label':'厂家开放接口与设备参考','group':'开放资料','annual_tasks':['Y1-03','Y2-02','Y3-02'],'content_version':'1'}
 class PageReviews:
-    def __init__(self,state,catalog):
-        self.state=state;self.catalog=[*catalog,OPEN_INTERFACE]
+    def __init__(self,state,catalog,open_interface_version='1'):
+        self.state=state;self.catalog=[*catalog,{**OPEN_INTERFACE,'content_version':open_interface_version}]
         with state.connection() as db:db.execute('CREATE TABLE IF NOT EXISTS page_reviews(sequence INTEGER PRIMARY KEY,page_id TEXT NOT NULL,version INTEGER NOT NULL,content_version TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(page_id,version))')
     def get_page_reviews(self,catalog_version):
         with self.state.connection() as db:

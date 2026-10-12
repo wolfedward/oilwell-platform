@@ -11,6 +11,9 @@ def run(body):
 
 
 class TransportTests(unittest.TestCase):
+    def test_production_studies_read_is_registered(self):
+        result=run("""const calls=[];const api=createPreviewApi({fetchImpl:async p=>{calls.push(p);return new Response(JSON.stringify({ok:true,data:[]}));}});await api.get('/api/production-studies?limit=50');console.log(JSON.stringify(calls));""")
+        self.assertEqual(result,['/api/preview/legacy/api/production-studies?limit=50'])
     def test_all_read_and_download_paths_stay_under_preview(self):
         result=run("""
         const calls=[]; const api=createPreviewApi({fetchImpl:async(path,options)=>{calls.push([path,options.method]);return new Response(JSON.stringify({ok:true,data:{items:[1]}}),{headers:{'Content-Type':'application/json'}});},csrfToken:()=> 'token'});

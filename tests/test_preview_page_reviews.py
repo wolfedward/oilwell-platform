@@ -2,6 +2,17 @@ import tempfile,unittest
 from pathlib import Path
 from tests.preview_support import run_browser,ROOT
 class PageReviewsTests(unittest.TestCase):
+    def test_open_interface_version_change_invalidates_prior_confirmation(self):
+        from backend.preview.state import PreviewState
+        from backend.preview.page_reviews import PageReviews
+        from backend.preview.catalog import load_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            state=PreviewState(Path(tmp)/'state.db');catalog=load_catalog()
+            old=PageReviews(state,catalog,open_interface_version='A')
+            old.save_page_review({'id':'a','role_code':'administrator'},'open-interface','A',0,'approved','确认旧版本')
+            current=PageReviews(state,catalog,open_interface_version='B').get_page_reviews('B')[-1]
+            self.assertEqual(current['decision'],'pending');self.assertEqual(current['comment'],'确认旧版本')
+
     def test_persistence_versions_and_no_automatic_approval(self):
         from backend.preview.state import PreviewState
         from backend.preview.page_reviews import PageReviews

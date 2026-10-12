@@ -92,6 +92,19 @@ def build_business_snapshot(raw_snapshot: Path, target: Path) -> dict:
                 dst.executemany(f'INSERT INTO "{table}" ({names}) VALUES ({placeholders})',
                                 (sanitize_row(table,columns,row) for row in src.execute(f'SELECT {names} FROM "{table}"')))
             dst.commit()
+            # Owned, audited query indexes only; never execute source database DDL.
+            for name,expression in {
+                'telemetry_latest':'telemetry(well_id,measured_at DESC,id DESC)',
+                'telemetry_days':'telemetry(well_id,substr(measured_at,1,10),measured_at,id)',
+                'telemetry_channels':'telemetry(device_id,metric_code,id DESC)',
+                'telemetry_energy':'telemetry(well_id,metric_code,status,datetime(measured_at),id)',
+                'raw_status':'raw_messages(status)',
+                'raw_device':'raw_messages(device_id,id DESC)',
+                'heartbeat_latest':'device_heartbeats(device_id,reported_at DESC,id DESC)',
+                'dynagraph_latest':'dynagraphs(well_id,captured_at DESC,id DESC)',
+                'diagnosis_latest':'diagnoses(well_id,created_at DESC,id DESC)',
+            }.items():dst.execute('CREATE INDEX preview_'+name+' ON '+expression)
+            dst.commit()
             date_range=dst.execute('SELECT min(day),max(day) FROM production_daily').fetchone()
             actors={str(r[0]):f'preview-actor-{r[0]}' for r in dst.execute('SELECT id FROM users')}
     raw_manifest=json.loads(raw_snapshot.with_suffix('.manifest.json').read_text(encoding='utf-8'))

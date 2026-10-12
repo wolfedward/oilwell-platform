@@ -28,8 +28,9 @@ def period(dataset,query):
 def rows_for_wells(dataset,table,ids,time_column,start,end,limit=None):
     if not ids or not start:return []
     sql=f'SELECT * FROM {table} WHERE well_id IN ({",".join("?" for _ in ids)}) AND substr({time_column},1,10) BETWEEN ? AND ? ORDER BY {time_column},well_id'
-    if limit:sql+=f' LIMIT {int(limit)}'
-    return dataset.query_all(sql,tuple(ids)+(start,end))
+    if limit:sql=sql.rsplit(' ORDER BY ',1)[0]+f' ORDER BY {time_column} DESC,id DESC LIMIT {int(limit)}'
+    rows=dataset.query_all(sql,tuple(ids)+(start,end))
+    return list(reversed(rows)) if limit else rows
 
 
 def dashboard(dataset,query):
@@ -53,6 +54,14 @@ def dashboard(dataset,query):
         denominator=math.sqrt(sum((x-ax)**2 for x in xs)*sum((y-ay)**2 for y in ys))
         return sum((x-ax)*(y-ay) for x,y in zip(xs,ys))/denominator if denominator else None
     latest=rows_for_wells(dataset,'telemetry',ids,'measured_at',start,end,600)
+    from .energy import report
+    energy_report=report(dataset,'energy',query)
+    energy=energy_report['summary']
+    if query.get('group_id'):
+        effects=[r for r in energy_report['items'] if r['well_id'] in ids]
+        comparable=[r for r in effects if r['valid_for_comparison']]
+        baseline=sum(r['baseline_energy_kwh'] for r in comparable);after=sum(r['after_energy_kwh'] for r in comparable)
+        energy={'comparable_strategy_count':len(comparable),'insufficient_coverage_count':len(effects)-len(comparable),'baseline_energy_kwh':baseline,'after_energy_kwh':after,'energy_saved_kwh':baseline-after if comparable else None,'saving_rate':(baseline-after)/baseline if baseline else None}
     return {'total_wells':len(wells),'active_wells':sum(w['status'] in ('active','running','intermittent') for w in wells),
             'stopped_wells':sum(w['status']=='stopped' for w in wells),'offline_wells':sum(w['status'] in ('offline','maintenance') for w in wells),
             'low_output_wells':sum(w['is_low_output'] for w in wells),'production':production,'data_timestamp':latest[-1]['measured_at'] if latest else None,
@@ -60,7 +69,7 @@ def dashboard(dataset,query):
             'alarms':{'active':len(active),'high':sum(a['severity'] in ('high','critical') for a in active)},
             'quality':{'open_events':sum(q['status'] not in ('closed','resolved','repaired') for q in quality),'resolved_events':sum(q['status'] in ('closed','resolved','repaired') for q in quality)},
             'strategies':{'pending_strategies':sum(s['status'] in ('submitted','pending_approval') for s in strategies),'effective_strategies':sum(s['status'] in ('active','effective') for s in strategies)},
-            'energy':{},'trends':trends,'trend_metadata':{'label':'历史快照生产日报','basis':'原始 production_daily 同井同日汇总；未调整原时间和数值','fluid_energy_correlation':correlation(),'start_day':start,'end_day':end}}
+            'energy':energy,'trends':trends,'trend_metadata':{'label':'历史快照生产日报','basis':'原始 production_daily 同井同日汇总；未调整原时间和数值','fluid_energy_correlation':correlation(),'fluid_range_ratio':(max(r['daily_fluid'] for r in trends)-min(r['daily_fluid'] for r in trends))/production['daily_fluid'] if trends and production['daily_fluid'] else None,'start_day':start,'end_day':end}}
 
 
 def monitoring(dataset,query):
@@ -82,9 +91,14 @@ def register(repository):
     ds=repository.dataset;service=WellsService(ds,None)
     def paged(query,actor):
         filters=dict(query)
-        for key in ('page','page_size'):
-            if key in filters:filters[key]=int(filters[key])
-        return service.list_wells(filters)
+        try:
+            filters['page']=int(filters.get('page',1));filters['page_size']=int(filters.get('page_size',20))
+            if filters['page']<1 or not 1<=filters['page_size']<=100:raise ValueError()
+        except (ValueError,TypeError):raise PreviewError('invalid_pagination','分页参数无效')
+        result=service.list_wells(filters)
+        for row in result['items']:
+            row.update(unit_id=row['unit']['id'],unit_name=row['unit']['name'],group_id=row['group']['id'],group_name=row['group']['name'])
+        return result
     repository.register('GET',r'/api/preview/legacy/api/dashboard',lambda q,a:dashboard(ds,q))
     repository.register('GET',r'/api/preview/legacy/api/wells',paged)
     repository.register('GET',r'/api/preview/legacy/api/wells/(?P<well_id>[\w-]+)',lambda q,a,well_id:service.detail(well_id))

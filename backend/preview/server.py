@@ -4,6 +4,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import json
 import mimetypes
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit,unquote,parse_qs
 from .auth import PreviewAuth
@@ -85,6 +86,10 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 raise PreviewError('invalid_origin','请求来源不匹配',403)
             if self.command=='GET' and path=='/api/preview/health':
                 return self._json(200,{**self.server.repository.meta,'status':'ready','service':'页面预览'})
+            if self.command=='POST' and path=='/api/preview/lifecycle/stop':
+                expected_token=getattr(self.server,'shutdown_token',None)
+                if not expected_token or not hmac.compare_digest(self.headers.get('X-Preview-Shutdown',''),expected_token):raise PreviewError('forbidden','实例归属验证失败',403)
+                self._json(200,{'stopping':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
             if path=='/api/preview/session' and self.command=='POST':
                 body=self._body(); token,session=self.server.auth.login(body.get('username'),body.get('password'))
                 return self._json(200,session,{'Set-Cookie':f'{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/api/preview/'})
@@ -161,17 +166,20 @@ class PreviewHandler(BaseHTTPRequestHandler):
 def create_preview_server(root: Path,host: str='127.0.0.1',port: int=8772):
     if host!='127.0.0.1': raise ValueError('预览只允许 127.0.0.1')
     root=Path(root).resolve(strict=True)
+    install=json.loads((root/'installation.json').read_text(encoding='utf-8')) if (root/'installation.json').exists() else {}
     manifest=verify_manifest(root)
     auth=PreviewAuth(root/'private/accounts.json')
     meta={'mode':'preview','control_enabled':False,'snapshot_id':manifest['snapshot_id'],'snapshot_at':manifest['captured_at'],
-          'data_from':manifest['data_from'],'data_to':manifest['data_to'],'source_kind':'software_fixture','page_catalog_version':'1'}
+          'data_from':manifest['data_from'],'data_to':manifest['data_to'],'source_kind':'software_fixture','page_catalog_version':install.get('code_sha256','1')[:12]}
     repository=PreviewRepository(PreviewDataset(root/'business.db'),meta)
     from .read_models import register_all
     register_all(repository)
     server=ThreadingHTTPServer((host,port),PreviewHandler)
     server.daemon_threads=True
     server.auth=auth; server.repository=repository; server.catalog=[{**p,'required_permission':PAGE_READ.get(p['id'])} for p in load_catalog()]
+    if install.get('code_sha256'):
+        for page in server.catalog:page['content_version']=page['content_version']+'-'+install['code_sha256'][:12]
     server.state=PreviewState(root/'state.db'); repository.state=server.state
-    server.page_reviews=PageReviews(server.state,server.catalog)
-    server.code_root=(root/'code').resolve() if (root/'code').is_dir() else ROOT
+    server.page_reviews=PageReviews(server.state,server.catalog,open_interface_version=meta['page_catalog_version'])
+    server.code_root=(root/install.get('code_path','code')).resolve() if (root/'code').is_dir() else ROOT
     return server

@@ -94,5 +94,13 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(payload['power_kw'],9.5)
         self.assertEqual(payload['nested']['password'],'[redacted]')
 
+    def test_owned_indexes_cover_latest_telemetry_without_altering_rows(self):
+        from backend.preview.snapshot import capture_snapshot,build_business_snapshot
+        raw=capture_snapshot(self.source,self.root/'private');result=build_business_snapshot(Path(raw['path']),self.root/'business.db')
+        with closing(sqlite3.connect(result['path'])) as db:
+            plan=' '.join(str(r) for r in db.execute("EXPLAIN QUERY PLAN SELECT value FROM telemetry WHERE well_id='W1' ORDER BY measured_at DESC,id DESC LIMIT 1"))
+        self.assertIn('preview_telemetry_latest',plan)
+        self.assertNotIn('TEMP B-TREE',plan)
+
 
 if __name__ == '__main__': unittest.main()
