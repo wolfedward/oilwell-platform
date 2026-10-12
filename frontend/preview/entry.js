@@ -17,7 +17,7 @@ async function loginView(message='') {
   };
 }
 async function boot(){
-  const [catalog,meta]=await Promise.all([loadCatalog(),api.get('/api/preview/meta')]);
+  const [catalog,meta]=await Promise.all([api.get('/api/preview/catalog'),api.get('/api/preview/meta')]);
   app=await mountPreviewShell({root,catalog,meta,api,session,actions,onActorChange:async role=>{
     app?.dispose();session=await api.post('/api/preview/actor',{role_code:role});await boot();
   },onLogout:async()=>{

@@ -10,10 +10,11 @@ from .auth import PreviewAuth
 from .catalog import load_catalog
 from .dataset import PreviewDataset
 from .errors import PreviewError
-from .repository import PreviewRepository
+from .repository import PreviewRepository,Download
 from .snapshot import verify_manifest
 from .state import PreviewState
 from .rehearsals import save_rehearsal
+from .permissions import PAGE_READ
 
 ROOT=Path(__file__).resolve().parents[2]
 COOKIE='oilwell_page_preview'
@@ -118,7 +119,10 @@ class PreviewHandler(BaseHTTPRequestHandler):
                     if 'page_size' in query:
                         try: query['page_size']=str(min(100,max(1,int(query['page_size']))))
                         except ValueError: raise PreviewError('invalid_page_size','分页大小无效')
-                    return self._json(200,self.server.repository.read(path,query,session['actor']))
+                    result=self.server.repository.read(path,query,session['actor'])
+                    if isinstance(result,Download):
+                        self.send_response(200);self.send_header('Content-Type',result.content_type);self.send_header('Content-Length',str(len(result.body)));self.send_header('Content-Disposition','attachment; filename="'+result.filename+'"');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(result.body);return
+                    return self._json(200,result)
                 raise PreviewError('not_found','预览只支持独立接口',404)
             if write: raise PreviewError('control_disabled','禁止写入',403)
             return self._static(path)
@@ -161,7 +165,7 @@ def create_preview_server(root: Path,host: str='127.0.0.1',port: int=8772):
     register_all(repository)
     server=ThreadingHTTPServer((host,port),PreviewHandler)
     server.daemon_threads=True
-    server.auth=auth; server.repository=repository; server.catalog=load_catalog()
+    server.auth=auth; server.repository=repository; server.catalog=[{**p,'required_permission':PAGE_READ.get(p['id'])} for p in load_catalog()]
     server.state=PreviewState(root/'state.db'); repository.state=server.state
     server.code_root=(root/'code').resolve() if (root/'code').is_dir() else ROOT
     return server

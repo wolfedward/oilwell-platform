@@ -1,6 +1,14 @@
 """Explicit preview read-model dispatch; unsupported routes never get fake success."""
 import re
+from dataclasses import dataclass
 from .errors import PreviewError
+from .permissions import require_read
+
+@dataclass(frozen=True)
+class Download:
+    body:bytes
+    content_type:str
+    filename:str
 
 
 class PreviewRepository:
@@ -13,6 +21,7 @@ class PreviewRepository:
         self.routes.append((re.compile(pattern),reader))
 
     def read(self,path: str,query: dict,actor: dict):
+        require_read(actor,path)
         for pattern,reader in self.routes:
             match=pattern.fullmatch(path)
             if match: return reader(query,actor,**match.groupdict())

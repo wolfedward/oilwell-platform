@@ -32,3 +32,26 @@ def allowed_action(role,action):
     if action in {'acknowledge','close','assign'}: return role in {'production_engineer','maintenance_engineer','reviewer'}
     if action in {'configure','scenario','control_plan'}: return role=='maintenance_engineer'
     return False
+
+def required_read(path):
+    for prefix,permission in [('users','users.read'),('roles','roles.read'),('audit','audit.read'),('commands','commands.read'),('registry','registry.read'),('ingest-reliability','ingest.read'),('waveforms','waveform.read'),('production-inversion','inversion.read')]:
+        if '/api/'+prefix in path:
+            if prefix=='ingest-reliability' and path.endswith('/raw'):return 'ingest.raw.read'
+            if prefix=='waveforms' and ('/raw' in path or '/files/' in path):return 'waveform.raw.read'
+            return permission
+    return None
+
+def require_read(actor,path):
+    from .errors import PreviewError
+    permission=required_read(path)
+    if permission and permission not in actor.get('permissions',[]):raise PreviewError('forbidden','当前岗位无权读取该内容',403)
+
+def require_object_action(actor,object_id,action):
+    from .errors import PreviewError
+    permission=None
+    if '/api/users' in object_id:permission='users.manage'
+    elif '/api/roles' in object_id:permission='roles.manage'
+    elif '/api/commands' in object_id or action=='control_plan':permission='devices.control'
+    if permission and permission not in actor.get('permissions',role_permissions(actor['role_code'])):raise PreviewError('forbidden','当前岗位无权修改此对象',403)
+
+PAGE_READ={'users':'users.read','roles':'roles.read','audit':'audit.read','commands':'commands.read','device-command':'commands.read','field-registry':'registry.read','ingest-reliability':'ingest.read','waveforms':'waveform.read','production-parameters':'inversion.read','production-inversion':'inversion.read','production-results':'inversion.read'}

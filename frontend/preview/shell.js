@@ -6,6 +6,7 @@ import {renderers as installedRenderers} from './renderers.js';
 
 export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}},renderers=installedRenderers,onLogout,onActorChange,actions}) {
   const groups=[...new Set(catalog.map(p=>p.group))];
+  const canRead=page=>!page.required_permission||(session.actor.permissions||[]).includes(page.required_permission);
   let generation=0,context=null,disposed=false;const tabs=new Map();
   root.innerHTML=`<div class="app-shell preview-shell"><header class="topbar"><a class="brand" href="#/dashboard"><img src="/assets/heneng-logo.png" alt="合能科技"><span><strong>油井数字智能化平台</strong><small>OIL WELL DIGITAL INTELLIGENCE</small></span></a><span class="preview-tag">页面预览 · 测试数据</span><span class="preview-top-note">先审页面，后接入业务</span><div class="top-actions"><span>${esc(session.actor.display_name||'预览用户')}</span><button class="text-button" data-logout>退出</button></div></header>
     <div class="preview-toolbar"><div class="preview-dates">数据日期 <b>${esc(meta.data_from||'—')} — ${esc(meta.data_to||'—')}</b></div><div class="tabs" data-tabs></div><label>页面场景 <select data-scenario><option value="normal">正常数据</option><option value="empty">空数据</option><option value="error">读取错误</option><option value="denied">无权限</option><option value="stale">陈旧数据</option><option value="unconnected">未接入</option></select></label></div>
@@ -34,7 +35,8 @@ export async function mountPreviewShell({root,catalog,api,meta,session={actor:{}
     try {
       const renderer=renderers[page.id];
       const scenario=params.scenario||'normal';
-      if(['empty','error','denied','unconnected'].includes(scenario)) {
+      if(!canRead(page)){staging.innerHTML=local.pageHeader(page)+components.empty('当前岗位无权查看此页面。');}
+      else if(['empty','error','denied','unconnected'].includes(scenario)) {
         const messages={empty:'当前筛选范围暂无数据',error:'读取失败场景：请检查连接后重试',denied:'当前岗位无权查看此内容',unconnected:'页面已设计，真实业务接口尚未接入'};
         staging.innerHTML=local.pageHeader(page)+`<article class="panel preview-state" role="status"><h2>${messages[scenario]}</h2><p>这是页面状态检查，不改变原始业务数据。</p><button class="button" data-normal>返回正常场景</button></article>`;
         staging.querySelector('[data-normal]').onclick=()=>navigate(page.id,{...params,scenario:'normal'});

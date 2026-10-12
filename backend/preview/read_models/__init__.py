@@ -2,10 +2,12 @@
 
 
 def register_all(repository):
-    from . import monitoring,acquisition,dynagraphs,studies,energy,motor
+    from . import monitoring,acquisition,dynagraphs,studies,energy,motor,workflows,administration
     monitoring.register(repository)
     acquisition.register(repository)
     dynagraphs.register(repository)
     studies.register(repository)
     energy.register(repository)
     motor.register(repository)
+    workflows.register(repository)
+    administration.register(repository)

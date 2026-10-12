@@ -11,8 +11,12 @@ import {renderStudiesPreview} from './presenters/studies.js';
 import {renderEnergyPreview} from './presenters/energy.js';
 import {renderEnergyWorkspace} from './pages/energy.js';
 import {renderMotorPreview} from './pages/motor.js';
+import {renderWorkflowPreview} from './presenters/workflows.js';
+import {renderAdministrationPreview} from './presenters/administration.js';
 
 export const renderers={dashboard:renderDashboardPreview,wells:renderWellList,'well-detail':renderWellDetailPreview,
+  ...Object.fromEntries(['approvals','commands','device-command','alarms','work-orders','reports'].map(id=>[id,renderWorkflowPreview])),
+  ...Object.fromEntries(['users','roles','audit','system-health','acceptance-center'].map(id=>[id,renderAdministrationPreview])),
   ...Object.fromEntries(['motor-overview','motor-faults','motor-spectrum','protection-settings','protection-events'].map(id=>[id,renderMotorPreview])),
   ...Object.fromEntries(['energy-overview','recovery-analysis','strategy-center','strategy-editor'].map(id=>[id,renderEnergyPreview])),
   'multiwell-schedule':renderEnergyWorkspace,'energy-effects':renderEnergyWorkspace,
