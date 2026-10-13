@@ -9,7 +9,7 @@ export function createWorkbenchContext({auth,page,params,root,navigate}) {
  const isCurrent=()=>active&&!controller.signal.aborted;
  const scoped={...components,toast:(...args)=>{if(isCurrent())components.toast(...args);},
   modal:options=>{if(!isCurrent())throw new Error('页面已关闭');const modal=components.modal(options);disposers.push(()=>modal.close());return modal;}};
- return {api:createWorkbenchApi(api,{signal:controller.signal,isCurrent}),components:scoped,escapeHtml,
+ return {api:createWorkbenchApi(api,{signal:controller.signal,isCurrent,sessionContext:auth.session_context}),components:scoped,escapeHtml,
   format:{...format,dateTime:registryTime},workspace:root,page,params:params||{},permissions:new Set(auth.permissions||[]),
   actorId:String(auth.id),authSession:auth,capabilities:auth.capabilities||{},signal:controller.signal,isCurrent,navigate,
   registerDispose(dispose){if(isCurrent())disposers.push(dispose);else dispose();},

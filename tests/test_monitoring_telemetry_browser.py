@@ -3,6 +3,14 @@ from tests.monitoring_browser_support import run_browser
 
 
 class MonitoringTelemetryBrowserTests(unittest.TestCase):
+    def test_backward_pagination_keeps_context_until_explicit_refresh(self):
+        result=run_browser('snapshots')
+        self.assertNotIn('error',result)
+        self.assertEqual(result.pop('page_errors'),[])
+        self.assertGreaterEqual(len(result),20)
+        for key,value in result.items():
+            with self.subTest(case=key): self.assertTrue(value,key)
+
     def test_latest_history_and_precision_in_real_browser(self):
         for width in (1366,1920):
             with self.subTest(width=width):

@@ -1,0 +1,36 @@
+<!doctype html><html><meta charset="utf-8"><body><main id="workspace"></main><pre id="result">pending</pre><script type="module">
+try{
+ const {api}=await import('../../frontend/api.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {renderWellHistory}=await import('../../frontend/workbench/pages/well-history.js');
+ const {renderWellRealtime,selectWell}=await import('../../frontend/workbench/pages/well-realtime.js');
+ const {renderWellDetail}=await import('../../frontend/workbench/pages/well-detail.js');
+ const {renderAcquisition}=await import('../../frontend/workbench/pages/acquisition.js');
+ const {renderDataQuality}=await import('../../frontend/workbench/pages/data-quality.js');
+ const {renderWells}=await import('../../frontend/workbench/pages/wells.js');
+ const {renderFieldRegistry}=await import('../../frontend/workbench/pages/field-registry.js');
+ const root=document.querySelector('#workspace'),W='00000000-0000-4000-8000-000000000011',D='00000000-0000-4000-8000-000000000022',time='2026-10-13T00:00:00Z';
+ const stamp={registry_revision:'9007199254740993',received_before:time,query_total:'401'},requests=[],out={};let ctx;
+ const tick=()=>new Promise(r=>setTimeout(r,0));
+ api.get=async path=>{const u=new URL(path,'http://local');requests.push(u);const page=Number(u.searchParams.get('page')||1),size=Number(u.searchParams.get('page_size')||20);
+  const data={items:[],total:'401',page,page_size:size,context:stamp,...stamp,from_time:time,to_time:time,status_queried_at:time};
+  if(u.pathname.endsWith('/history'))data.trend={items:[],point_count:0,truncated:false,from_time:null,to_time:null};
+  if(u.pathname.endsWith('/messages'))data.items=[{message_id:'MSG',gateway_id:'G',device_id:'D',received_at:time,sample_count:'1'}];
+  if(u.pathname.endsWith('/messages/MSG'))Object.assign(data,{message_id:'MSG',well_ids:[W],well_count:'401',unassigned_count:'0',sources:[]});
+  if(u.pathname.endsWith('/'+W))Object.assign(data,{well:{id:W,name:'Well'},bindings:{items:[],total:'401',page,page_size:size},availability:{}});
+  return data;
+ };
+ api.download=async path=>requests.push(new URL(path,'http://local'));
+ const auth={id:1,session_context:'session-A',permissions:['registry.read','telemetry.read','acquisition.read','ingest.read','data_quality.read'],capabilities:{}};
+ const click=async selector=>{const b=root.querySelector(selector);if(!b||b.disabled)throw Error('Missing enabled '+selector);b.click();await tick();await tick();};
+ const verify=(key,total=true)=>{const q=requests.at(-1).searchParams;out[key]=q.get('revision')===stamp.registry_revision&&q.get('received_before')===time&&(!total||q.get('query_total')==='401');};
+ for(const [id,render,total] of [['well-history',renderWellHistory,true],['well-realtime',renderWellRealtime,true],['well-detail',renderWellDetail,true],['acquisition',renderAcquisition,true],['data-quality',renderDataQuality,true],['wells',renderWells,false],['field-registry',renderFieldRegistry,false],['select-well',selectWell,false]]){
+  ctx?.dispose();ctx=createWorkbenchContext({auth,page:{id,label:id,group:'Test'},params:{well_id:W,registry_device_id:D,point_code:'load',from_time:time,to_time:time},root,navigate:()=>{}});await render(ctx);
+  await click('[data-page="2"]');verify(id+'-forward',total);await click('[data-page="1"]');verify(id+'-back',total);
+  if(id==='well-history'){await click('[data-export-history]');verify('history-export');root.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();out['history-fresh']=!requests.at(-1).searchParams.has('revision');}
+  if(id==='well-realtime'){await click('[data-refresh-now]');out['realtime-fresh']=!requests.at(-1).searchParams.has('revision');}
+  if(id==='acquisition'){await click('[data-message="MSG"]');await click('[data-detail-page="2"]');verify('detail-forward');await click('[data-detail-page="1"]');verify('detail-back');}
+ }
+ ctx.dispose();document.querySelector('#result').textContent=JSON.stringify(out);
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>

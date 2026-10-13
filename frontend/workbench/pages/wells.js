@@ -42,10 +42,11 @@ export async function renderWells(context){
  root.innerHTML=context.pageHeader()+`<section class="field-registry"><p class="registry-boundary">生产井台账使用独立内部编号；建档不代表现场已投产，已绑定设备的井不能直接归档。</p><form class="registry-filters" data-filter><label>区块编号<input name="area_code"></label><label>井编号<input name="well_code"></label><label>状态<select name="status"><option value="">全部</option><option value="active">在用</option><option value="archived">已归档</option></select></label><button class="button primary">查询</button></form><div class="registry-actions">${manage?'<button class="button primary" data-action="create-well">登记生产井</button>':''}<button class="button secondary" data-export-wells disabled>导出当前筛选</button><button class="button secondary" data-refresh>刷新台账</button></div><p data-notice role="status"></p><div data-results></div></section>`;
  const target=root.querySelector('[data-results]'),notice=root.querySelector('[data-notice]'),exportButton=root.querySelector('[data-export-wells]');
  formsFor(context,async()=>{await load();context.components.toast('操作已提交，已重新读取台账。');});bindRoutes(context,root);
- async function load(page=1){
+ async function load(page){
+  const fresh=page===undefined;page??=1;
   const request=++generation;exportButton.disabled=true;notice.textContent='正在读取井台账…';
   const query=new URLSearchParams({...filters,page:String(page),page_size:'20'});
-  if(page>1&&result)withSnapshot(query,result);
+  if(!fresh&&result)withSnapshot(query,result);
   try{const data=await api.get(`/api/registry/wells?${query}`);if(!context.isCurrent()||request!==generation)return;
    result=data;notice.textContent='';exportButton.disabled=false;
    target.innerHTML=queryContext(context,data)+c.table([{key:'area_code',label:'区块'},{key:'well_code',label:'井编号'},{key:'name',label:'井名称'},

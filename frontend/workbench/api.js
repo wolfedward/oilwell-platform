@@ -13,7 +13,7 @@ const WRITES=[/^\/api\/auth\/(login|logout)$/,/^\/api\/registry\/(wells|devices)
  new RegExp(`^/api/registry/devices/${UUID}/point-maps/[1-9][0-9]*/review$`),
  new RegExp(`^/api/ingest-reliability/cases/${UUID}/(ack|note|close|reopen)$`)];
 
-export function createWorkbenchApi(baseApi,{signal,isCurrent=()=>true}={}) {
+export function createWorkbenchApi(baseApi,{signal,isCurrent=()=>true,sessionContext}={}) {
  const current=()=>!signal?.aborted&&isCurrent();
  function check(path,method){
   const pathname=typeof path==='string'?path.split('?')[0]:'';
@@ -25,7 +25,9 @@ export function createWorkbenchApi(baseApi,{signal,isCurrent=()=>true}={}) {
  async function call(method,path,body,options={}){
   check(path,method==='post'?'POST':'GET');
   const combined=signal&&options.signal?AbortSignal.any([signal,options.signal]):signal||options.signal;
-  const opts={...options,signal:combined,suppressUnauthorizedEvent:true};
+  const headers=new Headers(options.headers||{});
+  if(sessionContext)headers.set('X-Monitoring-Session',sessionContext);
+  const opts={...options,headers,signal:combined,suppressUnauthorizedEvent:true};
   try {
    const result=method==='post'?await baseApi.post(path,body,opts):method==='download'?
     await baseApi.download(path,options.filename||path.split('?')[0].split('/').at(-1),opts):await baseApi.get(path,opts);

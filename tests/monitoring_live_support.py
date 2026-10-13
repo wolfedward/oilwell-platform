@@ -100,6 +100,9 @@ class MonitoringLive:
         port = self.db.ports['http']
         headers = {'Content-Type':'application/json','Origin':f'http://127.0.0.1:{port}'}
         if role in self.cookies: headers['Cookie'] = self.cookies[role]
+        context = getattr(self, 'session_contexts', {}).get(role)
+        if context and path not in ('/api/auth/login', '/api/auth/me'):
+            headers['X-Monitoring-Session'] = context
         conn = http.client.HTTPConnection('127.0.0.1',port,timeout=10)
         try:
             conn.request(method,path,None if body is None else json.dumps(body),headers)
@@ -115,7 +118,10 @@ class MonitoringLive:
         account = next(a for a in self.db.accounts['accounts'] if a['username']==role)
         status, data = self.request('POST','/api/auth/login',{'username':role,'password':account['password']},role=role)
         if status != 200: raise AssertionError(('Login refused',role,status))
-        capabilities = self.get('/api/auth/me',role=role)['capabilities']
+        me = self.get('/api/auth/me',role=role)
+        if not hasattr(self, 'session_contexts'): self.session_contexts = {}
+        self.session_contexts[role] = me['session_context']
+        capabilities = me['capabilities']
         if any(capabilities[name]['status']!='ready' for name in ('monitoring','registry','ingest_reliability')):
             raise AssertionError('Real capabilities unavailable')
         return data['data']

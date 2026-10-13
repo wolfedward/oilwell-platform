@@ -6,6 +6,16 @@ CONNECTED = {'wells','well-detail','field-registry','channel-mapping','acquisiti
 
 
 class MonitoringShellTests(unittest.TestCase):
+    def test_old_form_and_raw_download_keep_captured_session(self):
+        result=run_browser('session_intent')
+        self.assertNotIn('error',result)
+        self.assertEqual(result['page_errors'],[])
+        self.assertEqual(result['writes'],['session-A'])
+        self.assertEqual(result['raw_reads'],[])
+        self.assertEqual(result['expired'],2)
+        self.assertTrue(result['form_disposed'])
+        self.assertTrue(result['all_pinned'])
+
     def test_independent_shell_all_routes_and_disposal_at_both_widths(self):
         for width in (1366,1920):
             with self.subTest(width=width):

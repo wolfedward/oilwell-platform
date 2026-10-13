@@ -1,4 +1,10 @@
 """Select one installation's session without falling back to another UI's cookie."""
+import hashlib
+
+
+def monitoring_session_context(token: str) -> str:
+    """Public, non-authenticating intent fence; never return the cookie credential."""
+    return hashlib.sha256(b'oilwell-monitoring-intent-v1\0' + token.encode('utf-8')).hexdigest()
 
 
 def cookie_name(server) -> str:

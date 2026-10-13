@@ -7,7 +7,7 @@ export async function renderWellDetail(context){
  let result=null,generation=0,scope='current';
  root.innerHTML=context.pageHeader()+`<div class="registry-actions">${routeButton(context,'wells','返回井台账')}</div><div data-detail></div>`;bindRoutes(context,root);
  const target=root.querySelector('[data-detail]');
- async function load(page=1){const request=++generation;const query=new URLSearchParams({binding_scope:scope,page:String(page),page_size:'20'});if(page>1&&result)withSnapshot(query,result,{total:true});
+ async function load(page=1){const request=++generation;const query=new URLSearchParams({binding_scope:scope,page:String(page),page_size:'20'});if(result)withSnapshot(query,result,{total:true});
   target.innerHTML='<p role="status">正在读取单井资料…</p>';
   try{const data=await api.get(`/api/production-monitoring/wells/${encodeURIComponent(wellId)}?${query}`);if(!context.isCurrent()||request!==generation)return;result=data;
    const well=data.well,availability=data.availability;

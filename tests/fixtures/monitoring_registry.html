@@ -72,7 +72,13 @@ try{
  // An automatic post-write refresh must not reopen an older selection after a new search.
  holdList=true;await click('[data-action="create-map"]');await submit();await wait(()=>!!releaseList);
  document.querySelector('[data-filter]').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();releaseList();await tick();await tick();
- const lateRefreshIgnored=!document.querySelector('[data-action="create-map"]');
+ const postWriteRefreshIgnored=!document.querySelector('[data-action="create-map"]');
+ // Manual refresh must not reopen a selection after a different filter.
+ await mount('field-registry',renderFieldRegistry,{device_id:D});await wait(()=>!!document.querySelector('[data-action="bind-device"]'));
+ releaseList=null;holdList=true;await click('[data-refresh]');await wait(()=>!!releaseList);
+ document.querySelector('[data-filter] [name="device_id"]').value='NEW-FILTER';
+ document.querySelector('[data-filter]').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();releaseList();await tick();await tick();
+ const lateRefreshIgnored=postWriteRefreshIgnored&&!document.querySelector('[data-action="bind-device"]');
  await window.captureEvidence?.('monitoring-registry');
  const edge=posts.flatMap(x=>Object.keys(x.body).filter(k=>['host','ip','port','baud','baudrate','interval','poll_interval'].includes(k)));
  document.querySelector('#result').textContent=JSON.stringify({late_refresh_ignored:lateRefreshIgnored,created_once:created,same_retry_body:same,renamed,archive_rejected:archived,states_separate:separate,binding_updated:bound,old_form_disposed:oldDisposed,modbus_readonly:readonly,mqtt_without_registers:mqtt,history_visible:historyVisible,export_context_matches:exportMatches,details_links:detailLinks,long_ids_safe:document.documentElement.scrollWidth<=innerWidth+1,self_review_successes:selfReviews,assignment_state:assignment,submitted_edge_config_fields:edge,forbidden_requests:requests.filter(p=>p.startsWith('/api/preview')||p==='/api/wells')});ctx.dispose();

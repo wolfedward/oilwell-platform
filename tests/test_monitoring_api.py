@@ -37,7 +37,7 @@ class MonitoringHttpTests(unittest.TestCase):
         cookie, _ = self.login()
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
         conn.request('GET', '/api/production-monitoring/wells.csv?revision=1&query_total=1&received_before=2026-01-01T00:00:00Z',
-                     headers={'Cookie': cookie})
+                     headers={'Cookie': cookie, 'X-Monitoring-Session': self.session_contexts[cookie]})
         response = conn.getresponse()
         self.assertEqual(response.status, 200)
         self.assertEqual(response.getheader('Cache-Control'), 'no-store')

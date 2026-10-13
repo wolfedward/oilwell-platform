@@ -144,6 +144,7 @@ export const api = {
     }, DEFAULT_TIMEOUT_MS);
     try {
       const response = await fetch(path, {
+        headers: options.headers,
         credentials: "same-origin",
         signal: controller.signal,
       });

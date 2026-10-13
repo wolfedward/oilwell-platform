@@ -11,7 +11,7 @@ export async function renderDeviceWorkspace(context,{mapping=false}={}){
  bindRoutes(context,root);
  const client=formsFor(context,async({deviceId})=>{const chosen=selection;await load();if(context.isCurrent()&&chosen===selection&&deviceId)await select(deviceId);});
  context.registerDispose(()=>history?.dispose());
- async function load(page=1){const request=++listGeneration,query=new URLSearchParams({...filters,page:String(page),page_size:'20'});if(page>1&&result)withSnapshot(query,result);
+ async function load(page){const fresh=page===undefined;page??=1;const request=++listGeneration,query=new URLSearchParams({...filters,page:String(page),page_size:'20'});if(!fresh&&result)withSnapshot(query,result);
   listing.textContent='正在读取终端台账…';
   try{const data=await api.get(`/api/registry/devices?${query}`);if(!context.isCurrent()||request!==listGeneration)return;result=data;
    listing.innerHTML=queryContext(context,data)+c.table([{key:'gateway_id',label:'网关'},{key:'device_id',label:'终端编号'},{key:'name',label:'名称'},{key:'transport',label:'接入方式'},
@@ -34,7 +34,7 @@ export async function renderDeviceWorkspace(context,{mapping=false}={}){
  const submit=event=>{event.preventDefault();filters=Object.fromEntries([...new FormData(event.target)].filter(([,v])=>v.trim()).map(([k,v])=>[k,v.trim()]));++selection;selected=null;history?.dispose();root.dispatchEvent(new CustomEvent('registry:selection-start'));detail.textContent='请从查询结果选择终端。';load();};
  const click=event=>{const b=event.target.closest('button');if(!b||b.disabled)return;
   if(b.dataset.selectDevice)select(b.dataset.selectDevice);else if(b.hasAttribute('data-page'))load(Number(b.dataset.page));
-  else if(b.hasAttribute('data-refresh')){const id=selected?.id;load().then(()=>{if(id&&context.isCurrent())select(id);});}
+  else if(b.hasAttribute('data-refresh')){const id=selected?.id,chosen=selection;load().then(()=>{if(id&&context.isCurrent()&&chosen===selection&&selected?.id===id)select(id);});}
   else if(b.dataset.action)action(root,{action:b.dataset.action,device:selected,maps});
  };
  root.querySelector('[data-filter]').addEventListener('submit',submit);root.addEventListener('click',click);context.registerDispose(()=>root.removeEventListener('click',click));

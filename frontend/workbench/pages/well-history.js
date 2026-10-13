@@ -18,7 +18,7 @@ export async function renderWellHistory(context){
   const duration=Date.parse(next.to_time)-Date.parse(next.from_time);if(duration<0||duration>31*86400000)throw Error('查询时间不能倒置或超过 31 天。');return next;
  }
  async function load(page=1){if(!context.isCurrent()||!filters)return;controller?.abort();controller=new AbortController();const request=++generation,query=new URLSearchParams({...filters,page:String(page),page_size:'200'});
-  if(page>1&&result)withSnapshot(query,result,{total:true});exportButton.disabled=true;status.textContent='正在查询历史记录…';chart?.dispose();target.innerHTML='';
+  if(result)withSnapshot(query,result,{total:true});exportButton.disabled=true;status.textContent='正在查询历史记录…';chart?.dispose();target.innerHTML='';
   try{const data=await api.get(`/api/production-monitoring/wells/${encodeURIComponent(well)}/history?${query}`,{signal:controller.signal});if(!context.isCurrent()||request!==generation)return;result=data;
    const trend=data.trend;status.textContent=`表格共 ${data.total} 条；曲线 ${trend.point_count} 点${trend.truncated?'（仅截取最近 600 点）':'（当前查询全部观测）'}。绘图范围：${trend.from_time?registryTime(trend.from_time):'无'} — ${trend.to_time?registryTime(trend.to_time):'无'}`;
    target.innerHTML=queryContext(context,data)+'<div data-history-chart></div>'+c.table([{key:'measured_at',label:'采集时刻',render:registryTime},{key:'received_at',label:'接收时刻',render:registryTime},

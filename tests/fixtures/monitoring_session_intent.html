@@ -1,0 +1,25 @@
+<!doctype html><html><meta charset="utf-8"><body><main id="workspace"></main><div id="toastRegion"></div><pre id="result">pending</pre><script type="module">
+try{
+ const {api}=await import('../../frontend/api.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {renderWells}=await import('../../frontend/workbench/pages/wells.js');
+ let cookie='session-A',ctx,first=true,expired=0;const writes=[],reads=[],headers=[],bodies=[];
+ const json=(data,status=200)=>new Response(JSON.stringify(status===200?{data}:{error:{code:'monitoring.session_changed',message:'Session changed'}}),{status,headers:{'Content-Type':'application/json'}});
+ window.fetch=async(path,options={})=>{const header=new Headers(options.headers).get('X-Monitoring-Session');headers.push(header);
+  if(header&&header!==cookie)return json(null,401);
+  if(options.method==='POST'){writes.push(cookie);bodies.push(options.body);if(first){first=false;return json(null,503);}return json({entity:{id:'00000000-0000-4000-8000-000000000011'}});}
+  if(path.includes('/raw')){reads.push(cookie);return new Response('raw');}
+  return json({items:[],total:'0',page:1,page_size:20,registry_revision:'1',received_before:'2026-10-13T00:00:00Z'});
+ };
+ const root=document.querySelector('#workspace'),auth={id:'1',session_context:'session-A',permissions:['registry.read','registry.wells.manage'],capabilities:{}};
+ const make=()=>createWorkbenchContext({auth,page:{id:'wells',group:'Test',label:'Wells'},root,navigate:()=>{}});
+ const tick=()=>new Promise(r=>setTimeout(r,0));window.addEventListener('workbench:unauthenticated',()=>{expired++;ctx.dispose();});
+ ctx=make();await renderWells(ctx);root.querySelector('[data-action="create-well"]').click();await tick();
+ for(const [name,value] of Object.entries({area_code:'A',well_code:'W',name:'Well',reason:'Create test'}))document.querySelector('.registry-form [name="'+name+'"]').value=value;
+ document.querySelector('[data-action="submit-registry"]').click();await tick();await tick();
+ cookie='session-B';document.querySelector('[data-action="submit-registry"]').click();await tick();await tick();
+ const formDisposed=!document.querySelector('.registry-form');
+ ctx=make();try{await ctx.api.download('/api/ingest-reliability/facts/00000000-0000-4000-8000-000000000033/raw');}catch{}
+ document.querySelector('#result').textContent=JSON.stringify({writes,raw_reads:reads,expired,form_disposed:formDisposed,all_pinned:headers.every(x=>x==='session-A')});ctx.dispose();
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>

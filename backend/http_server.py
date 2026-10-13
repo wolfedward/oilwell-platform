@@ -30,7 +30,7 @@ from backend.inversion.api import InversionApi
 from backend.inversion.runtime import build_inversion_runtime
 from backend.ingest_reliability.config import _origin
 from backend.studies.api import StudyApi
-from backend.session_cookies import cookie_name, read_session_cookie
+from backend.session_cookies import cookie_name, read_session_cookie, monitoring_session_context
 from backend.monitoring.api import MonitoringApi
 from backend.monitoring.runtime import build_monitoring_runtime
 
@@ -172,6 +172,22 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 self._send_api_not_found()
                 return True
+            if path not in {'/api/health', '/api/auth/login'}:
+                contexts = self.headers.get_all('X-Monitoring-Session', [])
+                # Cookie identity may change in another tab. Authenticate the request
+                # credential normally, but never execute an old page's intent as it.
+                try:
+                    token = self._token()
+                    bearer = bool(self.headers.get_all('Authorization', []))
+                    required = path != '/api/auth/me' and not bearer
+                    if (required or contexts) and (len(contexts) != 1 or not secrets.compare_digest(
+                            contexts[0].encode('utf-8'), monitoring_session_context(token).encode('ascii'))):
+                        raise AuthError('session context changed')
+                except AuthError:
+                    self.close_connection = True
+                    self._send_json(401, self._error('monitoring.session_changed',
+                                                    'Session changed; reopen the workbench'))
+                    return True
             return False
         exact = {'/api/health', '/api/auth/me', '/api/auth/login', '/api/auth/logout',
                  '/api/audit', '/api/users', '/api/roles'}
@@ -357,6 +373,8 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
             "runtime_mode": self.server.runtime_mode,
             "ui_mode": self.server.ui_mode,
+            **({'session_context': monitoring_session_context(self._token())}
+               if self.server.ui_mode == 'monitoring' else {}),
             "capabilities": {"registry": capability,
                              "monitoring": {"enabled": monitoring_status != "disabled", "status": monitoring_status,
                                             "environment": getattr(self.server.monitoring_runtime, 'environment', None),

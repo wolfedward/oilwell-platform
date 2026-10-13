@@ -8,7 +8,6 @@ import {CONNECTED_IDS,renderWorkbenchRoute,renderError} from './routes.js';
 export function createWorkbenchApp({root,catalog}) {
  let active=true,generation=0,current=null,auth=null,interval=null,loginController=null;
  const globalController=new AbortController();
- const client=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active});
  const encode=(id,params)=>`#/${encodeURIComponent(id)}${Object.keys(params).length?'?'+new URLSearchParams(params):''}`;
  function locationRoute(){try{const [id,q='']=location.hash.replace(/^#\/?/,'').split('?');return {id:decodeURIComponent(id||'wells'),params:Object.fromEntries(new URLSearchParams(q))};}catch{return {id:'wells',params:{}};}}
  function shell(){
@@ -19,6 +18,7 @@ export function createWorkbenchApp({root,catalog}) {
    <main id="workspace" class="wb-workspace" tabindex="-1"></main></div></div>`;
   root.querySelectorAll('[data-page]').forEach(link=>link.addEventListener('click',event=>{event.preventDefault();void open(link.dataset.page);}));
   root.querySelector('[data-logout]').addEventListener('click',async()=>{
+   const captured=auth,client=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active&&auth===captured,sessionContext:captured?.session_context});
    current?.dispose();++generation;
    try{await client.post('/api/auth/logout',{});showLogin();}catch(error){if(error.status===401)showLogin();else components.toast('退出结果未确认，请重试；本页查询已暂停。','error');}
   });
@@ -36,7 +36,7 @@ export function createWorkbenchApp({root,catalog}) {
  function monitorSession(){
   clearInterval(interval);if(!active||!auth)return;
   interval=setInterval(async()=>{const before=auth;if(!active||!before)return;
-   const checkApi=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active&&auth===before});
+   const checkApi=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active&&auth===before,sessionContext:before.session_context});
    try{const fresh=await checkApi.get('/api/auth/me');if(auth!==before)return;
     if(JSON.stringify(fresh)!==JSON.stringify(before)){accept(fresh);const route=locationRoute();await open(route.id,route.params,true);}}
    catch(error){if(error.status===401)showLogin('登录已失效，请重新登录。');}
@@ -46,7 +46,7 @@ export function createWorkbenchApp({root,catalog}) {
   const turn=++generation;current?.dispose();current=null;
   const page=catalog.find(p=>p.id===id)||catalog.find(p=>p.id==='wells');
   try {
-   const routeApi=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active&&turn===generation});
+   const routeApi=createWorkbenchApi(api,{signal:globalController.signal,isCurrent:()=>active&&turn===generation,sessionContext:auth?.session_context});
    const fresh=await routeApi.get('/api/auth/me');if(!active||turn!==generation)return;accept(fresh);
    if(!root.querySelector('#workspace'))shell();
    const workspace=root.querySelector('#workspace');

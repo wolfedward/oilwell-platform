@@ -41,6 +41,8 @@ class MonitoringSessionTests(unittest.TestCase):
         request_headers = {'Content-Type': 'application/json'} | (headers or {})
         if cookie is not None:
             request_headers['Cookie'] = cookie
+            context = getattr(self, 'session_contexts', {}).get(cookie)
+            if context: request_headers.setdefault('X-Monitoring-Session', context)
         conn.request(method, path, None if body is None else json.dumps(body), request_headers)
         response = conn.getresponse()
         data = json.loads(response.read())
@@ -48,12 +50,46 @@ class MonitoringSessionTests(unittest.TestCase):
         conn.close()
         return result
 
-    def login(self):
-        account = next(a for a in self.accounts if a['username'] == 'administrator')
+    def login(self, username='administrator'):
+        account = next(a for a in self.accounts if a['username'] == username)
         status, data, headers = self.request('POST', '/api/auth/login',
             {'username': account['username'], 'password': account['password']}, headers={'Origin': self.origin})
         self.assertEqual(status, 200)
+        cookie = headers['Set-Cookie']
+        _, me, _ = self.request('GET', '/api/auth/me', cookie=cookie)
+        if not hasattr(self, 'session_contexts'): self.session_contexts = {}
+        self.session_contexts[cookie] = me['data'].get('session_context')
         return headers['Set-Cookie'], data['data']['token']
+
+    def test_cookie_request_is_bound_to_the_captured_session(self):
+        cookie_a, _ = self.login()
+        _, me_a, _ = self.request('GET', '/api/auth/me', cookie=cookie_a)
+        context_a = me_a['data'].get('session_context')
+        self.assertIsInstance(context_a, str)
+        self.assertEqual(len(context_a), 64)
+        for username in ('administrator', 'production_engineer'):
+            cookie_b, _ = self.login(username)
+            _, me_b, _ = self.request('GET', '/api/auth/me', cookie=cookie_b)
+            self.assertNotEqual(context_a, me_b['data']['session_context'])
+            headers = {'Origin': self.origin, 'X-Monitoring-Session': context_a}
+            for method, path in [('GET', '/api/registry/wells'), ('POST', '/api/registry/wells'),
+                                 ('GET', f'/api/ingest-reliability/facts/{uuid4()}/raw'),
+                                 ('GET', '/api/production-monitoring/wells.csv'),
+                                 ('POST', '/api/auth/logout'), ('GET', '/api/auth/me')]:
+                with self.subTest(username=username, path=path):
+                    status, body, _ = self.request(method, path, {} if method == 'POST' else None,
+                                                  cookie=cookie_b, headers=headers)
+                    self.assertEqual(status, 401, body)
+                    self.assertEqual(body['error']['code'], 'monitoring.session_changed')
+            self.assertEqual(self.request('GET', '/api/auth/me', cookie=cookie_b)[0], 200)
+
+    def test_monitoring_cookie_requires_context_but_explicit_bearer_is_pinned(self):
+        cookie, token = self.login()
+        status, _, _ = self.request('GET', '/api/registry/wells', cookie=cookie,
+                                   headers={'X-Monitoring-Session': ''})
+        self.assertEqual(status, 401)
+        self.assertEqual(self.request('GET', '/api/registry/wells',
+                                     headers={'Authorization': 'Bearer '+token})[0], 503)
 
     def test_monitoring_cookie_isolated(self):
         cookie, token = self.login()
