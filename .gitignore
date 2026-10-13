@@ -18,6 +18,7 @@ config/*.local.toml
 config/mosquitto.local.conf
 config/*.password
 certs/private/
+/private/
 
 # Existing user-owned artifacts are not platform source files.
 output/

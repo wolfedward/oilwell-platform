@@ -19,7 +19,18 @@
 
 备份命令停止新实例后同时快照身份库与 PostgreSQL，恢复必须使用全新目录、相同固定代码、另组端口。恢复核对角色库存、行数、来源、账号及 Cookie；复制身份的两个实例不可同时提供会话。
 
-待部署记录：固定提交、入口、账号文件、实际备份恢复及保护指纹结果在完成后更新本节。
+## 2026-10-13 独立安装记录
+
+- 入口：<http://127.0.0.1:8774/>。固定运行代码 `77ff9aac0963de806babf59ef6b1c8bc7e537ea4`，HTTP/PostgreSQL/MQTT 分别为 `8774/55436/1888`。
+- 安装根目录：`C:/Users/hp/AppData/Local/OilWell/monitoring-workbench-20261013`。
+- 五岗位账号及随机密码仅保存在上述目录的 `private/accounts.json`，不写入公开源码、此文档或测试报告。
+- 来源上下文 `8d11e9af-4956-4be4-8b76-743e2086d110`，环境为软件功能测试。实际通过 MQTT 写入 12 条不同数值的观测，并验证重复消息、异常事项、原文摘要、CSV、审计和重启读取。
+- 安装验收记录：`private/acceptance-c812ee57cb89412e9aa5fc25be9193ae.json`；重启复查：`private/acceptance-eb4d8cc80c0049f8976d65b571184189.json`。每轮均在实际 HTTP 上检查 8 页 × 两种宽度，不使用页面网络替身。
+- 一致性备份：`backups/ca32378e-11ec-4d8d-ad1e-18601e116709`。停止写入后备份身份与业务库，恢复到全新 `C:/Users/hp/AppData/Local/OilWell/monitoring-workbench-restore-20261013`（`8775/55437/1889`），90 张表的行数逐表一致，身份、角色、来源和固定代码核对通过。恢复验收报告为恢复目录下的 `private/acceptance-331ce032a06e40588473a34b43edda39.json`。
+- 恢复实例已停止，主新实例 8774 已重新启动。原 8765/8770/8772 监听进程保持不变；原代码、配置和冻结快照共 2,845 个文件前后 SHA-256 比对无差异。不将活跃日志/数据库自身写入误算为代码变更。
+- 组合验证报告在本开发工作树 `private/monitoring-check.json`；其中普通浏览器测试使用受控网络替身，与 `integration` 中真实数据库、MQTT、HTTP 及实际浏览器检查分开记录。另有 `private/monitoring-unit-final.json`。
+
+启动、停止和备份使用本工作树的 `python -B -m tools.review_deploy launch|stop|backup --target <上述安装根目录>`。恢复仍必须使用该安装的固定源码提交，不可把新提交静默套入旧备份；恢复至新目录，不覆盖在用安装。
 
 ## 现场上线前仍需完成
 
