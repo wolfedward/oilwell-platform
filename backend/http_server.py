@@ -358,7 +358,9 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
             "runtime_mode": self.server.runtime_mode,
             "ui_mode": self.server.ui_mode,
             "capabilities": {"registry": capability,
-                             "monitoring": {"enabled": monitoring_status != "disabled", "status": monitoring_status},
+                             "monitoring": {"enabled": monitoring_status != "disabled", "status": monitoring_status,
+                                            "environment": getattr(self.server.monitoring_runtime, 'environment', None),
+                                            "source_ref": getattr(self.server.monitoring_runtime, 'source_ref', None)},
                              "production_studies": {"enabled": self.server.studies is not None, "status": "ready" if self.server.studies is not None else "disabled"},
                              "production_inversion": {"enabled": inversion_status != "disabled", "status": inversion_status},
                              "waveforms": {"enabled": waveform_status != "disabled", "status": waveform_status},
@@ -619,7 +621,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
     def _has_shutdown_token(self):
         return self.client_address[0] in {"127.0.0.1", "::1"} and bool(getattr(self.server, "shutdown_token", None) and self.headers.get("X-Platform-Shutdown-Token") and secrets.compare_digest(self.server.shutdown_token, self.headers["X-Platform-Shutdown-Token"]))
     def _serve_static(self, request_path):
-        relative = unquote(request_path).lstrip("/") or "index.html"
+        relative = unquote(request_path).lstrip("/") or ("workbench.html" if self.server.ui_mode == 'monitoring' else "index.html")
         if not self._is_allowed_static_path(relative): self.send_error(HTTPStatus.NOT_FOUND, "File not found"); return
         root = Config.PROJECT_ROOT.resolve(); candidate = (root / relative).resolve(); allowed = (root / "assets").resolve() if relative.startswith("assets/") else (root / "frontend").resolve() if relative.startswith("frontend/") else root
         try: candidate.relative_to(allowed)
@@ -632,7 +634,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers(); self.wfile.write(body)
     @staticmethod
-    def _is_allowed_static_path(relative): return relative in {"index.html", "app.js", "styles.css"} or relative.startswith(("assets/", "frontend/"))
+    def _is_allowed_static_path(relative): return relative in {"index.html", "workbench.html", "app.js", "styles.css"} or relative.startswith(("assets/", "frontend/"))
     def log_message(self, format, *args): return
 
 

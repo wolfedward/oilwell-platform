@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/workbench/styles.css"><body><div id="app"></div><pre id="result" hidden>pending</pre><div id="toastRegion"></div>
+<script type="module">
+try {
+ const {createWorkbenchApp}=await import('../../frontend/workbench/app.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {createWorkbenchApi}=await import('../../frontend/workbench/api.js');
+ const {api}=await import('../../frontend/api.js');
+ const realGet=api.get.bind(api),realRequest=api.request.bind(api);
+ const catalog=await (await fetch('../../frontend/preview/catalog.json')).json();
+ const requests=[];
+ const auth={id:1,version:1,display_name:'系统管理员 · 长中文测试名称',role_code:'administrator',ui_mode:'monitoring',
+  permissions:['registry.read','telemetry.read','acquisition.read','data_quality.read','ingest.read'],
+  capabilities:{monitoring:{status:'ready',environment:'test',source_ref:'00000000-0000-4000-8000-000000000001'},registry:{status:'ready'},ingest_reliability:{status:'ready'}}};
+ api.get=async path=>{requests.push(path);if(path==='/api/auth/me')return auth;return {items:[],total:'0',page:1,page_size:20};};
+ api.post=async path=>{requests.push(path);return {};};
+ api.download=async path=>{requests.push(path);};
+ const app=createWorkbenchApp({root:document.querySelector('#app'),catalog});await app.start();
+ const ids=app.catalog.map(x=>x.id);let pending=true;
+ for(const page of catalog){await app.open(page.id);if(!app.connectedIds.includes(page.id))pending&&=!!document.querySelector('a[href^="http://127.0.0.1:8772/"]');}
+ await app.open('well-detail',{well_id:'W-001'});const legacy=document.body.textContent.includes('环境不匹配');
+ auth.permissions=[];await app.open('wells');const denied=!!document.querySelector('[data-state="forbidden"]');auth.permissions=['registry.read','telemetry.read','acquisition.read','data_quality.read','ingest.read'];
+ await app.open('dashboard');
+ let done;const delayed={get:()=>new Promise(resolve=>{done=resolve;})};
+ const oldRoot=document.createElement('div');oldRoot.textContent='old';document.querySelector('#app').append(oldRoot);
+ const context=createWorkbenchContext({auth,page:catalog.find(x=>x.id==='wells'),params:{},root:oldRoot,navigate:()=>{}});
+ const scoped=createWorkbenchApi(delayed,{signal:context.signal,isCurrent:context.isCurrent});
+ let replaced=false;const late=scoped.get('/api/registry/wells').then(()=>{replaced=true;},()=>{});
+ context.dispose();oldRoot.remove();await app.open('dashboard');done({items:[{name:'late'}]});await late;
+ const guarded=createWorkbenchApi(api,{isCurrent:()=>true});let blocked=0;
+ for(const [method,path] of [['get','/api/preview/wells'],['get','/api/wells'],['post','/api/ingest-reliability/receipts/00000000-0000-4000-8000-000000000001/resend'],['post','/api/commands'],['get','https://example.com/api/registry/wells']]){
+  try{await guarded[method](path,{});}catch{blocked++;}
+ }
+ const output={catalog_count:ids.length,catalog_matches:JSON.stringify(ids)===JSON.stringify(catalog.map(x=>x.id)),connected_ids:app.connectedIds,
+  forbidden_requests:requests.filter(x=>x.startsWith('/api/preview')||x==='/api/wells'||x.startsWith('/api/commands')),
+  role_switch:!!document.querySelector('[data-role-switch],#previewActor,[name="scenario"]'),horizontal_overflow:document.documentElement.scrollWidth>innerWidth+1,
+  pending_links:pending,legacy_well_warning:legacy,forbidden_state:denied,late_response_replaced_new_route:replaced,unsafe_calls_blocked:blocked===5,
+  environment_visible:document.body.textContent.includes('功能测试环境')};
+ await window.captureEvidence?.('monitoring-shell');app.dispose();
+ const fetchOriginal=window.fetch;let finishFetch,live=true,events=0;
+ const noteExpired=()=>events++;window.addEventListener('platform:unauthenticated',noteExpired);window.addEventListener('workbench:unauthenticated',noteExpired);
+ window.fetch=()=>new Promise(resolve=>{finishFetch=resolve;});
+ const lateAuthApi=createWorkbenchApi({get:(path,opts)=>realRequest(path,{...opts,method:'GET'})},{isCurrent:()=>live});
+ const lateAuth=lateAuthApi.get('/api/auth/me').catch(()=>{});live=false;finishFetch(new Response(JSON.stringify({error:{message:'expired'}}),{status:401,headers:{'Content-Type':'application/json'}}));await lateAuth;
+ output.late_auth_events=events;window.fetch=fetchOriginal;window.removeEventListener('platform:unauthenticated',noteExpired);window.removeEventListener('workbench:unauthenticated',noteExpired);
+ api.get=async()=>{throw Object.assign(new Error('expired'),{status:401});};
+ api.post=async()=>{throw Object.assign(new Error('wrong password'),{status:401});};
+ const loginApp=createWorkbenchApp({root:document.querySelector('#app'),catalog});await loginApp.start();
+ const form=document.querySelector('.wb-login-form');form.elements.username.value='incorrect';form.elements.password.value='incorrect';
+ form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));
+ output.login_error_preserves_form=form.isConnected&&form.textContent.includes('用户名或密码不正确');loginApp.dispose();
+ const originalInterval=window.setInterval;let heartbeatStarted=false;
+ window.setInterval=(...args)=>{heartbeatStarted=true;return originalInterval(...args);};
+ const successApp=createWorkbenchApp({root:document.querySelector('#app'),catalog});await successApp.start();
+ api.get=async()=>structuredClone(auth);api.post=async()=>({});
+ const successForm=document.querySelector('.wb-login-form');successForm.elements.username.value='administrator';successForm.elements.password.value='test';
+ successForm.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));
+ output.successful_login_starts_session_checks=heartbeatStarted;successApp.dispose();window.setInterval=originalInterval;
+ document.querySelector('#result').textContent=JSON.stringify(output);
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>

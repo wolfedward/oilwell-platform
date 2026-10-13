@@ -66,7 +66,7 @@ export const api = {
       const payload = await parseResponse(response);
       if (!response.ok) {
         const error = errorFrom(response, payload);
-        if (response.status === 401) {
+        if (response.status === 401 && !options.suppressUnauthorizedEvent) {
           window.dispatchEvent(new CustomEvent("platform:unauthenticated"));
         }
         throw error;
@@ -119,7 +119,7 @@ export const api = {
       const response = await fetch(path, {...options, method: "POST", body, headers, credentials: "same-origin", signal: controller.signal});
       const payload = await parseResponse(response);
       if (!response.ok) {
-        if (response.status === 401) window.dispatchEvent(new CustomEvent("platform:unauthenticated"));
+        if (response.status === 401 && !options.suppressUnauthorizedEvent) window.dispatchEvent(new CustomEvent("platform:unauthenticated"));
         throw errorFrom(response, payload);
       }
       return payload?.data ?? payload;
@@ -149,7 +149,7 @@ export const api = {
       });
       if (!response.ok) {
         const error = errorFrom(response, await parseResponse(response));
-        if (response.status === 401) {
+        if (response.status === 401 && !options.suppressUnauthorizedEvent) {
           window.dispatchEvent(new CustomEvent("platform:unauthenticated"));
         }
         throw error;
