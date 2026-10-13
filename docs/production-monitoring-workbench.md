@@ -27,14 +27,18 @@ Cookie 接口客户端先读取 `/api/auth/me` 的 `session_context`，随后每
 
 ## 2026-10-13 独立安装记录
 
-- 入口：<http://127.0.0.1:8774/>。固定运行代码 `77ff9aac0963de806babf59ef6b1c8bc7e537ea4`，HTTP/PostgreSQL/MQTT 分别为 `8774/55436/1888`。
+- 入口：<http://127.0.0.1:8774/>。修复后固定运行代码 `4e7673e6f5a27e5f3a74daa2317f08e3fe48d79f`，HTTP/PostgreSQL/MQTT 分别为 `8774/55436/1888`。
 - 安装根目录：`C:/Users/hp/AppData/Local/OilWell/monitoring-workbench-20261013`。
 - 五岗位账号及随机密码仅保存在上述目录的 `private/accounts.json`，不写入公开源码、此文档或测试报告。
 - 来源上下文 `8d11e9af-4956-4be4-8b76-743e2086d110`，环境为软件功能测试。实际通过 MQTT 写入 12 条不同数值的观测，并验证重复消息、异常事项、原文摘要、CSV、审计和重启读取。
-- 安装验收记录：`private/acceptance-c812ee57cb89412e9aa5fc25be9193ae.json`；重启复查：`private/acceptance-eb4d8cc80c0049f8976d65b571184189.json`。每轮均在实际 HTTP 上检查 8 页 × 两种宽度，不使用页面网络替身。
-- 一致性备份：`backups/ca32378e-11ec-4d8d-ad1e-18601e116709`。停止写入后备份身份与业务库，恢复到全新 `C:/Users/hp/AppData/Local/OilWell/monitoring-workbench-restore-20261013`（`8775/55437/1889`），90 张表的行数逐表一致，身份、角色、来源和固定代码核对通过。恢复验收报告为恢复目录下的 `private/acceptance-331ce032a06e40588473a34b43edda39.json`。
+- 初始版本 `77ff9aa` 安装记录：`private/acceptance-c812ee57cb89412e9aa5fc25be9193ae.json`；重启复查：`private/acceptance-eb4d8cc80c0049f8976d65b571184189.json`。每轮均在实际 HTTP 上检查 8 页 × 两种宽度，不使用页面网络替身。
+- 初始版本一致性备份：`backups/ca32378e-11ec-4d8d-ad1e-18601e116709`。停止写入后备份身份与业务库，按相同固定代码恢复到全新 `C:/Users/hp/AppData/Local/OilWell/monitoring-workbench-restore-20261013`（`8775/55437/1889`），90 张表的行数逐表一致，身份、角色、来源核对通过。恢复验收报告为恢复目录下的 `private/acceptance-331ce032a06e40588473a34b43edda39.json`；此恢复演练对应初始版本，不冒称修复版重新恢复过。
 - 恢复实例已停止，主新实例 8774 已重新启动。原 8765/8770/8772 监听进程保持不变；原代码、配置和冻结快照共 2,845 个文件前后 SHA-256 比对无差异。不将活跃日志/数据库自身写入误算为代码变更。
-- 组合验证报告在本开发工作树 `private/monitoring-check.json`；其中普通浏览器测试使用受控网络替身，与 `integration` 中真实数据库、MQTT、HTTP 及实际浏览器检查分开记录。另有 `private/monitoring-unit-final.json`。
+- 独立审查提出三个重要问题：跨标签页身份替换、返回第一页丢失查询上下文、迟到刷新重新打开旧设备。均先复现为失败测试，再修复；修复后分层检查 **129/129 通过**（80 后端边界、26 浏览器、23 实际新建数据库/HTTP/MQTT 集成），必测跳过为 0。报告为本开发工作树 `private/monitoring-check-post-review.json`。普通浏览器测试使用受控网络替身，与集成中的实际网络和浏览器证据分开记录。
+- 修复版部署前备份：`backups/8bd2d1c4-9f13-419d-961c-90c796a2c2f0`；旧代码完整保留为 `code-before-reviewfix-77ff9aac0963`。仅切换已提交并核对摘要的应用代码，不改配置、依赖、数据库结构、账号或原始记录。切换凭证：`private/code-switch-4e7673e6f5a2.json`。
+- 修复版实际安装检查：`private/acceptance-d4187384b6ed438881280ffb72b8e364.json`，包括 16 个页面检查、五岗位登录及 6 个旧会话/跨身份拒绝检查。修复后另存一致性备份 `backups/2ed18bf9-0f1d-4dc3-9eb3-ef6e8c82830a`。
+- 最终完整重启复查：`private/acceptance-50f54a25d35f4567bb32f3bfce67df8d.json`；同样通过 16 个页面、5 岗位和 6 个会话拒绝检查，12 条原始观测保留。最终原实例保护比对仍为 2,845 个文件、0 差异、0 监听进程变化。
+- 本轮计划工作记录、独立审查差异、逐项测试日志及保护比对归档在开发工作树 `private/monitoring-workbench-evidence-20261013/`；归档核对摘要后清理原计划临时目录，源码工作树和分支保留。
 
 启动、停止和备份使用本工作树的 `python -B -m tools.review_deploy launch|stop|backup --target <上述安装根目录>`。恢复仍必须使用该安装的固定源码提交，不可把新提交静默套入旧备份；恢复至新目录，不覆盖在用安装。
 
