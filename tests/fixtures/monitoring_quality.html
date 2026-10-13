@@ -1,0 +1,55 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/workbench/styles.css"><body><div id="app"><main id="workspace" class="wb-workspace"></main></div><div id="toastRegion"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const {renderAcquisition}=await import('../../frontend/workbench/pages/acquisition.js');
+ const {renderDataQuality}=await import('../../frontend/workbench/pages/data-quality.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {api}=await import('../../frontend/api.js');
+ const catalog=await(await fetch('../../frontend/preview/catalog.json')).json();
+ const W='00000000-0000-4000-8000-000000000011',W2='00000000-0000-4000-8000-000000000012',C='00000000-0000-4000-8000-000000000021',F='00000000-0000-4000-8000-000000000031';
+ const time='2026-10-13T00:00:00.000001Z',stamp={registry_revision:'9007199254740993',received_before:time,query_total:'2',queried_at:time},message='M:'+('x'.repeat(110));
+ const item={message_id:message,gateway_id:'GW',device_id:'DEVICE',topic:'oilfield/GW/DEVICE/telemetry',sequence_first:'9007199254740993',sequence_last:'9007199254740994',created_at:time,received_at:time,payload_sha256:'a'.repeat(64),sample_count:'2',sources:['modbus_tcp'],ingest_status:'stored',processing:{status:'ready',fact_id:F,fact_status:'stored',receipt_status:'stored',delivery_state:'broker_confirmed',duplicate_count:'3',status_queried_at:time},attribution:{status:'ready',well_count:'2',unassigned_count:'0'}};
+ const measurement={message_id:message,sample_index:0,value:12.3456789,unit:'kN',quality:'bad',source:'modbus_tcp',sequence:'9007199254740993',measured_at:time,received_at:time,gateway_id:'GW',device_id:'DEVICE',point_code:'load',reasons:['quality_bad'],well_id:W,application_status:'unverified'};
+ const record={id:C,fact_id:F,state:'open',version:'1',updated_at:time,received_at:time,gateway_id:'GW',device_id:'DEVICE',message_id:message,payload_sha256:'b'.repeat(64),payload_bytes:700,reason_code:'retained_publish',duplicate_count:'0'};
+ let ctx,empty=false,lost=true,conflict=true,deny=false,denyRaw=false;const requests=[],posts=[],receipts=new Map();
+ const error=(status)=>Object.assign(new Error('test '+status),{status});
+ api.get=async path=>{requests.push(path);const u=new URL(path,'http://local'),p=u.pathname;
+  if(p==='/api/production-monitoring/acquisition/messages')return {items:[item,{...item,message_id:'M-other',processing:{status:'unavailable'},attribution:{status:'forbidden'}}],total:'2',page:1,page_size:20,context:stamp,from_time:time,to_time:time};
+  if(p.startsWith('/api/production-monitoring/acquisition/messages/'))return {...item,well_ids:[W,W2],well_count:'2',unassigned_count:'0',page:1,page_size:20,context:{...stamp,query_total:'2'}};
+  if(p==='/api/production-monitoring/quality'){const view=u.searchParams.get('view'),data=view==='cases'?[record]:[measurement],total={observations:'7',resolution:'5',cases:'1'}[view];return {items:empty?[]:structuredClone(data),total:empty?'0':total,page:1,page_size:20,context:{...stamp,query_total:total},view,from_time:time,to_time:time,time_basis:'received_at',coverage:u.searchParams.has('well_id')?'selected_well_only':'global_or_device',status_queried_at:time};}
+  if(p===`/api/ingest-reliability/cases/${C}`)return {entity:structuredClone(record)};
+  if(p==='/api/ingest-reliability/audit')return {items:[{id:'AUDIT-1',action:'case.note',reason:'软件测试',recorded_at:time,actor:{user_id:'1'}}],total:'1',page:1,page_size:20};
+  if(p.endsWith('/preview')){if(denyRaw)throw error(403);return {fact_id:F,text:'<img src=x onerror="window.rawInjected=true">原文测试',payload_sha256:'b'.repeat(64),payload_bytes:'700',truncated:false};}
+  throw Error('Unexpected GET '+path);
+ };
+ api.download=async path=>{requests.push(path);if(denyRaw)throw error(403);};
+ api.post=async(path,body)=>{requests.push(path);posts.push({path,body:structuredClone(body)});if(deny)throw error(403);if(receipts.has(body.idempotency_key))return receipts.get(body.idempotency_key);
+  const action=path.split('/').at(-1);if(action==='note'&&conflict){conflict=false;record.version=String(BigInt(record.version)+1n);throw error(409);}
+  if(body.expected_version!==record.version)throw error(409);record.version=String(BigInt(record.version)+1n);record.state=({ack:'acknowledged',close:'closed',reopen:'open'})[action]||record.state;
+  const result={entity:structuredClone(record),replayed:false};receipts.set(body.idempotency_key,result);if(action==='ack'&&lost){lost=false;throw error(503);}return result;
+ };
+ const auth={id:1,permissions:['acquisition.read','registry.read','telemetry.read','data_quality.read','ingest.read','ingest.manage','audit.read'],capabilities:{registry:{status:'ready'},monitoring:{status:'ready'},ingest_reliability:{status:'ready'}}};
+ const root=document.querySelector('#workspace'),tick=()=>new Promise(r=>setTimeout(r,0)),wait=async predicate=>{for(let i=0;i<100&&!predicate();i++)await tick();if(!predicate())throw Error('Expected UI not ready');};
+ const click=async selector=>{const element=document.querySelector(selector);if(!element)throw Error('Missing '+selector);element.click();await tick();};
+ const mount=async(id,render,params={})=>{ctx?.dispose();ctx=createWorkbenchContext({auth,page:catalog.find(x=>x.id===id),params,root,navigate:()=>{}});await render(ctx);await tick();};
+ await mount('acquisition',renderAcquisition);const columns=root.textContent;const separate=['接收时间','入库状态','业务回执','Broker 发送'].every(x=>columns.includes(x));const unknown=columns.includes('暂不可用')&&columns.includes('无权查看');
+ const rgb=getComputedStyle(root.querySelector('[data-message]')).color.match(/\d+/g).slice(0,3).map(Number).map(x=>x/255).map(x=>x<=.04045?x/12.92:((x+.055)/1.055)**2.4);const contrast=1.05/(rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722+.05)>=4.5;
+ await click('[data-message]');const mixed=root.textContent.includes('跨井')&&root.textContent.includes(W2);const detailPath=requests.find(x=>x.includes('/messages/M%3A'));const detailContext=!new URL(detailPath,'http://local').searchParams.has('query_total');await window.captureEvidence?.('monitoring-acquisition');
+ await mount('data-quality',renderDataQuality);const tabs=root.querySelectorAll('[data-quality-view]').length;const totals=[root.textContent.includes('7 条')];
+ await click('[data-quality-view="resolution"]');totals.push(root.textContent.includes('5 条'));
+ await click('[data-unresolved]');const unresolved=new URL(requests.at(-1),'http://local').searchParams.get('unresolved')==='true'&&root.textContent.includes('未解析');
+ await click('[data-quality-view="cases"]');totals.push(root.textContent.includes('1 条'));await click('[data-case-id]');
+ const noRawBefore=requests.filter(x=>/\/facts\/.+\/(preview|raw)/.test(x)).length;
+ const before=measurement.value;
+ const act=async action=>{await click(`[data-case-action="${action}"]`);document.querySelector('[data-case-form] [name="reason"]').value='软件核查说明';await click('[data-case-submit]');};
+ await act('ack');await click('[data-case-submit]');await wait(()=>!document.querySelector('[data-case-form]'));
+ const same=JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body);
+ await act('note');const preserved=document.querySelector('[data-case-form] [name="reason"]').value==='软件核查说明'&&document.querySelector('[data-case-form]').textContent.includes('最新版本');await click('[data-case-submit]');await wait(()=>!document.querySelector('[data-case-form]'));
+ await act('close');await wait(()=>!document.querySelector('[data-case-form]'));await act('reopen');await wait(()=>!document.querySelector('[data-case-form]'));
+ const audit=root.textContent.includes('AUDIT-1');await window.captureEvidence?.('monitoring-quality-cases');deny=true;await act('note');const stopped=document.querySelector('[data-case-submit]').disabled;await click('[data-case-cancel]');deny=false;
+ auth.permissions.push('ingest.raw.read');await mount('data-quality',renderDataQuality,{view:'cases'});await click('[data-case-id]');await click('[data-preview-fact]');const safe=document.querySelector('[data-raw-preview]').textContent.includes('原文测试')&&!document.querySelector('[data-raw-preview] img')&&!window.rawInjected&&requests.includes(`/api/ingest-reliability/facts/${F}/preview`);await click('[data-close-raw]');
+ denyRaw=true;await click('[data-preview-fact]');const denied=document.querySelector('[data-raw-preview]').textContent.includes('权限');await click('[data-close-raw]');
+ empty=true;await click('[data-quality-view="observations"]');const emptyShown=root.textContent.includes('暂无');await window.captureEvidence?.('monitoring-quality');
+ const actions=[...new Set(posts.map(x=>x.path.split('/').at(-1)))].sort();if(!contrast)throw Error('Workbench table links fail readable text contrast');
+ document.querySelector('#result').textContent=JSON.stringify({quality_view_count:tabs,forbidden_write_requests:posts.filter(x=>!/^\/api\/ingest-reliability\/cases\/[^/]+\/(ack|close|note|reopen)$/.test(x.path)),telemetry_before_close:before,telemetry_after_close:measurement.value,raw_requests_without_permission:noRawBefore,actions,separate_states:separate,mixed_wells:mixed,detail_context:detailContext,unknown_not_zero:unknown,unresolved_scope:unresolved,separate_totals:totals.every(Boolean),same_retry:same,conflict_confirmed:preserved,denial_stops:stopped,raw_safe:safe,raw_denied:denied,audit_visible:audit,empty_state:emptyShown,long_content_safe:document.documentElement.scrollWidth<=innerWidth+1});ctx.dispose();
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>

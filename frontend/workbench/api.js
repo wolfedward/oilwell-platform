@@ -5,7 +5,8 @@ const READS=[/^\/api\/auth\/me$/,/^\/api\/registry\/(wells|devices|audit|resolve
  new RegExp(`^/api/registry/devices/${UUID}(/(state-history|bindings|point-maps|point-map-assignments|link-status))?$`),
  /^\/api\/production-monitoring\/(wells\.csv|quality|acquisition\/messages(?:\/[A-Za-z0-9_.:%-]+)?)$/,
  new RegExp(`^/api/production-monitoring/wells/${UUID}(/(latest|history|history.csv))?$`),
- new RegExp(`^/api/ingest-reliability/(health|cases|receipts|audit)(/${UUID})?$`)];
+ new RegExp(`^/api/ingest-reliability/(health|cases|receipts|audit)(/${UUID})?$`),
+ new RegExp(`^/api/ingest-reliability/facts/${UUID}/(preview|raw)$`)];
 const WRITES=[/^\/api\/auth\/(login|logout)$/,/^\/api\/registry\/(wells|devices)$/,
  new RegExp(`^/api/registry/wells/${UUID}/changes$`),
  new RegExp(`^/api/registry/devices/${UUID}/(changes|state|bindings|unbind|point-maps|point-map-assignment)$`),

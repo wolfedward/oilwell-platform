@@ -667,6 +667,10 @@ tbody tr:hover { background: #f7fbff; }
 .field-registry button:focus-visible, .field-registry input:focus-visible, .field-registry select:focus-visible { outline: 3px solid #93b8ff; outline-offset: 2px; }
 /* Only this new workspace relaxes the legacy shell's 1180px lower bound. */
 html:has(.ingest-reliability), body:has(.ingest-reliability) { min-width: 0; }
+/* Keep the legacy header's min-content width from expanding this workspace. */
+.app-shell:has(.ingest-reliability) { grid-template-columns: minmax(0,1fr); }
+body:has(.ingest-reliability) .topbar { min-width: 0; }
+body:has(.ingest-reliability) .topnav { overflow-x: auto; }
 .ingest-reliability { min-width: 0; max-width: 100%; display: grid; gap: 18px; font-size: 13px; line-height: 1.65; }
 .ingest-reliability .panel { min-width: 0; overflow: hidden; }
 .ingest-reliability .panel > header { gap: 14px; flex-wrap: wrap; }
