@@ -89,9 +89,10 @@ def _role_env(base, credentials, roles):
     return env
 
 
-def start_services(root, *, ports, credentials, on_start=None):
+def start_services(root, *, ports, credentials, on_start=None, profile='review'):
     root = Path(root).absolute()
-    from .review_deploy_config import env_name
+    from .review_deploy_config import checked_profile
+    checked_profile(profile)
     python = str(root / 'venv' / 'Scripts' / 'python.exe')
     code = root / 'code'
     private = root / 'private'
@@ -126,13 +127,15 @@ def start_services(root, *, ports, credentials, on_start=None):
         raise ValueError('review HTTP port occupied')
     env = _role_env(base, credentials, ('mqtt_center', 'reliable_ingestor', 'foundation_reader', 'registry_writer',
         'reliable_reader', 'reliable_operator', 'wave_reader', 'wave_operator', 'wave_receiver',
-        'inversion_reader', 'inversion_operator'))
+        'inversion_reader', 'inversion_operator') + (('monitoring_reader',) if profile == 'monitoring' else ()))
     env.update(PLATFORM_DATABASE_PATH=str(private / 'identity.db'), PLATFORM_LOG_PATH=str(root / 'logs'),
                PLATFORM_NO_BROWSER='1')
     command = [python, str(code / 'server.py'), '--launch', '--runtime-mode=review', '--host', '127.0.0.1',
                '--port', str(ports['http']), '--center-config=' + str(private / 'center.toml'),
                '--waveform-config=' + str(private / 'waveform.toml'),
                '--inversion-config=' + str(private / 'inversion.toml')]
+    if profile == 'monitoring':
+        command.append('--ui-mode=monitoring')
     with (root / 'logs' / 'http-launch.log').open('ab') as output:
         result = subprocess.run(command, cwd=code, env=env, stdout=output,
                                 stderr=subprocess.STDOUT, timeout=90,
@@ -145,6 +148,8 @@ def start_services(root, *, ports, credentials, on_start=None):
     info = _record(runtime['pid'])
     if str(code / 'server.py').lower() not in info['command'].lower() or '--runtime-mode=review' not in info['command']:
         raise RuntimeError('review HTTP command identity mismatch')
+    if profile == 'monitoring' and '--ui-mode=monitoring' not in info['command']:
+        raise RuntimeError('monitoring HTTP command identity mismatch')
     processes['http'] = info | {'instance_id': runtime['instance_id']}
     if on_start:
         on_start('http', processes['http'])

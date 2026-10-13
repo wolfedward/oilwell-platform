@@ -14,6 +14,7 @@ from .review_deploy_backup import count_business_rows, dump_database, restore_da
 from .review_deploy_config import (PG_OWNERS, PG_RUNTIME, MQTT_ACCOUNTS, GATEWAY,
                                    broker_configuration, config_hashes, verify_config_hashes,
                                    runtime_secrets, write_configs)
+from .review_deploy_config import pg_runtime, mqtt_accounts, checked_profile, deployment_profile
 from .review_deploy_paths import claim_target, private_acl, replace_json_private, safe_target, verify_target, write_json_private
 from .review_deploy_pg import (cluster_running, connection_settings, initialize_cluster,
                                probe_system_identifier, start_cluster, stop_cluster)
@@ -36,13 +37,13 @@ def _credential_file(root):
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
         raise ValueError('private credential file unavailable')
     credentials = json.loads(path.read_text(encoding='utf-8'))
-    if set(credentials) != set((*PG_OWNERS, *PG_RUNTIME, *MQTT_ACCOUNTS)):
+    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(_marker(root).get('profile', 'review')))):
         raise ValueError('private credential inventory mismatch')
     return credentials
 
 
-def _new_credentials():
-    return {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *PG_RUNTIME, *MQTT_ACCOUNTS)}
+def _new_credentials(profile='review'):
+    return {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *runtime_secrets(profile))}
 
 
 def _marker(root):
@@ -81,12 +82,12 @@ def _venv(root):
             raise RuntimeError('pinned dependencies installation failed')
 
 
-def _broker_passwords(root, credentials):
+def _broker_passwords(root, credentials, profile='review'):
     if not MOSQUITTO_PASSWD.is_file():
         raise RuntimeError('Mosquitto password tool unavailable')
     password_file = Path(root) / 'private' / 'mqtt.passwd'
     with password_file.open('x', encoding='utf-8', newline='\n') as stream:
-        for name in MQTT_ACCOUNTS:
+        for name in mqtt_accounts(profile):
             stream.write(f'review_{name}:{credentials[name]}\n')
     private_acl(password_file)
     result = subprocess.run([str(MOSQUITTO_PASSWD), '-U', str(password_file)],
@@ -113,28 +114,30 @@ def _preflight(target, source, ports):
     return target, source
 
 
-def initialize(target, *, source=DEFAULT_SOURCE, ports=None):
+def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review'):
+    checked_profile(profile)
     ports = ports or _ports(8770, 55432, 1884)
     target, source = _preflight(target, source, ports)
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports
+    marker['profile'] = profile
     write_json_private(target / 'private' / 'marker.json', marker)
     _private_directories(target)
     source_record = export_committed_source(source, target / 'code')
     marker['source'] = source_record
     _update(target, marker)
     _venv(target)
-    credentials = _new_credentials()
+    credentials = _new_credentials(profile)
     write_json_private(target / 'private' / 'credentials.json', credentials)
     accounts = run_exported_backend(target, 'identity_init')
     source_ref = str(uuid.uuid4())
-    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets()},
-                  source_ref=source_ref)
-    broker_configuration(target, mqtt_port=ports['mqtt'])
-    _broker_passwords(target, credentials)
+    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets(profile)},
+                  source_ref=source_ref, profile=profile)
+    broker_configuration(target, mqtt_port=ports['mqtt'], profile=profile)
+    _broker_passwords(target, credentials, profile)
     marker['config_hashes'] = config_hashes(target)
     _validate_configs(target)
-    system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials)
+    system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials, profile=profile)
     run_exported_backend(target, 'install_schemas', timeout=600)
     _probe_database(target)
     stop_cluster(target)
@@ -142,7 +145,7 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None):
                   source_ref=source_ref, processes={})
     _update(target, marker)
     return {'state': 'ready', 'root': str(target), 'instance_id': marker['instance_id'],
-            'source_commit': source_record['commit'], 'ports': ports}
+            'source_commit': source_record['commit'], 'ports': ports, 'profile': profile}
 
 
 def _checked(root, *, require_ready=True, verify_code=True, verify_identity=True,
@@ -155,6 +158,7 @@ def _checked(root, *, require_ready=True, verify_code=True, verify_identity=True
         verify_export(root / 'code', marker['source'])
     if verify_config:
         verify_config_hashes(root, marker.get('config_hashes'))
+        deployment_profile(root)
     if verify_identity:
         identity = run_exported_backend(root, 'identity_check')
         if identity['instance_id'] != marker['identity_instance_id']:
@@ -169,7 +173,7 @@ def status(root):
         actual = inspect_pid(expected['pid'])
         processes[name] = 'running' if owned_process(expected, actual) else 'missing' if actual is None else 'mismatch'
     return {'state': marker['state'], 'root': str(root), 'instance_id': marker['instance_id'],
-            'source_commit': marker['source']['commit'], 'ports': marker['ports'],
+            'source_commit': marker['source']['commit'], 'ports': marker['ports'], 'profile': marker.get('profile', 'review'),
             'postgres': 'running' if cluster_running(root) else 'stopped', 'processes': processes}
 
 
@@ -203,7 +207,7 @@ def launch(root):
         _update(root, marker)
     evidence = {name: False for name in COMPONENTS}
     try:
-        start_services(root, ports=ports, credentials=credentials, on_start=on_start)
+        start_services(root, ports=ports, credentials=credentials, on_start=on_start, profile=marker.get('profile', 'review'))
         observed = status(root)
         if (not observed['processes'] or any(value != 'running' for value in observed['processes'].values())
                 or port_available(ports['mqtt'])):
@@ -274,20 +278,23 @@ def backup(root):
         private_acl(folder / 'accounts.json')
         counts = count_business_rows(port=marker['ports']['postgres'], password=credentials['bootstrap'])
         seal_backup(folder, instance_id=marker['identity_instance_id'], source=marker['source'],
-                    system_id=marker['system_id'], source_ref=marker['source_ref'], row_counts=counts)
+                    system_id=marker['system_id'], source_ref=marker['source_ref'], row_counts=counts,
+                    profile=marker.get('profile', 'review'))
         verify_backup(folder)
     finally:
         stop_cluster(root)
     return {'backup': str(folder), 'instance_id': marker['instance_id'],
-            'source_commit': marker['source']['commit']}
+            'source_commit': marker['source']['commit'], 'profile': marker.get('profile', 'review'), 'row_counts': counts}
 
 
 def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
     ports = ports or _ports(8771, 55433, 1885)
     target, source = _preflight(target, source, ports)
     backup_manifest = verify_backup(backup_path)
+    profile = checked_profile(backup_manifest.get('profile', 'review'))
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports
+    marker['profile'] = profile
     write_json_private(target / 'private' / 'marker.json', marker)
     _private_directories(target)
     source_record = export_committed_source(source, target / 'code')
@@ -296,7 +303,7 @@ def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
     marker['source'] = source_record
     _update(target, marker)
     _venv(target)
-    credentials = _new_credentials()
+    credentials = _new_credentials(profile)
     write_json_private(target / 'private' / 'credentials.json', credentials)
     shutil.copyfile(Path(backup_path) / 'identity.sqlite', target / 'private' / 'identity.db')
     private_acl(target / 'private' / 'identity.db')
@@ -305,13 +312,13 @@ def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
     identity = run_exported_backend(target, 'identity_check')
     if identity['instance_id'] != backup_manifest['instance_id']:
         raise ValueError('restored identity mismatch')
-    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets()},
-                  source_ref=backup_manifest['source_ref'])
-    broker_configuration(target, mqtt_port=ports['mqtt'])
-    _broker_passwords(target, credentials)
+    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets(profile)},
+                  source_ref=backup_manifest['source_ref'], profile=profile)
+    broker_configuration(target, mqtt_port=ports['mqtt'], profile=profile)
+    _broker_passwords(target, credentials, profile)
     marker['config_hashes'] = config_hashes(target)
     _validate_configs(target)
-    system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials)
+    system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials, profile=profile)
     restore_database(backup_path, port=ports['postgres'], password=credentials['bootstrap'])
     counts = count_business_rows(port=ports['postgres'], password=credentials['bootstrap'])
     if counts != backup_manifest['row_counts']:
@@ -324,7 +331,7 @@ def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
                                  'system_id': backup_manifest['system_id']})
     _update(target, marker)
     return {'state': 'ready', 'root': str(target), 'instance_id': marker['instance_id'],
-            'source_commit': source_record['commit'], 'ports': ports}
+            'source_commit': source_record['commit'], 'ports': ports, 'profile': profile, 'row_counts': counts}
 
 
 def main(argv=None):
@@ -339,13 +346,15 @@ def main(argv=None):
         command.add_argument('--mqtt-port', type=int, default=1884 if action == 'init' else 1885)
         if action == 'restore':
             command.add_argument('--backup', required=True, type=Path)
+        else:
+            command.add_argument('--profile', choices=('review', 'monitoring'), default='review')
     for action in ('launch', 'stop', 'status', 'backup'):
         sub.add_parser(action).add_argument('--target', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command in {'init', 'restore'}:
             ports = _ports(args.http_port, args.postgres_port, args.mqtt_port)
-            result = (initialize(args.target, source=args.source, ports=ports) if args.command == 'init'
+            result = (initialize(args.target, source=args.source, ports=ports, profile=args.profile) if args.command == 'init'
                       else restore(args.backup, target=args.target, source=args.source, ports=ports))
         else:
             result = {'launch': launch, 'stop': stop, 'status': status, 'backup': backup}[args.command](args.target)

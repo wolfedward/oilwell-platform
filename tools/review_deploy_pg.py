@@ -6,7 +6,7 @@ import subprocess
 import psycopg
 from psycopg import sql
 
-from .review_deploy_config import DATABASE, PG_OWNERS, PG_RUNTIME, GATEWAY
+from .review_deploy_config import DATABASE, PG_OWNERS, pg_runtime, GATEWAY
 from .review_deploy_paths import private_acl
 
 
@@ -50,7 +50,7 @@ def connection_settings(port, role, password):
             'sslmode': 'disable', 'connect_timeout': 3}
 
 
-def initialize_cluster(root, *, port, credentials):
+def initialize_cluster(root, *, port, credentials, profile='review'):
     """Create a fresh cluster and DB only inside the claimed target."""
     root = Path(root).absolute()
     data = root / 'postgres'
@@ -70,16 +70,18 @@ def initialize_cluster(root, *, port, credentials):
     bootstrap = connection_settings(port, 'bootstrap', credentials['bootstrap'])
     bootstrap['dbname'] = 'postgres'
     with psycopg.connect(**bootstrap, autocommit=True) as conn:
-        for role in (*PG_OWNERS[1:], *PG_RUNTIME):
+        for role in (*PG_OWNERS[1:], *pg_runtime(profile)):
             name = 'review_' + role
             conn.execute(sql.SQL('CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS').format(
                 sql.Identifier(name), sql.Literal(credentials[role])))
+            if role == 'monitoring_reader':
+                conn.execute('ALTER ROLE review_monitoring_reader NOINHERIT')
         conn.execute(sql.SQL('CREATE DATABASE {} OWNER {}').format(
             sql.Identifier(DATABASE), sql.Identifier('review_bootstrap')))
     with psycopg.connect(**connection_settings(port, 'bootstrap', credentials['bootstrap'])) as conn:
         conn.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(DATABASE)))
         conn.execute('REVOKE ALL ON SCHEMA public FROM PUBLIC')
-        for role in (*PG_OWNERS[1:], *PG_RUNTIME):
+        for role in (*PG_OWNERS[1:], *pg_runtime(profile)):
             conn.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(
                 sql.Identifier(DATABASE), sql.Identifier('review_' + role)))
             conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier('review_' + role)))
@@ -127,7 +129,7 @@ def _with_role(port, credentials, role, action):
         return action(conn)
 
 
-def install_schemas(*, port, credentials, center_config, waveform_config, inversion_config):
+def install_schemas(*, port, credentials, center_config, waveform_config, inversion_config, profile='review'):
     """Call authoritative migrations/grants with distinct new owners in fixed order."""
     from backend.center.postgres import PostgresTelemetryRepository
     from backend.registry import migrate as registry
@@ -144,7 +146,7 @@ def install_schemas(*, port, credentials, center_config, waveform_config, invers
     from .review_deploy_config import env_name, runtime_secrets
     previous = os.environ.copy()
     try:
-        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets()})
+        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets(profile)})
         wave_cfg = load_waveform_config(waveform_config, component='management')
         inv_cfg = load_inversion_config(inversion_config)
     finally:
@@ -221,6 +223,13 @@ def install_schemas(*, port, credentials, center_config, waveform_config, invers
     # satisfying the exact PG18 extension provenance check on runtime probes.
     _with_role(port, credentials, 'bootstrap', lambda conn: conn.execute('CREATE EXTENSION btree_gist WITH SCHEMA public'))
     run_migration_steps(steps)
+    if profile == 'monitoring':
+        from backend.monitoring.privileges import grant_reader, probe_reader
+        for schema, owner in (('public', 'foundation_owner'), ('device_registry', 'registry_owner'),
+                              ('ingest_reliability', 'reliability_owner')):
+            _with_role(port, credentials, owner,
+                       lambda conn, schema=schema: grant_reader(conn, role='review_monitoring_reader', schema=schema))
+        probe_reader(lambda: psycopg.connect(**connection_settings(port, 'monitoring_reader', credentials['monitoring_reader'])))
 
 
 def probe_system_identifier(port, credentials):

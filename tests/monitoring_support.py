@@ -10,7 +10,7 @@ import psycopg
 from psycopg import sql
 
 from tools.review_deploy_config import PG_OWNERS, PG_RUNTIME, MQTT_ACCOUNTS, DATABASE, runtime_secrets, write_configs
-from tools.review_deploy_paths import claim_target, private_acl
+from tools.review_deploy_paths import claim_target, private_acl, write_json_private
 from tools.review_deploy_pg import (initialize_cluster, install_schemas, stop_cluster,
     cluster_running, probe_system_identifier, connection_settings)
 from backend.review_runtime import initialize_identity
@@ -31,32 +31,24 @@ class MonitoringDatabase:
 
     def __enter__(self):
         # claim_target performs the NEW/exact/absolute/no-links checks before any DDL.
-        claim_target(self.root, forbidden=(Path.cwd(), Path.home()))
+        marker = claim_target(self.root, forbidden=(Path.cwd(), Path.home()))
         for name in ('logs', 'private/inversion-staging'):
             (self.root / name).mkdir(exist_ok=True)
             private_acl(self.root / name)
-        initialize_identity(self.root / 'private/identity.db')
+        self.accounts = initialize_identity(self.root / 'private/identity.db')
         self.port = free_port()
-        self.credentials = {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *PG_RUNTIME, *MQTT_ACCOUNTS)}
+        self.credentials = {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *runtime_secrets('monitoring'))}
         self.source_ref = str(uuid4())
-        write_configs(self.root, ports={'http': free_port(), 'postgres': self.port, 'mqtt': free_port()},
-                      credentials={key: self.credentials[key] for key in runtime_secrets()}, source_ref=self.source_ref)
+        self.ports = {'http': free_port(), 'postgres': self.port, 'mqtt': free_port()}
+        marker.update(profile='monitoring', ports=self.ports)
+        write_json_private(self.root / 'private/marker.json', marker)
+        write_configs(self.root, ports=self.ports, profile='monitoring',
+                      credentials={key: self.credentials[key] for key in runtime_secrets('monitoring')}, source_ref=self.source_ref)
         try:
-            self.system_id = initialize_cluster(self.root, port=self.port, credentials=self.credentials)
+            self.system_id = initialize_cluster(self.root, port=self.port, credentials=self.credentials, profile='monitoring')
             install_schemas(port=self.port, credentials=self.credentials,
                 center_config=self.root / 'private/center.toml', waveform_config=self.root / 'private/waveform.toml',
-                inversion_config=self.root / 'private/inversion.toml')
-            self.credentials['monitoring_reader'] = secrets.token_urlsafe(32)
-            with self.connect('bootstrap') as conn:
-                conn.execute(sql.SQL('CREATE ROLE review_monitoring_reader LOGIN PASSWORD {} NOINHERIT NOSUPERUSER '
-                    'NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS').format(sql.Literal(self.credentials['monitoring_reader'])))
-                conn.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO review_monitoring_reader').format(sql.Identifier(DATABASE)))
-                conn.execute('GRANT USAGE ON SCHEMA public TO review_monitoring_reader')
-            from backend.monitoring.privileges import grant_reader
-            for schema, role in (('public', 'foundation_owner'), ('device_registry', 'registry_owner'),
-                                 ('ingest_reliability', 'reliability_owner')):
-                with self.connect(role) as conn:
-                    grant_reader(conn, role='review_monitoring_reader', schema=schema)
+                inversion_config=self.root / 'private/inversion.toml', profile='monitoring')
             return self
         except BaseException:
             self.__exit__(None, None, None)

@@ -10,7 +10,7 @@ import uuid
 import psycopg
 from psycopg import sql
 
-from .review_deploy_config import DATABASE, PG_OWNERS, PG_RUNTIME
+from .review_deploy_config import DATABASE, PG_OWNERS, pg_runtime, checked_profile
 from .review_deploy_paths import private_acl, write_json_private
 from .review_deploy_pg import PG_BIN
 
@@ -26,7 +26,8 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def seal_backup(folder, *, instance_id, source, system_id, source_ref, row_counts=None):
+def seal_backup(folder, *, instance_id, source, system_id, source_ref, row_counts=None, profile='review'):
+    checked_profile(profile)
     folder = Path(folder).absolute()
     uuid.UUID(instance_id)
     uuid.UUID(source_ref)
@@ -40,7 +41,8 @@ def seal_backup(folder, *, instance_id, source, system_id, source_ref, row_count
         digests[name] = {'sha256': _sha256(path), 'bytes': path.stat().st_size}
     manifest = {'format': 1, 'instance_id': instance_id, 'system_id': system_id,
                 'source': source, 'source_ref': source_ref,
-                'roles': ['review_' + name for name in (*PG_OWNERS, *PG_RUNTIME)],
+                'profile': profile,
+                'roles': ['review_' + name for name in (*PG_OWNERS, *pg_runtime(profile))],
                 'capacities': {'reliability_total_bytes': 1073741824,
                                'waveform_global_raw_bytes': 1073741824,
                                'inversion_total_storage_bytes': 2147483648},
@@ -60,6 +62,9 @@ def verify_backup(folder):
         uuid.UUID(manifest['instance_id'])
         uuid.UUID(manifest['source_ref'])
         if manifest['format'] != 1 or set(manifest['files']) != set(FILES) or not manifest['system_id'].isdigit():
+            raise ValueError()
+        profile = checked_profile(manifest.get('profile', 'review'))
+        if manifest['roles'] != ['review_' + name for name in (*PG_OWNERS, *pg_runtime(profile))]:
             raise ValueError()
         if not isinstance(manifest['row_counts'], dict) or any(type(value) is not int or value < 0
                                                                for value in manifest['row_counts'].values()):

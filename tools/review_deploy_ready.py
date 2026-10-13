@@ -76,7 +76,7 @@ def readiness_complete(evidence):
     return isinstance(evidence, dict) and all(evidence.get(name) is True for name in COMPONENTS)
 
 
-def http_capabilities(port, accounts):
+def http_capabilities(port, accounts, profile='review'):
     """Use an actual login to verify the review HTTP and module capabilities."""
     try:
         admin = next(row for row in accounts['accounts'] if row['username'] == 'administrator')
@@ -91,13 +91,14 @@ def http_capabilities(port, accounts):
             return False
         conn = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
         body = json.dumps({'username': admin['username'], 'password': admin['password']})
-        conn.request('POST', '/api/auth/login', body, {'Content-Type': 'application/json'})
+        conn.request('POST', '/api/auth/login', body, {'Content-Type': 'application/json', 'Origin':f'http://127.0.0.1:{port}'})
         response = conn.getresponse()
         response.read(65536)
         cookie = response.getheader('Set-Cookie', '').split(';', 1)[0]
         status = response.status
         conn.close()
-        if status != 200 or not cookie.startswith('platform_session='):
+        cookie_name = 'oilwell_monitoring_session' if profile == 'monitoring' else 'platform_session'
+        if status != 200 or not cookie.startswith(cookie_name + '='):
             return False
         conn = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
         conn.request('GET', '/api/auth/me', headers={'Cookie': cookie})
@@ -105,6 +106,10 @@ def http_capabilities(port, accounts):
         me = json.loads(response.read(65536)) if response.status == 200 else {}
         conn.close()
         capabilities = me.get('data', {}).get('capabilities', {})
+        if profile == 'monitoring':
+            return (data.get('ui_mode') == 'monitoring' and me.get('data', {}).get('ui_mode') == 'monitoring'
+                    and all(capabilities.get(name, {}).get('status') == 'ready'
+                            for name in ('registry', 'monitoring', 'ingest_reliability')))
         return (me.get('data', {}).get('runtime_mode') == 'review' and
                 all(capabilities.get(name, {}).get('status') == 'ready' for name in
                     ('registry', 'production_studies', 'production_inversion',
@@ -126,7 +131,7 @@ def launch_evidence(root, marker):
         return {name: False for name in COMPONENTS}
     accounts = json.loads(account_path.read_text(encoding='utf-8'))
     center = center_subscribed(root / 'logs' / 'center.log', marker['center_log_offset'])
-    http = http_capabilities(marker['ports']['http'], accounts)
+    http = http_capabilities(marker['ports']['http'], accounts, marker.get('profile', 'review'))
     try:
         receiver = run_exported_backend(root, 'receiver_ready', timeout=20)['ready'] is True
         publishers = run_exported_backend(root, 'publisher_probe', timeout=25)

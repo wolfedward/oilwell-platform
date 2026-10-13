@@ -13,7 +13,7 @@ from zipfile import ZipFile
 from .review_deploy_paths import private_acl
 
 
-EXACT = {'server.py', 'app.js', 'styles.css', 'index.html', 'requirements-production.txt',
+EXACT = {'server.py', 'app.js', 'styles.css', 'index.html', 'workbench.html', 'requirements-production.txt',
          'assets/heneng-logo.png', 'assets/heneng-logo-original.png'}
 PREFIXES = ('backend/', 'frontend/')
 TOOL_NAMES = {'review_deploy.py', 'review_deploy_paths.py', 'review_deploy_config.py',

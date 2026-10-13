@@ -10,21 +10,21 @@ import uuid
 
 
 def _credentials(root):
-    from .review_deploy_config import PG_OWNERS, PG_RUNTIME, MQTT_ACCOUNTS
+    from .review_deploy_config import PG_OWNERS, runtime_secrets, deployment_profile
     path = root / 'private' / 'credentials.json'
     if path.is_symlink() or path.stat().st_nlink != 1:
         raise ValueError('credential file unavailable')
     credentials = json.loads(path.read_text(encoding='utf-8'))
-    if set(credentials) != set((*PG_OWNERS, *PG_RUNTIME, *MQTT_ACCOUNTS)):
+    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(deployment_profile(root)))):
         raise ValueError('credential inventory mismatch')
     return credentials
 
 
-def _with_runtime_env(credentials, action):
+def _with_runtime_env(credentials, action, profile='review'):
     from .review_deploy_config import env_name, runtime_secrets
     previous = os.environ.copy()
     try:
-        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets()})
+        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets(profile)})
         return action()
     finally:
         os.environ.clear()
@@ -32,6 +32,8 @@ def _with_runtime_env(credentials, action):
 
 
 def _validate_configs(root, credentials):
+    from .review_deploy_config import deployment_profile
+    profile = deployment_profile(root)
     from backend.center.config import load_center_config, load_query_postgres_config
     from backend.registry.config import load_registry_config
     from backend.ingest_reliability.config import load_reliability_config
@@ -49,7 +51,11 @@ def _validate_configs(root, credentials):
                       load_inversion_config(private / 'inversion.toml')]
         if not all(components):
             raise ValueError('review component disabled')
-    _with_runtime_env(credentials, check)
+        if profile == 'monitoring':
+            from backend.monitoring.config import load_monitoring_config
+            if load_monitoring_config(private / 'center.toml') is None:
+                raise ValueError('monitoring component disabled')
+    _with_runtime_env(credentials, check, profile)
     return {'validated': True}
 
 
@@ -74,6 +80,10 @@ def _probe_database(root, credentials):
     for role in ('reader', 'operator'):
         inversion_probe(connect('inversion_' + role), role)
         probe_metadata(connect('inversion_' + role))
+    from .review_deploy_config import deployment_profile
+    if deployment_profile(root) == 'monitoring':
+        from backend.monitoring.privileges import probe_reader
+        probe_reader(connect('monitoring_reader'))
     return {'probed': True}
 
 
@@ -177,12 +187,13 @@ def _dispatch(action, root):
         if action == 'publisher_probe':
             return _publisher_probe(root, credentials)
         from .review_deploy_pg import install_schemas
+        from .review_deploy_config import deployment_profile
         port = json.loads((root / 'private' / 'marker.json').read_text(encoding='utf-8'))['ports']['postgres']
         private = root / 'private'
         install_schemas(port=port, credentials=credentials,
                         center_config=private / 'center.toml',
                         waveform_config=private / 'waveform.toml',
-                        inversion_config=private / 'inversion.toml')
+                        inversion_config=private / 'inversion.toml', profile=deployment_profile(root))
         return {'installed': True}
     raise ValueError('unknown exported backend action')
 

@@ -1,6 +1,7 @@
 """Private config generation for one loopback engineering review instance."""
 import json
 import hashlib
+import tomllib
 from pathlib import Path
 
 from .review_deploy_paths import write_json_private, private_acl
@@ -41,8 +42,35 @@ def verify_config_hashes(root, expected):
         raise ValueError('deployment config changed since initialization')
 
 
-def runtime_secrets():
-    return (*PG_RUNTIME, *MQTT_ACCOUNTS)
+def checked_profile(profile):
+    if profile not in ('review', 'monitoring'):
+        raise ValueError('unsupported deployment profile')
+    return profile
+
+
+def pg_runtime(profile='review'):
+    return PG_RUNTIME + (('monitoring_reader',) if checked_profile(profile) == 'monitoring' else ())
+
+
+def mqtt_accounts(profile='review'):
+    return MQTT_ACCOUNTS + (('mqtt_monitoring_test',) if checked_profile(profile) == 'monitoring' else ())
+
+
+def runtime_secrets(profile='review'):
+    return (*pg_runtime(profile), *mqtt_accounts(profile))
+
+
+def deployment_profile(root):
+    """Legacy sealed configs default to review, without rewriting them."""
+    with (Path(root) / 'private/center.toml').open('rb') as stream:
+        raw = tomllib.load(stream)
+    profile = checked_profile(raw.get('deployment', {}).get('profile', 'review'))
+    marker = Path(root) / 'private/marker.json'
+    if marker.is_file() and checked_profile(json.loads(marker.read_text(encoding='utf-8')).get('profile', 'review')) != profile:
+        raise ValueError('sealed deployment profile differs from marker')
+    if (raw.get('monitoring', {}).get('enabled', False) is True) != (profile == 'monitoring'):
+        raise ValueError('monitoring profile/config mismatch')
+    return profile
 
 
 def _q(value):
@@ -75,10 +103,10 @@ def _write(path, content):
     private_acl(path)
 
 
-def write_configs(root, *, ports, credentials, source_ref):
+def write_configs(root, *, ports, credentials, source_ref, profile='review'):
     """Create configs once; no inline passwords and no changes to existing files."""
     root = Path(root).absolute()
-    if set(credentials) != set(runtime_secrets()) or not all(credentials.values()):
+    if set(credentials) != set(runtime_secrets(profile)) or not all(credentials.values()):
         raise ValueError('complete distinct runtime secrets required')
     if len(set(credentials.values())) != len(credentials):
         raise ValueError('runtime secrets must be distinct')
@@ -100,6 +128,11 @@ def write_configs(root, *, ports, credentials, source_ref):
         center += _pg_section(section, role, ports['postgres'])
     center += _mqtt_section('mqtt_receipt_publisher', 'mqtt_receipts', ports['mqtt'], 'review-receipts')
     center += 'publish_timeout_seconds = 10\n'
+    if profile == 'monitoring':
+        center += ('\n[deployment]\nprofile = "monitoring"\n\n'
+                   '[monitoring]\nenabled = true\nenvironment = "test"\n'
+                   f'source_ref = {_q(source_ref)}\n\n'
+                   + _pg_section('postgres_monitoring', 'monitoring_reader', ports['postgres']))
 
     quota = ('raw_bytes = 268435456\nfacts = 25000\nattachment_bytes = 33554432\n'
              'incomplete_captures = 4\norphan_bytes = 2097152\nquarantine_bytes = 4194304\n'
@@ -136,7 +169,8 @@ def write_configs(root, *, ports, credentials, source_ref):
     return paths
 
 
-def broker_configuration(root, *, mqtt_port):
+def broker_configuration(root, *, mqtt_port, profile='review'):
+    checked_profile(profile)
     root = Path(root).absolute()
     private = root / 'private'
     lines = ['allow_anonymous false', f'listener {mqtt_port} 127.0.0.1',
@@ -149,6 +183,10 @@ def broker_configuration(root, *, mqtt_port):
            'user review_mqtt_wave_receive\ntopic read oilfield/v2/REVIEW-GW/+/waveform\n'
            'user review_mqtt_wave_publish\ntopic write oilfield/v2/REVIEW-GW/+/waveform-ack\n'
            'topic write oilfield/review/health/waveform\n')
+    if profile == 'monitoring':
+        acl += ('user review_mqtt_monitoring_test\n'
+                'topic write oilfield/v1/REVIEW-GW/MONITORING-TEST-1/telemetry\n'
+                'topic write oilfield/v1/REVIEW-GW/MONITORING-TEST-2/telemetry\n')
     _write(private / 'mosquitto.conf', '\n'.join(lines) + '\n')
     _write(private / 'mqtt.acl', acl)
     return private / 'mosquitto.conf'

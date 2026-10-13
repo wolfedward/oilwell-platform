@@ -238,6 +238,7 @@ class SourceTests(unittest.TestCase):
             subprocess.run(['git', 'init', '-q', str(repo)], check=True)
             (repo / 'server.py').write_text('print(1)\n', encoding='utf-8')
             (repo / 'requirements-production.txt').write_text('psycopg==3.3.5\n', encoding='utf-8')
+            (repo / 'workbench.html').write_text('<main>monitoring</main>\n', encoding='utf-8')
             (repo / 'private.key').write_text('omit', encoding='utf-8')
             _add_public_kit_fixture(repo)
             subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
@@ -246,6 +247,7 @@ class SourceTests(unittest.TestCase):
             result = export_committed_source(repo, Path(parent) / 'code')
             self.assertEqual((Path(parent) / 'code' / 'server.py').read_bytes(), b'print(1)\n')
             self.assertFalse((Path(parent) / 'code' / 'private.key').exists())
+            self.assertEqual((Path(parent) / 'code' / 'workbench.html').read_text(), '<main>monitoring</main>\n')
             self.assertEqual(result['files']['server.py'], hashlib.sha256(b'print(1)\n').hexdigest())
 
 
