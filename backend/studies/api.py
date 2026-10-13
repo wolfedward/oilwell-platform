@@ -4,6 +4,7 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 from backend.auth import AuthError
+from backend.session_cookies import cookie_name, read_session_cookie
 
 from .contracts import MAX_JSON_BYTES, StudyError
 
@@ -43,16 +44,10 @@ class StudyApi:
         self._send(error.status, {"ok": False, "error": {"code": error.code, "message": error.message}})
 
     def _token(self):
-        cookies = self.handler.headers.get_all("Cookie", [])
-        tokens = []
-        for line in cookies:
-            for part in line.split(";"):
-                key, separator, value = part.strip().partition("=")
-                if separator and key == "platform_session":
-                    tokens.append(value)
-        if len(tokens) != 1 or not tokens[0]:
+        token = read_session_cookie(self.handler.headers, cookie_name(self.handler.server))
+        if token is None:
             raise StudyError("unauthenticated", "Authentication required", 401)
-        return tokens[0]
+        return token
 
     def _origin(self):
         values = self.handler.headers.get_all("Origin", [])

@@ -35,6 +35,7 @@ def parse_arguments():
     parser.add_argument("--host", default=Config.HOST)
     parser.add_argument("--port", type=int, default=Config.DEFAULT_PORT)
     parser.add_argument("--runtime-mode", choices=('demo', 'review'), default='demo')
+    parser.add_argument('--ui-mode', choices=('standard', 'monitoring'), default='standard')
     parser.add_argument("--open", action="store_true", dest="open_browser")
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--backup", action="store_true", help="create and verify a database backup")
@@ -191,7 +192,7 @@ def _open_when_ready(runtime):
         webbrowser.open(f"http://{_local_host(runtime['host'])}:{runtime['port']}/")
 
 
-def _launch_command(host, port, instance_id, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo'):
+def _launch_command(host, port, instance_id, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo', ui_mode='standard'):
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -210,16 +211,18 @@ def _launch_command(host, port, instance_id, center_config_path=None, waveform_c
         command.append(f"--inversion-config={Path(inversion_config_path).resolve()}")
     if runtime_mode != 'demo':
         command.append(f'--runtime-mode={runtime_mode}')
+    if ui_mode != 'standard':
+        command.append(f'--ui-mode={ui_mode}')
     return command
 
 
-def launch_server(host, port, open_browser, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo'):
+def launch_server(host, port, open_browser, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo', ui_mode='standard'):
     """Start a detached child and return only after that child is healthy."""
     runtime_file, runtime_log = _runtime_paths()
     before = _read_runtime(runtime_file)
     Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
     expected_instance_id = secrets.token_urlsafe(32)
-    command = _launch_command(host, port, expected_instance_id, center_config_path, waveform_config_path, inversion_config_path, runtime_mode)
+    command = _launch_command(host, port, expected_instance_id, center_config_path, waveform_config_path, inversion_config_path, runtime_mode, ui_mode)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     with runtime_log.open("a", encoding="utf-8") as log_file:
         child = subprocess.Popen(command, cwd=Path(__file__).resolve().parent, stdout=log_file,
@@ -258,7 +261,7 @@ def launch_server(host, port, open_browser, center_config_path=None, waveform_co
     return 1
 
 
-def run_server(host, port, open_browser=False, instance_id=None, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo'):
+def run_server(host, port, open_browser=False, instance_id=None, center_config_path=None, waveform_config_path=None, inversion_config_path=None, runtime_mode='demo', ui_mode='standard'):
     """Hold a platform-wide OS lock from migration through shutdown."""
     instance_id = instance_id or secrets.token_urlsafe(32)
     shutdown_token = secrets.token_urlsafe(32)
@@ -280,6 +283,7 @@ def run_server(host, port, open_browser=False, instance_id=None, center_config_p
             waveform_config_path=waveform_config_path,
             inversion_config_path=inversion_config_path,
             runtime_mode=runtime_mode,
+            ui_mode=ui_mode,
         )
         server.shutdown_token = shutdown_token
         runtime = {"instance_id": instance_id, "pid": os.getpid(), "host": server.server_address[0],
@@ -322,6 +326,7 @@ def main():
             arguments.waveform_config,
             arguments.inversion_config,
             arguments.runtime_mode,
+            arguments.ui_mode,
         )
     return run_server(
         arguments.host,
@@ -332,6 +337,7 @@ def main():
         waveform_config_path=arguments.waveform_config,
         inversion_config_path=arguments.inversion_config,
         runtime_mode=arguments.runtime_mode,
+        ui_mode=arguments.ui_mode,
     )
 
 

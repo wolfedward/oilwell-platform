@@ -30,6 +30,7 @@ from backend.inversion.api import InversionApi
 from backend.inversion.runtime import build_inversion_runtime
 from backend.ingest_reliability.config import _origin
 from backend.studies.api import StudyApi
+from backend.session_cookies import cookie_name, read_session_cookie
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -136,12 +137,39 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if getattr(self.server, 'runtime_mode', 'demo') != 'review':
             return False
         path = urlsplit(self.path).path
+        monitoring = getattr(self.server, 'ui_mode', 'standard') == 'monitoring'
         if self.command not in ('GET', 'HEAD', 'OPTIONS'):
             origins = self.headers.get_all('Origin', [])
             allowed = {f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}
+            if monitoring:
+                allowed = {f'http://127.0.0.1:{self.server.server_port}'}
             if len(origins) > 1 or origins and origins[0] not in allowed:
+                self.close_connection = True
                 self._send_json(403, self._error('forbidden_origin', 'Origin not allowed'))
                 return True
+            if monitoring and path.startswith('/api/') and not origins:
+                auth = self.headers.get_all('Authorization', [])
+                bearer = len(auth) == 1 and auth[0].startswith('Bearer ') and bool(auth[0][7:].strip())
+                if path == '/api/auth/login' or not bearer:
+                    self.close_connection = True
+                    self._send_json(403, self._error('origin_required', 'Exact workbench origin required'))
+                    return True
+        if monitoring and path.startswith('/api/'):
+            read = self.command == 'GET'
+            write = self.command == 'POST'
+            allowed = (read and path in {'/api/health', '/api/auth/me'}) or (
+                write and path in {'/api/auth/login', '/api/auth/logout'})
+            allowed = allowed or path == '/api/registry' or path.startswith('/api/registry/')
+            allowed = allowed or read and (path == '/api/production-monitoring' or path.startswith('/api/production-monitoring/'))
+            if path.startswith('/api/ingest-reliability/'):
+                parts = path.split('/')
+                allowed = read or (write and len(parts) == 6 and parts[4] and
+                    parts[3] == 'cases' and parts[5] in {'ack', 'note', 'close', 'reopen'})
+            if not allowed:
+                self.close_connection = True
+                self._send_api_not_found()
+                return True
+            return False
         exact = {'/api/health', '/api/auth/me', '/api/auth/login', '/api/auth/logout',
                  '/api/audit', '/api/users', '/api/roles'}
         prefixes = ('/api/production-studies', '/api/production-inversion', '/api/waveforms',
@@ -159,7 +187,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"service": "ok", "database": status,
             "simulator": ("disabled" if self.server.runtime_mode == 'review' else
                           "running" if getattr(self.server.simulator, "_thread", None) and self.server.simulator._thread.is_alive() else "ready"),
-            "runtime_mode": self.server.runtime_mode, "control_enabled": False,
+            "runtime_mode": self.server.runtime_mode, "ui_mode": self.server.ui_mode, "control_enabled": False,
             "version": Config.VERSION, "time": datetime.now(SHANGHAI_TIMEZONE).isoformat()}})
 
     def _audit_get(self):
@@ -302,7 +330,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         except RequestValidationError as error:
             return self._send_json(HTTPStatus.BAD_REQUEST, self._error("invalid_request", str(error)))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"token": session.token, "expires_at": session.expires_at}},
-                        cookie=f"platform_session={session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800")
+                        cookie=f"{cookie_name(self.server)}={session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800")
 
     def _logout(self):
         try:
@@ -310,7 +338,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         except (AuthError, SessionExpired):
             return self._send_json(HTTPStatus.UNAUTHORIZED, self._error("unauthenticated", "Authentication required"))
         self._send_json(HTTPStatus.OK, {"ok": True, "data": {"logged_out": True}},
-                        cookie="platform_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+                        cookie=f"{cookie_name(self.server)}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
 
     def _auth_me(self):
         try:
@@ -322,9 +350,12 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         ingest_status = self.server.ingest_runtime.status
         waveform_status = self.server.waveform_runtime.status
         inversion_status = self.server.inversion_runtime.status
+        monitoring_status = getattr(self.server.monitoring_runtime, 'status', 'disabled')
         self._send_json(HTTPStatus.OK, {"ok": True, "data": self._user_data(user) | {
             "runtime_mode": self.server.runtime_mode,
+            "ui_mode": self.server.ui_mode,
             "capabilities": {"registry": capability,
+                             "monitoring": {"enabled": monitoring_status != "disabled", "status": monitoring_status},
                              "production_studies": {"enabled": self.server.studies is not None, "status": "ready" if self.server.studies is not None else "disabled"},
                              "production_inversion": {"enabled": inversion_status != "disabled", "status": inversion_status},
                              "waveforms": {"enabled": waveform_status != "disabled", "status": waveform_status},
@@ -494,11 +525,16 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         return None
 
     def _token(self):
-        authorization = self.headers.get("Authorization", "")
+        authorizations = self.headers.get_all('Authorization', [])
+        if len(authorizations) > 1:
+            raise AuthError('ambiguous authentication')
+        authorization = authorizations[0] if authorizations else ''
         if authorization.startswith("Bearer ") and authorization[7:].strip(): return authorization[7:].strip()
-        for item in self.headers.get("Cookie", "").split(";"):
-            name, mark, value = item.strip().partition("=")
-            if mark and name == "platform_session": return value
+        if authorizations and getattr(self.server, 'ui_mode', 'standard') == 'monitoring':
+            raise AuthError('invalid authorization header')
+        token = read_session_cookie(self.headers, cookie_name(self.server))
+        if token is not None:
+            return token
         raise AuthError("authentication required")
 
     def _json_body(self):
@@ -670,9 +706,13 @@ def create_server(
     inversion_config_path=None,
     runtime_mode='demo',
     studies_engines=None,
+    ui_mode='standard',
+    monitoring_runtime=None,
 ) -> ThreadingHTTPServer:
     if runtime_mode not in ('demo', 'review'):
         raise ValueError('Unknown runtime mode')
+    if ui_mode not in ('standard', 'monitoring') or (ui_mode == 'monitoring' and runtime_mode != 'review'):
+        raise ValueError('Monitoring UI requires review runtime')
     if runtime_mode == 'review' and host != '127.0.0.1':
         raise ValueError('Review runtime binds only 127.0.0.1')
     if central_repository is not None and center_config_path is not None:
@@ -698,6 +738,8 @@ def create_server(
         server.auth = AuthService(database)
         server.audit = AuditService(database)
         server.runtime_mode = runtime_mode
+        server.ui_mode = ui_mode
+        server.monitoring_runtime = monitoring_runtime
         server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
         server.central_telemetry = central_repository
         server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
