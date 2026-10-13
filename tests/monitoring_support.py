@@ -87,7 +87,8 @@ class MonitoringDatabase:
         body = {'reason': '独立安装软件测试', 'idempotency_key': str(uuid4())} | body
         command = validate_command(action, UUID(target) if target else None, actor, body,
                                    method='POST', route='/api/registry' + routes[action])
-        return RegistryService(RegistryTransactions(lambda: self.connect('registry_writer'))).execute(command)
+        return RegistryService(RegistryTransactions(lambda: self.connect('registry_writer')),
+                               require_independent_review=True).execute(command)
 
     def seed(self, scenario='device', *, well_id=None, points=None):
         if scenario != 'device': raise ValueError('Unknown monitoring scenario')

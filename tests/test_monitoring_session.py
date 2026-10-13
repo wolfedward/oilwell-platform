@@ -158,6 +158,15 @@ class MonitoringSessionTests(unittest.TestCase):
 
 
 class MonitoringLaunchTests(unittest.TestCase):
+    def test_monitoring_runtime_enforces_independent_review_policy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'identity.db'
+            initialize_identity(path)
+            with patch('backend.http_server.build_registry_runtime', return_value=RegistryRuntime('disabled')) as build:
+                server = create_server('127.0.0.1',0,path,runtime_mode='review',ui_mode='monitoring',studies_engines={})
+                server.server_close()
+                build.assert_called_once_with(None,require_independent_review=True)
+
     def test_hidden_child_keeps_ui_mode(self):
         import server
         with patch('sys.argv', ['server.py', '--runtime-mode=review', '--ui-mode=monitoring']):

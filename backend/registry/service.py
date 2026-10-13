@@ -1,5 +1,6 @@
 """Explicit command dispatch; no transport, database setup or authorization side effects."""
 from uuid import UUID
+from functools import partial
 
 from .contracts import Command
 from .directory import apply_device, apply_well, lock_device, lock_well
@@ -32,11 +33,14 @@ def lock_references(cur, command: Command) -> None:
 
 
 class RegistryService:
-    def __init__(self, transactions: RegistryTransactions):
+    def __init__(self, transactions: RegistryTransactions, *, require_independent_review=False):
         self.transactions = transactions
+        self.require_independent_review = require_independent_review
 
     def execute(self, command: Command) -> dict:
         handler = HANDLERS.get(command.action)
         if handler is None:
             raise RegistryError("registry.invalid_action", "不支持的管理操作", 422)
+        if command.action == "map.review" and self.require_independent_review:
+            handler = partial(apply_map, require_independent_review=True)
         return self.transactions.run(command, handler, lock=lock_references)

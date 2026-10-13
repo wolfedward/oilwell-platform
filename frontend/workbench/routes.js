@@ -1,4 +1,8 @@
 import {escapeHtml as esc} from '../components.js';
+import {renderWells} from './pages/wells.js';
+import {renderWellDetail} from './pages/well-detail.js';
+import {renderFieldRegistry} from './pages/field-registry.js';
+import {renderChannelMapping} from './pages/channel-mapping.js';
 
 export const CONNECTED_IDS=Object.freeze(['wells','well-detail','field-registry','channel-mapping','acquisition','data-quality','well-realtime','well-history']);
 const RIGHTS={wells:['registry.read'],'well-detail':['registry.read'],'field-registry':['registry.read'],'channel-mapping':['registry.read'],
@@ -34,5 +38,7 @@ export async function renderWorkbenchRoute(context) {
  const capability=['wells','field-registry','channel-mapping'].includes(page.id)?'registry':'monitoring';
  const status=capabilities[capability]?.status;
  if(status!=='ready'){renderState(context,status==='disabled'||!status?'unconfigured':'unavailable','本页依赖的独立生产服务尚未就绪，不会回退到演示数据。',{retry:true});return;}
+ const renderer={wells:renderWells,'well-detail':renderWellDetail,'field-registry':renderFieldRegistry,'channel-mapping':renderChannelMapping}[page.id];
+ if(renderer){try{await renderer(context);}catch(error){renderError(context,error);}return;}
  renderState(context,'connecting','该页面属于本批 8 个接入入口，业务界面正在接通已验证的服务。');
 }

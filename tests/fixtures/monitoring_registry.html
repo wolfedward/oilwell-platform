@@ -1,0 +1,80 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/workbench/styles.css"><body><div id="app"><main id="workspace" class="wb-workspace"></main></div><div id="toastRegion"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const {renderWells}=await import('../../frontend/workbench/pages/wells.js');
+ const {renderWellDetail}=await import('../../frontend/workbench/pages/well-detail.js');
+ const {renderFieldRegistry}=await import('../../frontend/workbench/pages/field-registry.js');
+ const {renderChannelMapping}=await import('../../frontend/workbench/pages/channel-mapping.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {api}=await import('../../frontend/api.js');
+ const catalog=await(await fetch('../../frontend/preview/catalog.json')).json();
+ const W='00000000-0000-4000-8000-000000000011',W2='00000000-0000-4000-8000-000000000012',D='00000000-0000-4000-8000-000000000021';
+ const time='2026-10-13T01:00:00.000001+00:00',stamp={registry_revision:'9007199254740993',received_before:time};
+ const wells=[{id:W,area_code:'A',well_code:'W-TEST',name:'测试生产井',version:'1',status:'active'}];
+ const device={id:D,gateway_id:'GW',device_id:'D-'+('x'.repeat(110)),name:'测试终端',version:'1',status:'active',transport:'modbus_tcp',usage:'commissioning',created_at:time,updated_at:time};
+ let binding=W,actor='7',first=true,selfReviews=0,ctx,download=null,holdList=false,releaseList;
+ const points=[{point_code:'load',unit:'kN',unit_id:1,function_code:3,address:0,data_type:'float32',byte_order:'big',word_order:'big',scale:1,offset:0,writable:false,poll_group:'fast',engineering_min:0,engineering_max:80}];
+ const maps=[{device_id:D,version:'1',parent_version:null,sha256:'a'.repeat(64),status:'draft',content:{points},created_at:time}];
+ const requests=[],posts=[],receipts=new Map(),errors=(status,message)=>Object.assign(new Error(message),{status,code:'registry.test'});
+ const result=items=>({items:structuredClone(items),total:items.length,page:1,page_size:20,...stamp});
+ api.get=async path=>{requests.push(path);const url=new URL(path,'http://local');const p=url.pathname;
+  if(p==='/api/registry/wells')return result(wells);
+  if(p==='/api/registry/devices'){if(holdList){holdList=false;return new Promise(resolve=>{releaseList=()=>resolve(result([device]));});}return result([device]);}
+  if(p===`/api/registry/devices/${D}`)return structuredClone({...device,...stamp});
+  if(p.endsWith('/bindings'))return result([{id:'B',well_id:binding,valid_from:time,valid_to:null,audit_event_id:'AUDIT-B'}]);
+  if(p.endsWith('/point-map-assignments'))return result([{id:'A',map_version:'1',valid_from:time,valid_to:null,audit_event_id:'AUDIT-M'}]);
+  if(p.endsWith('/point-maps'))return result(maps);
+  if(p.endsWith('/link-status'))return {link_status:'online',last_received_at:time};
+  if(p.endsWith('/state-history'))return result([{status:device.status,valid_from:time,valid_to:null,audit_event_id:'AUDIT-STATE'}]);
+  if(p==='/api/registry/audit')return result([{action:'map.assign',event_at:time,reason:'独立软件测试',actor:{user_id:actor},before_data:{},after_data:{status:device.status}}]);
+  if(p===`/api/production-monitoring/wells/${W}`)return {well:structuredClone(wells[0]),bindings:{items:[{id:'B',device_id:D,device_code:device.device_id,gateway_id:'GW',name:device.name,status:device.status,valid_from:time,valid_to:null}],total:'1',page:1,page_size:20},availability:{telemetry:{status:'ready',sample_count:'10'},link:{status:'ready',link_status:'online'},cases:{status:'forbidden'}},context:{...stamp,query_total:'1',queried_at:time,environment:'test',source_ref:W}};
+  throw Error('Unexpected GET '+path);
+ };
+ api.download=async(path,filename)=>{download={path,filename};};
+ api.post=async(path,body)=>{requests.push(path);posts.push({path,body:structuredClone(body)});if(receipts.has(body.idempotency_key))return receipts.get(body.idempotency_key);
+  let entity;
+  if(path==='/api/registry/wells'){entity={id:W2,...body,version:'1',status:'active'};wells.push(entity);const saved={entity};receipts.set(body.idempotency_key,saved);if(first){first=false;throw errors(503,'response lost');}return saved;}
+  if(path===`/api/registry/wells/${W}/changes`){if(body.status==='archived')throw errors(409,'bound well cannot be archived');if(body.expected_version!==wells[0].version)throw errors(409,'stale');wells[0].name=body.name;wells[0].version=String(BigInt(wells[0].version)+1n);entity=wells[0];}
+  else if(path.endsWith('/bindings')){binding=body.well_id;device.version=String(BigInt(device.version)+1n);device.status='suspended';entity=device;}
+  else if(path.endsWith('/review')){if(actor==='7')throw errors(403,'self review denied');maps[0].status='approved';device.version=String(BigInt(device.version)+1n);entity={id:D};}
+  else if(path.endsWith('/point-map-assignment')){device.status='suspended';device.version=String(BigInt(device.version)+1n);entity=device;}
+  else if(path.endsWith('/point-maps')){device.version=String(BigInt(device.version)+1n);entity={id:D};}
+  else throw Error('Unexpected POST '+path);
+  const saved={entity:structuredClone(entity)};receipts.set(body.idempotency_key,saved);return saved;
+ };
+ const auth={id:actor,version:1,ui_mode:'monitoring',permissions:['registry.read','registry.wells.manage','registry.devices.manage','registry.bindings.manage','registry.maps.manage','registry.review','telemetry.read','acquisition.read','audit.read'],capabilities:{registry:{status:'ready'},monitoring:{status:'ready'}}};
+ const tick=()=>new Promise(r=>setTimeout(r,0));const wait=async predicate=>{for(let i=0;i<100&&!predicate();i++)await tick();if(!predicate())throw Error('Expected UI element did not appear');};
+ const click=async selector=>{const el=document.querySelector(selector);if(!el)throw Error('Missing '+selector);el.click();await tick();};
+ const fill=(name,value)=>{const el=document.querySelector(`.registry-form [name="${name}"]`);if(!el)throw Error('Missing field '+name);el.value=value;};
+ const submit=async()=>{fill('reason','独立软件测试');await click('[data-action="submit-registry"]');await tick();};
+ const mount=async(id,renderer,params={})=>{ctx?.dispose();ctx=createWorkbenchContext({auth:{...auth,id:actor},page:catalog.find(x=>x.id===id),params,root:document.querySelector('#workspace'),navigate:()=>{}});await renderer(ctx);await tick();};
+ await mount('wells',renderWells);
+ await click('[data-action="create-well"]');fill('area_code','A');fill('well_code','W-NEW');fill('name','新增测试井');await submit();
+ await click('[data-action="submit-registry"]');await wait(()=>!document.querySelector('.registry-form'));
+ const same=JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body);const created=wells.filter(x=>x.id===W2).length===1;
+ await click('[data-action="edit-well"][data-well-id="'+W+'"]');fill('name','修改后的井名');await submit();await wait(()=>!document.querySelector('.registry-form'));
+ const renamed=document.querySelector('#workspace').textContent.includes('修改后的井名');
+ await click('[data-action="archive-well"][data-well-id="'+W+'"]');document.querySelector('[name="confirm"]').checked=true;await submit();const archived=wells[0].status==='active'&&!!document.querySelector('.registry-form .inline-error').textContent;await click('[data-action="cancel-registry"]');
+ await click('[data-export-wells]');const exportMatches=download.path.includes('revision=9007199254740993')&&download.path.includes('query_total=2');
+ await mount('well-detail',renderWellDetail,{well_id:W});const detailLinks=!!document.querySelector('[data-open-page="well-realtime"]')&&!!document.querySelector('[data-open-page="field-registry"]');
+ await mount('field-registry',renderFieldRegistry,{device_id:D});await wait(()=>!!document.querySelector('[data-action="bind-device"]'));
+ const separate=document.querySelector('#workspace').textContent.includes('台账已启用')&&document.querySelector('#workspace').textContent.includes('链路在线')&&document.querySelector('#workspace').textContent.includes('运行状态未接入');
+ await click('[data-action="bind-device"]');await wait(()=>!!document.querySelector('.registry-form [name="well_id"]'));fill('well_id',W2);await submit();await wait(()=>!document.querySelector('.registry-form'));
+ const bound=binding===W2&&device.status==='suspended';
+ await mount('channel-mapping',renderChannelMapping,{device_id:D});await wait(()=>!!document.querySelector('[data-action="create-map"]'));
+ await click('[data-action="create-map"]');const modbus=document.querySelector('.registry-form').textContent.includes('零基地址');await submit();await wait(()=>!document.querySelector('.registry-form'));
+ const modbusPost=posts.find(x=>x.path.endsWith('/point-maps'));const readonly=modbus&&modbusPost.body.points.every(x=>x.writable===false&&[3,4].includes(x.function_code));
+ await wait(()=>!!document.querySelector('[data-action="review-map"]'));await click('[data-action="review-map"]');await submit();if(maps[0].status==='approved')selfReviews++;
+ actor='8';await mount('channel-mapping',renderChannelMapping,{device_id:D});const oldDisposed=!document.querySelector('.registry-form');await wait(()=>!!document.querySelector('[data-action="review-map"]'));await click('[data-action="review-map"]');await submit();await wait(()=>!document.querySelector('.registry-form'));
+ await wait(()=>!!document.querySelector('[data-action="assign-map"]'));await click('[data-action="assign-map"]');document.querySelector('[name="confirm"]').checked=true;await submit();await wait(()=>!document.querySelector('.registry-form'));
+ const assignment=device.status;
+ await click('[data-action="history-state"]');await tick();const historyVisible=document.querySelector('#workspace').textContent.includes('AUDIT-STATE');
+ device.transport='mqtt_direct';maps[0].content.points=[{point_code:'load',unit:'kN'}];await mount('channel-mapping',renderChannelMapping,{device_id:D});await wait(()=>!!document.querySelector('[data-action="create-map"]'));await click('[data-action="create-map"]');const mqtt=!document.querySelector('.registry-form [name="address"]');await click('[data-action="cancel-registry"]');
+ // An automatic post-write refresh must not reopen an older selection after a new search.
+ holdList=true;await click('[data-action="create-map"]');await submit();await wait(()=>!!releaseList);
+ document.querySelector('[data-filter]').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();releaseList();await tick();await tick();
+ const lateRefreshIgnored=!document.querySelector('[data-action="create-map"]');
+ await window.captureEvidence?.('monitoring-registry');
+ const edge=posts.flatMap(x=>Object.keys(x.body).filter(k=>['host','ip','port','baud','baudrate','interval','poll_interval'].includes(k)));
+ document.querySelector('#result').textContent=JSON.stringify({late_refresh_ignored:lateRefreshIgnored,created_once:created,same_retry_body:same,renamed,archive_rejected:archived,states_separate:separate,binding_updated:bound,old_form_disposed:oldDisposed,modbus_readonly:readonly,mqtt_without_registers:mqtt,history_visible:historyVisible,export_context_matches:exportMatches,details_links:detailLinks,long_ids_safe:document.documentElement.scrollWidth<=innerWidth+1,self_review_successes:selfReviews,assignment_state:assignment,submitted_edge_config_fields:edge,forbidden_requests:requests.filter(p=>p.startsWith('/api/preview')||p==='/api/wells')});ctx.dispose();
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>

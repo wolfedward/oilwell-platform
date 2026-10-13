@@ -31,7 +31,7 @@ def map_record(device: dict, snapshot: dict) -> dict:
                                  "device_version": str(device["version"])}
 
 
-def apply_map(cur, command: Command, instant: datetime, event_id: UUID) -> Change:
+def apply_map(cur, command: Command, instant: datetime, event_id: UUID, *, require_independent_review=False) -> Change:
     body = command.body
     device = lock_device(cur, command.target, body["expected_version"])
     if command.action == "map.create":
@@ -55,6 +55,15 @@ def apply_map(cur, command: Command, instant: datetime, event_id: UUID) -> Chang
             raise RegistryError("registry.review_conflict", "此点表已审核，修改须新建版本", 409)
         if snapshot["sha256"] != body["sha256"]:
             raise RegistryError("registry.snapshot_conflict", "审核摘要与保存的点表不一致，请重新打开核对", 409)
+        if require_independent_review:
+            cur.execute("SELECT actor FROM device_registry.audit_events WHERE id=%s AND action='map.create'",
+                        (snapshot["created_event_id"],))
+            creator = cur.fetchone()
+            identity = creator["actor"] if creator else {}
+            if not identity.get("domain") or not identity.get("user_id"):
+                raise RegistryError("registry.review_identity_unavailable", "无法核实点表登记身份，禁止审核", 409)
+            if (identity["domain"], str(identity["user_id"])) == (command.actor.domain, command.actor.user_id):
+                raise RegistryError("registry.independent_review_required", "点表必须由另一名有审核权限的人员独立复核", 403)
         before = map_record(device, snapshot)
         cur.execute("UPDATE device_registry.point_map_versions SET status=%s,reviewed_at=%s,review_event_id=%s "
                     "WHERE device_id=%s AND version=%s RETURNING *",

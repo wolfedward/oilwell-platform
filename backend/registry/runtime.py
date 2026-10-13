@@ -28,7 +28,7 @@ def probe_privileges(writer_connect, reader_connect) -> None:
     probe(writer_connect, reader_connect)
 
 
-def build_registry_runtime(path) -> RegistryRuntime:
+def build_registry_runtime(path, *, require_independent_review=False) -> RegistryRuntime:
     if path is None:
         return RegistryRuntime("disabled", code="registry.disabled")
     try:
@@ -44,7 +44,7 @@ def build_registry_runtime(path) -> RegistryRuntime:
         def reader():
             return psycopg.connect(**config.reader)
         probe_privileges(writer, reader)
-        return RegistryRuntime("ready", RegistryService(RegistryTransactions(writer)),
+        return RegistryRuntime("ready", RegistryService(RegistryTransactions(writer), require_independent_review=require_independent_review),
                                RegistryQueries(reader, online_seconds=config.online_seconds,
                                                delayed_seconds=config.delayed_seconds,
                                                clock_tolerance_seconds=config.clock_tolerance_seconds),

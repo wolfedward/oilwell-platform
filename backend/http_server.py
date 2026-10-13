@@ -748,7 +748,9 @@ def create_server(
             build_monitoring_runtime(center_config_path) if ui_mode == 'monitoring' else None)
         server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
         server.central_telemetry = central_repository
-        server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)
+        server.registry_runtime = registry_runtime if registry_runtime is not None else (
+            build_registry_runtime(center_config_path, require_independent_review=True) if ui_mode == 'monitoring'
+            else build_registry_runtime(center_config_path))
         server.ingest_runtime = ingest_runtime if ingest_runtime is not None else build_reliability_runtime(center_config_path)
         server.waveform_runtime = build_waveform_runtime(waveform_config_path)
         server.inversion_runtime = build_inversion_runtime(inversion_config_path, auth=server.auth)
