@@ -1,0 +1,52 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><link rel="stylesheet" href="../../frontend/workbench/styles.css"><body><div id="app"><main id="workspace" class="wb-workspace"></main></div><div id="toastRegion"></div><pre id="result" hidden>pending</pre><script type="module">
+try{
+ const {renderWellRealtime}=await import('../../frontend/workbench/pages/well-realtime.js');
+ const {renderWellHistory}=await import('../../frontend/workbench/pages/well-history.js');
+ const {mountTelemetryChart}=await import('../../frontend/workbench/telemetry-chart.js');
+ const {createWorkbenchContext}=await import('../../frontend/workbench/context.js');
+ const {api}=await import('../../frontend/api.js');
+ const catalog=await(await fetch('../../frontend/preview/catalog.json')).json();
+ const W='00000000-0000-4000-8000-000000000011',D='00000000-0000-4000-8000-000000000021',D2='00000000-0000-4000-8000-000000000022';
+ const start=Date.parse('2026-10-13T00:00:00Z'),time=new Date(start).toISOString(),stamp={registry_revision:'9007199254740993',received_before:time,query_total:'601',queried_at:time};
+ const sample=(seconds,fields={})=>({registry_device_id:D,gateway_id:'GW',device_id:'TERMINAL-A',point_code:'load',measured_at:new Date(start+seconds*1000).toISOString(),received_at:new Date(start+seconds*1000+100).toISOString(),value:12.34567,quality:'good',unit:'kN',expected_unit:'kN',source:'modbus_tcp',message_id:'M-'+seconds,sample_index:0,sequence:'9007199254740993',reasons:[],application_status:'unverified',eligible_for_automation:false,...fields});
+ const slots=[{registry_device_id:D,device_id:'TERMINAL-A',gateway_id:'GW',point_code:'load',expected_unit:'kN',observation:sample(0),age_seconds:2,interval_seconds:null,interval_basis:'unknown'},
+ {registry_device_id:D2,device_id:'TERMINAL-B',gateway_id:'GW',point_code:'load',expected_unit:'kN',observation:null,age_seconds:null,interval_seconds:null,interval_basis:'unknown'},
+ {registry_device_id:D,device_id:'TERMINAL-A',gateway_id:'GW',point_code:'pressure',expected_unit:'kN',observation:sample(10,{quality:'bad',point_code:'pressure',reasons:['quality_bad']}),age_seconds:1,interval_seconds:null,interval_basis:'unknown'}];
+ const trend=Array.from({length:600},(_,i)=>sample(i*10));
+ let ctx,hold=false,finish,signal,download,conflict=false;const requests=[],posts=[],timers=new Map();let timerId=10000;
+ const originalInterval=window.setInterval,originalClear=window.clearInterval;
+ window.setInterval=(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;};window.clearInterval=id=>timers.delete(id);
+ api.get=async(path,options)=>{requests.push(path);if(hold){hold=false;signal=options.signal;return new Promise(resolve=>{finish=()=>resolve({items:slots,total:'3',page:1,page_size:32,context:{...stamp,query_total:'3'}});});}
+  const u=new URL(path,'http://local');if(u.pathname.endsWith('/latest'))return {items:structuredClone(slots),total:'3',page:1,page_size:32,context:{...stamp,query_total:'3'}};
+  if(u.pathname.endsWith('/history')){if(conflict&&u.searchParams.get('page')==='2')throw Object.assign(new Error('查询结果已变化'),{status:409});return {items:[sample(0)],total:'601',page:Number(u.searchParams.get('page')||'1'),page_size:200,context:stamp,from_time:time,to_time:new Date(start+86400000).toISOString(),trend:{items:trend,point_count:600,truncated:true,from_time:trend[0].measured_at,to_time:trend.at(-1).measured_at,interval_seconds:10,interval_basis:'observed_median_display_only'}};}
+  if(u.pathname==='/api/registry/wells')return {items:[{id:W,name:'测试井',well_code:'W-1',area_code:'A'}],total:'1',page:1,page_size:20,...stamp};
+  throw Error('Unexpected '+path);
+ };
+ api.post=async path=>{posts.push(path);};api.download=async(path,filename)=>{download={path,filename};};
+ const auth={id:1,permissions:['registry.read','telemetry.read'],capabilities:{registry:{status:'ready'},monitoring:{status:'ready'}}};
+ const root=document.querySelector('#workspace'),tick=()=>new Promise(r=>setTimeout(r,0));
+ const mount=async(id,render,params)=>{ctx?.dispose();ctx=createWorkbenchContext({auth,page:catalog.find(x=>x.id===id),params,root,navigate:()=>{}});await render(ctx);await tick();};
+ await mount('well-realtime',renderWellRealtime,{well_id:W});
+ const choices=[...root.querySelector('[data-refresh-interval]').options].map(x=>Number(x.value));const defaultInterval=[...timers.values()][0]?.ms;
+ const separate=root.textContent.includes('TERMINAL-A')&&root.textContent.includes('TERMINAL-B')&&root.querySelectorAll('[data-slot-key]').length===3;
+ const bad=root.textContent.includes('quality_bad');const raw=root.textContent.includes('12.34567')&&root.textContent.includes('9007199254740993');
+ root.querySelector('[data-pause]').click();const paused=root.textContent.includes('已暂停')&&root.textContent.includes('2026/10/13');
+ root.querySelector('[data-pause]').click();await tick();hold=true;root.querySelector('[data-refresh-now]').click();await tick();
+ const timerCallbacks=[...timers.values()].map(x=>x.fn);ctx.dispose();const cancelled=signal.aborted;const before=requests.length;for(const fn of timerCallbacks)fn();await tick();finish();await tick();const afterDispose=requests.length-before;
+ await mount('well-history',renderWellHistory,{well_id:W,registry_device_id:D,point_code:'load',from_time:time,to_time:new Date(start+86400000).toISOString()});
+ const truncated=root.textContent.includes('600')&&root.textContent.includes('601')&&root.textContent.includes('截取');
+ root.querySelector('[data-export-history]').click();await tick();const exportContext=download.path.includes('revision=9007199254740993')&&download.path.includes('query_total=601')&&download.path.includes('registry_device_id='+D)&&download.path.includes('from_time=');
+ root.querySelector('[name="quality"]').value='bad';root.querySelector('[data-history-filter]').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await tick();
+ const changed=new URL(requests.at(-1),'http://local').searchParams;const reset=!changed.has('revision')&&changed.get('quality')==='bad';
+ conflict=true;root.querySelector('[data-page="2"]').click();await tick();const conflictSafe=root.textContent.includes('已变化')&&root.querySelector('[data-export-history]').disabled;
+ ctx.dispose();root.innerHTML='<div data-chart></div>';
+ const items=[sample(0),sample(10),sample(20,{quality:'bad'}),sample(30),sample(40,{unit:'N',reasons:['unit_mismatch']}),sample(50),sample(100),sample(110,{quality:'uncertain',reasons:['quality_uncertain']})];
+ const chartRoot=root.querySelector('[data-chart]'),chart=mountTelemetryChart(chartRoot,{items,unit:'kN',intervalSeconds:10,intervalBasis:'configured'});
+ const hidden=[...chartRoot.querySelectorAll('[data-point-marker]')].every(x=>x.getAttribute('visibility')==='hidden');
+ chartRoot.querySelector('[data-hit-index="0"]').dispatchEvent(new Event('pointerenter'));
+ const hover=chartRoot.querySelector('[data-coordinate-y]').textContent;const svg=chartRoot.querySelector('svg');svg.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));const keyboard=chartRoot.querySelector('[data-coordinate-y]').textContent==='12.35 kN';
+ const lines=chartRoot.querySelectorAll('[data-trend-segment]').length,uncertain=!!chartRoot.querySelector('[data-quality="uncertain"]');
+ await window.captureEvidence?.('monitoring-telemetry');
+ const output={refresh_choices:choices,default_interval:defaultInterval,hover_value:hover,stored_value:items[0].value,missing_value:slots[1].observation,requests_after_dispose:afterDispose,line_segments:lines,writes:posts.length,same_code_separate:separate,bad_visible:bad,paused_cutoff:paused,request_cancelled:cancelled,keyboard_value:keyboard,hidden_markers:hidden,uncertain_marked:uncertain,context_export:exportContext,filter_resets_context:reset,conflict_no_export:conflictSafe,truncated_distinct_total:truncated,raw_precision_visible:raw,no_overflow:document.documentElement.scrollWidth<=innerWidth+1};chart.dispose();window.setInterval=originalInterval;window.clearInterval=originalClear;document.querySelector('#result').textContent=JSON.stringify(output);
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script></body></html>
