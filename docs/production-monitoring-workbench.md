@@ -38,7 +38,7 @@ Cookie 接口客户端先读取 `/api/auth/me` 的 `session_context`，随后每
 - 修复版部署前备份：`backups/8bd2d1c4-9f13-419d-961c-90c796a2c2f0`；旧代码完整保留为 `code-before-reviewfix-77ff9aac0963`。仅切换已提交并核对摘要的应用代码，不改配置、依赖、数据库结构、账号或原始记录。切换凭证：`private/code-switch-4e7673e6f5a2.json`。
 - 修复版实际安装检查：`private/acceptance-d4187384b6ed438881280ffb72b8e364.json`，包括 16 个页面检查、五岗位登录及 6 个旧会话/跨身份拒绝检查。修复后另存一致性备份 `backups/2ed18bf9-0f1d-4dc3-9eb3-ef6e8c82830a`。
 - 最终完整重启复查：`private/acceptance-50f54a25d35f4567bb32f3bfce67df8d.json`；同样通过 16 个页面、5 岗位和 6 个会话拒绝检查，12 条原始观测保留。最终原实例保护比对仍为 2,845 个文件、0 差异、0 监听进程变化。
-- 本轮计划工作记录、独立审查差异、逐项测试日志及保护比对归档在开发工作树 `private/monitoring-workbench-evidence-20261013/`；归档核对摘要后清理原计划临时目录，源码工作树和分支保留。
+- 本轮计划工作记录、独立审查差异、逐项测试日志及保护比对归档在开发工作树 `private/monitoring-workbench-evidence-20261013/`；环境拦截了临时目录删除，因此原计划记录也保留，不绕过限制。源码工作树和分支保留。
 
 启动、停止和备份使用本工作树的 `python -B -m tools.review_deploy launch|stop|backup --target <上述安装根目录>`。恢复仍必须使用该安装的固定源码提交，不可把新提交静默套入旧备份；恢复至新目录，不覆盖在用安装。
 
