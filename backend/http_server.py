@@ -31,6 +31,8 @@ from backend.inversion.runtime import build_inversion_runtime
 from backend.ingest_reliability.config import _origin
 from backend.studies.api import StudyApi
 from backend.session_cookies import cookie_name, read_session_cookie
+from backend.monitoring.api import MonitoringApi
+from backend.monitoring.runtime import build_monitoring_runtime
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 MAX_JSON_BYTES = 64 * 1024
@@ -54,6 +56,7 @@ class PlatformRequestHandler(BaseHTTPRequestHandler):
         if WaveformApi(self).get(self.path): return
         if IngestReliabilityApi(self).get(self.path): return
         if RegistryApi(self).get(self.path): return
+        if MonitoringApi(self).get(self.path): return
         if CentralTelemetryApi(self).get(self.path): return
         if self.server.runtime_mode == 'demo':
             if ReportApi(self).get(self.path): return
@@ -739,7 +742,8 @@ def create_server(
         server.audit = AuditService(database)
         server.runtime_mode = runtime_mode
         server.ui_mode = ui_mode
-        server.monitoring_runtime = monitoring_runtime
+        server.monitoring_runtime = monitoring_runtime if monitoring_runtime is not None else (
+            build_monitoring_runtime(center_config_path) if ui_mode == 'monitoring' else None)
         server.studies = StudyService(database, server.auth, engines) if runtime_mode == 'review' else None
         server.central_telemetry = central_repository
         server.registry_runtime = registry_runtime if registry_runtime is not None else build_registry_runtime(center_config_path)

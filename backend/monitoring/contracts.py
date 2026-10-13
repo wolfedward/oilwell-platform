@@ -5,7 +5,7 @@ import re
 from urllib.parse import parse_qsl
 from uuid import UUID
 
-from .errors import invalid
+from .errors import MonitoringError, invalid
 
 CONTEXT = {'revision', 'received_before', 'query_total'}
 PAGING = CONTEXT | {'page', 'page_size'}
@@ -21,6 +21,13 @@ FILTERS = {
     'message': PAGING,
     'quality': PAGING | WINDOW | IDENTITY | {'view', 'quality', 'reason_code', 'state', 'well_id', 'point_code', 'unresolved'},
 }
+
+
+def require_permissions(resource, filters, permissions):
+    required = {'registry.read'}
+    if resource in {'latest', 'history', 'history_csv'}: required.add('telemetry.read')
+    if not required <= permissions:
+        raise MonitoringError('monitoring.forbidden', '当前账号没有此项查询权限', 403)
 
 
 @dataclass(frozen=True)

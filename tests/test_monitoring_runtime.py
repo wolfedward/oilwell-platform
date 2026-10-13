@@ -3,6 +3,8 @@ from importlib import import_module
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from uuid import uuid4
 
 
@@ -74,6 +76,26 @@ class MonitoringConfigTests(unittest.TestCase):
         self.assertIsNone(self.load('[monitoring]\nenabled=false\n[postgres]\npassword="not-read"'))
         with self.assertRaises(self.errors.MonitoringError):
             self.load(self.content.replace('[postgres_monitoring]', '[postgres_query]'))
+
+    def test_runtime_disabled_unavailable_and_thresholds(self):
+        from backend.monitoring.runtime import build_monitoring_runtime
+        self.assertEqual(build_monitoring_runtime(None).status, 'disabled')
+        settings = SimpleNamespace(postgres={'user': 'dedicated'}, environment='test', source_ref=self.source)
+        thresholds = SimpleNamespace(online_seconds=5, delayed_seconds=12, clock_tolerance_seconds=9)
+        with patch('backend.monitoring.runtime.load_monitoring_config', return_value=settings), \
+             patch('backend.registry.config.load_registry_config', return_value=thresholds), \
+             patch('backend.monitoring.privileges.probe_reader') as probe:
+            runtime = build_monitoring_runtime(self.path)
+            self.assertEqual(runtime.status, 'ready')
+            self.assertEqual(runtime.query.online_seconds, 5)
+            self.assertEqual(runtime.query.delayed_seconds, 12)
+            self.assertEqual(runtime.query.clock_tolerance_seconds, 9)
+            probe.side_effect = RuntimeError('secret-connection-value')
+            with self.assertLogs('backend.monitoring.runtime', level='WARNING') as captured:
+                runtime = build_monitoring_runtime(self.path)
+            self.assertEqual(runtime.status, 'unavailable')
+            self.assertIsNone(runtime.query)
+            self.assertNotIn('secret-connection-value', repr(runtime) + repr(captured.output))
 
     def test_separate_identity_and_no_password_repr(self):
         config = self.load(self.content)
