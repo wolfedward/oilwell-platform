@@ -26,6 +26,11 @@ FILTERS = {
 def require_permissions(resource, filters, permissions):
     required = {'registry.read'}
     if resource in {'latest', 'history', 'history_csv'}: required.add('telemetry.read')
+    if resource in {'messages', 'message'}: required = {'acquisition.read'}
+    if resource == 'quality':
+        view = filters.get('view', 'observations')
+        required = {'ingest.read'} if view == 'cases' else {'data_quality.read', 'telemetry.read'}
+        if view == 'resolution' or 'well_id' in filters or 'unresolved' in filters: required.add('registry.read')
     if not required <= permissions:
         raise MonitoringError('monitoring.forbidden', '当前账号没有此项查询权限', 403)
 
@@ -97,6 +102,15 @@ def validate_filters(resource: str, supplied: dict[str, str]) -> dict:
         result.setdefault('view', 'observations')
         if result['view'] != 'cases' and 'state' in result or result['view'] == 'cases' and 'quality' in result:
             raise invalid('view')
+        if result['view'] == 'cases' and 'point_code' in result or result['view'] == 'observations' and 'reason_code' in result:
+            raise invalid('view')
+        if 'reason_code' in result:
+            reasons = {'not_registered', 'unbound', 'state_not_active', 'no_expected_map', 'unknown_point',
+                       'unit_mismatch', 'out_of_range', 'clock_anomaly', 'quality_bad', 'quality_uncertain'}
+            if result['view'] == 'cases':
+                from backend.ingest_reliability.contracts import REJECTION_REASONS
+                reasons = REJECTION_REASONS
+            if result['reason_code'] not in reasons: raise invalid('reason_code')
     for key in WINDOW | {'received_before'}:
         if key in result:
             result[key] = timestamp(result[key], key)
@@ -115,3 +129,12 @@ def validate_filters(resource: str, supplied: dict[str, str]) -> dict:
     if resource.endswith('_csv') and not CONTEXT <= result.keys():
         raise invalid('export/context')
     return result
+
+
+def window(filters, cutoff):
+    end = filters.get('to_time', cutoff)
+    try:
+        start = filters.get('from_time') or end-timedelta(hours=24)
+        if end<start or end-start>timedelta(days=31): raise invalid('from_time/to_time')
+    except OverflowError: raise invalid('from_time/to_time') from None
+    return start, end

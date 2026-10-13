@@ -128,6 +128,29 @@ class MonitoringDatabase:
         if result.status != 'stored': raise AssertionError('Test readings did not reach stored facts')
         return batch.message_id
 
+    def quarantine(self, device, *, message_id=None):
+        from dataclasses import replace
+        from tests.ingest_vectors import observation
+        from backend.ingest_reliability.repository import ReliableRepository
+        from backend.ingest_reliability.contracts import CapacityLimits
+        message_id = message_id or 'Q-' + uuid4().hex
+        obs = replace(observation(message_id, gateway=device['gateway_id'], device=device['device_id']),
+                      retain=True, received_at=datetime.now(timezone.utc))
+        result = ReliableRepository(lambda: self.connect('reliable_ingestor'), prefix='oilfield',
+            receipt_gateways=frozenset({'GW'}), limits=CapacityLimits(1073741824, 268435456)).ingest(obs)
+        if result.status != 'quarantined': raise AssertionError('Quarantine fixture was accepted')
+        with self.connect('reliable_reader') as conn:
+            case_id = conn.execute('SELECT id FROM ingest_reliability.case_metadata WHERE fact_id=%s', (result.fact_id,)).fetchone()[0]
+        return {'message_id': message_id, 'case_id': str(case_id), 'fact_id': str(result.fact_id), 'receipt_id': str(result.receipt_id)}
+
+    def case_action(self, action, target, version='1'):
+        from backend.ingest_reliability.management_contracts import Actor, validate_management
+        from backend.ingest_reliability.operations import ReliabilityOperations
+        command = validate_management('case.'+action, UUID(target), Actor('platform-local','101','operator','软件测试','administrator'),
+            {'idempotency_key': str(uuid4()), 'expected_version': version, 'reason': '独立安装软件测试'},
+            route=f'/api/ingest-reliability/cases/{target}/{action}')
+        return ReliabilityOperations(lambda: self.connect('reliable_operator')).execute(command)
+
     def __exit__(self, *_):
         if self.system_id is not None and cluster_running(self.root):
             if probe_system_identifier(self.port, self.credentials) != self.system_id:

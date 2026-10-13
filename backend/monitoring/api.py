@@ -1,7 +1,8 @@
 """Authenticated read/export routing; raw payloads and writes are never provided."""
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
+from backend.auth import AuthError, SessionExpired
 from .contracts import parse_filters, validate_filters, require_permissions
-from .errors import MonitoringError
+from .errors import MonitoringError, invalid
 from .runtime import MonitoringRuntime
 
 PREFIX = '/api/production-monitoring'
@@ -10,6 +11,13 @@ PREFIX = '/api/production-monitoring'
 def route(path):
     parts = path[len(PREFIX):].strip('/').split('/')
     if parts == ['wells.csv']: return 'wells_csv', {}
+    if parts == ['quality']: return 'quality', {}
+    if parts[:2] == ['acquisition', 'messages']:
+        if len(parts) == 2: return 'messages', {}
+        if len(parts) == 3:
+            try: identifier = unquote(parts[2], encoding='utf-8', errors='strict')
+            except UnicodeError: raise invalid('id') from None
+            return 'message', {'id': identifier}
     if len(parts) in (2, 3) and parts[0] == 'wells':
         resource = 'well' if len(parts) == 2 else {'latest': 'latest', 'history': 'history', 'history.csv': 'history_csv'}.get(parts[2])
         if resource: return resource, {'well_id': parts[1]}
@@ -23,8 +31,12 @@ class MonitoringApi:
         parsed = urlsplit(path)
         if parsed.path != PREFIX and not parsed.path.startswith(PREFIX+'/'): return False
         h = self.handler
-        user = h._require('registry.read')
-        if user is None: return True
+        # All views authenticate first; resource-specific permission follows parsing.
+        try:
+            user = h.server.auth.me(h._token())
+        except (AuthError, SessionExpired):
+            h._send_json(401, h._error('unauthenticated', 'Authentication required'))
+            return True
         try:
             resource, identity = route(parsed.path)
             filters = parse_filters(resource, parsed.query) | identity

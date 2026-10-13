@@ -49,6 +49,25 @@ class MonitoringHttpTests(unittest.TestCase):
 
 
 class MonitoringApiTests(unittest.TestCase):
+    def test_message_encoded_identity_and_view_specific_permissions(self):
+        from backend.monitoring.api import MonitoringApi
+        from backend.monitoring.runtime import MonitoringRuntime
+        handler = Mock()
+        handler.server.monitoring_runtime = MonitoringRuntime('ready', query=Mock())
+        handler.server.monitoring_runtime.query.read.return_value = {}
+        handler.server.auth.me.return_value = SimpleNamespace(permissions=frozenset({'acquisition.read'}))
+        MonitoringApi(handler).get('/api/production-monitoring/acquisition/messages/GW%3AM1')
+        self.assertEqual(handler._send_json.call_args.args[0], 200)
+        self.assertEqual(handler.server.monitoring_runtime.query.read.call_args.args[1]['id'], 'GW:M1')
+        for permissions, path, expected in [({'ingest.read'}, '/quality?view=cases', 200),
+            ({'data_quality.read','telemetry.read'}, '/quality?view=observations', 200),
+            ({'data_quality.read','telemetry.read'}, '/quality?view=resolution', 403),
+            ({'acquisition.read'}, '/acquisition/messages?unknown=1', 422),
+            ({'acquisition.read'}, '/acquisition/messages/%FF', 422)]:
+            handler.server.auth.me.return_value = SimpleNamespace(permissions=frozenset(permissions))
+            MonitoringApi(handler).get('/api/production-monitoring'+path)
+            self.assertEqual(handler._send_json.call_args.args[0], expected)
+
     def test_disabled_monitoring_keeps_optional_pg_driver_optional(self):
         import subprocess, sys
         result = subprocess.run([sys.executable, '-B', '-c',
@@ -63,20 +82,22 @@ class MonitoringApiTests(unittest.TestCase):
         query.read.return_value = {'items': []}
         handler = Mock()
         handler.server.monitoring_runtime = MonitoringRuntime('ready', query=query)
-        handler._require.return_value = SimpleNamespace(permissions=frozenset({'registry.read', 'telemetry.read'}))
+        handler.server.auth.me.return_value = SimpleNamespace(permissions=frozenset({'registry.read', 'telemetry.read'}))
         path = f'/api/production-monitoring/wells/{uuid4()}/latest'
         self.assertTrue(MonitoringApi(handler).get(path))
         self.assertEqual(query.read.call_args.args[0], 'latest')
         self.assertEqual(handler._send_json.call_args.args[0], 200)
-        handler._require.return_value = None
+        from backend.auth import AuthError
+        handler.server.auth.me.side_effect = AuthError('unauthenticated')
         query.reset_mock()
         MonitoringApi(handler).get(path)
         query.read.assert_not_called()
-        handler._require.return_value = SimpleNamespace(permissions=frozenset({'registry.read'}))
+        handler.server.auth.me.side_effect = None
+        handler.server.auth.me.return_value = SimpleNamespace(permissions=frozenset({'registry.read'}))
         MonitoringApi(handler).get(path)
         self.assertEqual(handler._send_json.call_args.args[0], 403)
         query.read.assert_not_called()
-        handler._require.return_value = SimpleNamespace(permissions=frozenset({'registry.read', 'telemetry.read'}))
+        handler.server.auth.me.return_value = SimpleNamespace(permissions=frozenset({'registry.read', 'telemetry.read'}))
         handler.server.monitoring_runtime = MonitoringRuntime('disabled', code='monitoring.disabled')
         MonitoringApi(handler).get(path)
         self.assertEqual(handler._send_json.call_args.args[0], 503)

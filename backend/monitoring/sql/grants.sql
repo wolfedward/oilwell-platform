@@ -12,3 +12,7 @@ GRANT SELECT(device_id,version,parent_version,transport,canonical_rule,content,s
 -- schema: ingest_reliability
 GRANT USAGE ON SCHEMA ingest_reliability TO {reader};
 GRANT SELECT ON ingest_reliability.case_metadata,ingest_reliability.receipt_metadata TO {reader};
+GRANT SELECT(fact_id,accepted_message_id,status,reason_code,received_at)
+    ON ingest_reliability.facts TO {reader};
+GRANT SELECT(fact_id,first_seen,last_seen,duplicate_count,transport_anomaly_count,counters_saturated)
+    ON ingest_reliability.fact_observations TO {reader};

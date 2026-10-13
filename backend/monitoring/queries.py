@@ -14,7 +14,7 @@ def public(value, key=None):
     if isinstance(value, datetime): return value.isoformat(timespec='microseconds')
     if value is not None and key in {'version', 'map_version', 'expected_map_version', 'parent_version', 'sequence',
         'sequence_first', 'sequence_last', 'duplicate_count', 'transport_anomaly_count', 'requested_generation',
-        'sent_generation', 'attempts', 'total', 'sample_count', 'unassigned_count'}: return str(value)
+        'sent_generation', 'attempts', 'total', 'sample_count', 'unassigned_count', 'well_count', 'case_count'}: return str(value)
     return value
 
 
@@ -73,7 +73,10 @@ class MonitoringQueries:
                                'queried_at': public(now), 'source_ref': self.source_ref, 'environment': self.environment}
                     from .well_queries import well, wells_csv
                     from .telemetry_queries import latest, history
-                    readers = {'well': well, 'wells_csv': wells_csv, 'latest': latest, 'history': history, 'history_csv': history}
+                    from .acquisition_queries import messages, message
+                    from .quality_queries import quality
+                    readers = {'well': well, 'wells_csv': wells_csv, 'latest': latest, 'history': history, 'history_csv': history,
+                               'messages': messages, 'message': message, 'quality': quality}
                     if resource not in readers: raise invalid('resource')
                     result = readers[resource](self, conn, cur, selected, context, cutoff, now, permissions,
                                                 exporting=resource.endswith('_csv'))

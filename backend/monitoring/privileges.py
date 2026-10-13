@@ -12,6 +12,8 @@ TABLES = {
     'device_registry.point_map_versions': frozenset('device_id version parent_version transport canonical_rule content sha256 status created_at created_event_id reviewed_at review_event_id'.split()),
     'ingest_reliability.case_metadata': None,
     'ingest_reliability.receipt_metadata': None,
+    'ingest_reliability.facts': frozenset('fact_id accepted_message_id status reason_code received_at'.split()),
+    'ingest_reliability.fact_observations': frozenset('fact_id first_seen last_seen duplicate_count transport_anomaly_count counters_saturated'.split()),
 }
 
 
