@@ -10,6 +10,8 @@ import math
 from pathlib import Path
 import re
 import stat
+import platform
+import subprocess
 
 from .config import MAX_BYTES, config_dict, parse_config
 from .contracts import Case, PackConfig, PackIndex
@@ -122,6 +124,22 @@ def _generator(value):
 def pack_identity(config: PackConfig, generator: dict) -> str:
     _generator(generator)
     return 'tp-'+hashlib.sha256(canonical_bytes({'configuration': config_dict(config), 'generator': generator})).hexdigest()[:24]
+
+
+def generator_fingerprint() -> dict:
+    """Fingerprint actual generator bytes, not just a potentially dirty commit."""
+    root = Path(__file__).resolve().parents[2]
+    commit = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                            capture_output=True, check=True, timeout=10).stdout.decode().strip()
+    members = []
+    for folder, pattern in (('tools/testpack','*.py'),('config/testpack','*.json')):
+        for path in sorted((root/folder).rglob(pattern)):
+            safe_path(path)
+            members.append({'path':path.relative_to(root).as_posix(),
+                            'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    return {'version':'owp.testpack.generator/1','source_commit':commit,
+            'source_sha256':hashlib.sha256(canonical_bytes(members)).hexdigest(),
+            'python_version':platform.python_version(),'rng':'sha256-counter/1'}
 
 
 def _case_record(value):
