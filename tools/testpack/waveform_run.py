@@ -21,7 +21,7 @@ from .config import parse_config
 from .contracts import Channel, Cycle, EvidenceBinding, CheckResult
 from .evidence_report import render_evidence
 from .inversion_binding import number, software_budget
-from .lab import checked_handle
+from .lab import checked_handle,checked_pack,run_context,finish_context
 from .lab_http import LabHttp, LabHttpError
 from .storage import canonical_bytes, load_pack, safe_path, strict_json, generator_fingerprint
 from .waveforms import encode_cycle
@@ -258,7 +258,7 @@ class WaveformSession:
 
 
 def run_waveforms(lab,pack,run_root):
-    checked_handle(lab);pack=load_pack(pack.root)
+    pack=checked_pack(lab,pack)
     root=safe_path(Path(run_root),missing=True)
     if root.exists() or root.parent!=lab.root:raise ValueError('new direct lab child required')
     root.mkdir();private_acl(root)
@@ -266,8 +266,7 @@ def run_waveforms(lab,pack,run_root):
     session=WaveformSession(lab,root);config=parse_config(pack.manifest['configuration']);checks=[]
     def save(name,value):
         with (root/name).open('xb') as stream:stream.write(canonical_bytes(value))
-    save('run.json',{'schema':'owp.testpack.waveform-run/1','lab_id':lab.lab_id,'pack_id':pack.manifest['pack_id'],
-        'pack_sha256':before,'runner':generator_fingerprint(),'source_kind':'synthetic',
+    save('run.json',{'schema':'owp.testpack.waveform-run/1',**run_context(lab,pack),'source_kind':'synthetic',
         'software_actor_reviews':True,'human_signatures':False})
     for item in pack.manifest['cases']:
         if not item['case_id'].startswith('cycle-'):continue
@@ -302,11 +301,12 @@ def run_waveforms(lab,pack,run_root):
     unchanged=load_pack(pack.root).manifest==pack.manifest and sha256((pack.root/'manifest.json').read_bytes()).hexdigest()==before
     checks.append(CheckResult('original_pack_unchanged','offline','passed' if unchanged else 'failed',{'unchanged':True},{'unchanged':unchanged}))
     save('waveform-checks.json',{'source_kind':'synthetic','checks':[asdict(c) for c in checks]})
+    finish_context(root)
     return tuple(checks)
 
 
 def run_waveform_guards(lab,pack,run_root,baseline_run):
-    checked_handle(lab);pack=load_pack(pack.root)
+    pack=checked_pack(lab,pack)
     root=safe_path(Path(run_root),missing=True);baseline_root=safe_path(Path(baseline_run))
     if root.exists() or root.parent!=lab.root or baseline_root.parent!=lab.root:raise ValueError('owned lab paths required')
     origin=strict_json((baseline_root/'run.json').read_bytes())
@@ -315,6 +315,7 @@ def run_waveform_guards(lab,pack,run_root,baseline_run):
     baseline=strict_json((baseline_root/'cycle-base-result.json').read_bytes())
     if baseline['stage']!='complete' or baseline['dataset'] is None:raise ValueError('completed baseline required')
     root.mkdir();private_acl(root)
+    with (root/'run.json').open('xb') as stream:stream.write(canonical_bytes(run_context(lab,pack)))
     try:
         actual=WaveformSession(lab,root).verify_guards(pack,baseline);status='passed'
     except Exception as error:
@@ -322,4 +323,5 @@ def run_waveform_guards(lab,pack,run_root,baseline_run):
         if isinstance(error,LabHttpError):actual.update(http_status=error.status,error_code=error.code)
     check=CheckResult('waveform-source-revocation-guards','http',status,{'promotion_allowed':False},actual)
     with (root/'waveform-guards.json').open('xb') as stream:stream.write(canonical_bytes(asdict(check)))
+    finish_context(root)
     return check

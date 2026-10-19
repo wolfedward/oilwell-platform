@@ -7,7 +7,31 @@ from uuid import uuid4
 
 
 class TestPackLive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.delivery_checks=None
+        target=os.environ.get('OILWELL_TESTPACK_LIVE_DELIVERY')
+        if target:
+            from tools.testpack.lab import load_lab
+            from tools.testpack.storage import load_pack
+            from tools.testpack.delivery import run_delivery
+            lab=load_lab(Path(os.environ['OILWELL_TESTPACK_LIVE_ROOT']))
+            pack=load_pack(Path(os.environ['OILWELL_TESTPACK_LIVE_PACK']))
+            cls.delivery_checks,cls.public_report=run_delivery(lab,pack,Path(target))
+
+    def test_actual_browser_and_report(self):
+        if self.delivery_checks is None:self.skipTest('full owned delivery not requested; not delivery evidence')
+        checks={c.check_id:c for c in self.delivery_checks}
+        self.assertEqual(checks['viewer-interaction'].status,'passed',checks['viewer-interaction'].actual)
+        self.assertEqual(checks['inversion-comparison'].status,'blocked')
+        self.assertTrue(self.public_report.is_file())
+
     def test_actual_study_workflow(self):
+        if self.delivery_checks is not None:
+            from tools.testpack.study_run import STEPS
+            checks={c.check_id:c for c in self.delivery_checks}
+            self.assertTrue(all(checks['study-'+s].status=='passed' for s in STEPS))
+            return
         root=os.environ.get('OILWELL_TESTPACK_LIVE_ROOT');pack=os.environ.get('OILWELL_TESTPACK_LIVE_PACK')
         if not root or not pack:self.skipTest('explicit owned lab required; not delivery evidence')
         from tools.testpack.lab import load_lab
@@ -19,6 +43,11 @@ class TestPackLive(unittest.TestCase):
         self.assertTrue(all(c.status=='passed' for c in checks),(str(run),[(c.check_id,c.status,c.actual) for c in checks if c.status!='passed']))
 
     def test_actual_waveform_workflow(self):
+        if self.delivery_checks is not None:
+            checks={c.check_id:c for c in self.delivery_checks}
+            self.assertEqual(checks['waveform-evidence-http'].status,'passed')
+            self.assertEqual(checks['original_pack_unchanged'].status,'passed')
+            return
         root=os.environ.get('OILWELL_TESTPACK_LIVE_ROOT');pack=os.environ.get('OILWELL_TESTPACK_LIVE_PACK')
         if not root or not pack:self.skipTest('explicit owned lab required; not delivery evidence')
         from tools.testpack.lab import load_lab
@@ -39,6 +68,11 @@ class TestPackLive(unittest.TestCase):
         self.assertEqual(guard.status,'passed',guard.actual)
 
     def test_actual_telemetry_pipeline(self):
+        if self.delivery_checks is not None:
+            from tools.testpack.telemetry_run import STEPS
+            checks={c.check_id:c for c in self.delivery_checks}
+            self.assertTrue(all(checks['telemetry-'+s].status=='passed' for s in STEPS))
+            return
         root=os.environ.get('OILWELL_TESTPACK_LIVE_ROOT')
         pack=os.environ.get('OILWELL_TESTPACK_LIVE_PACK')
         if not root or not pack:

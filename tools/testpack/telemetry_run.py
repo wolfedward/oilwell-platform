@@ -15,7 +15,7 @@ from uuid import uuid4
 from .contracts import CheckResult
 from .gateway_adapter import SoftwareFixtureModbusPoller
 from .history import POINTS, telemetry_point_map
-from .lab import checked_handle, component_root, stop_owned_component, start_owned_component, restart_owned_component
+from .lab import checked_handle, checked_pack, component_root, stop_owned_component, start_owned_component, restart_owned_component, run_context, finish_context
 from .lab_http import LabHttp, LabHttpError
 from .modbus_device import ReadOnlyModbusDevice
 from .storage import canonical_bytes, load_pack, safe_path, strict_json
@@ -62,7 +62,7 @@ def run_steps(driver, root):
                     actual.update(http_status=exc.status, error_code=exc.code)
             failed = status != 'passed'
         actual['elapsed_seconds'] = round(time.monotonic() - started, 6)
-        checks.append(CheckResult('telemetry-' + name, 'network', status,
+        checks.append(CheckResult('telemetry-' + name, 'software_network', status,
                                   {'real_evidence_required': True}, actual))
         output = {'schema': 'owp.testpack.telemetry-checks/1', 'checks': [asdict(c) for c in checks],
                   'field_validation': False, 'broker_restart_tested': False}
@@ -335,20 +335,15 @@ class TelemetrySession:
 
 
 def run_telemetry(lab, pack, run_root):
-    checked_handle(lab)
-    pack = load_pack(pack.root)
-    declaration = deployment_fixture(lab.monitoring_root)
-    if sha256((pack.root/'manifest.json').read_bytes()).hexdigest() != declaration['pack_sha256']:
-        raise ValueError('pack differs from initialized lab')
+    pack = checked_pack(lab,pack)
     root = safe_path(Path(run_root), missing=True)
     if root.exists() or root.parent != lab.root:
         raise ValueError('run must be a new direct child of the owned lab')
     root.mkdir(); private_acl(root)
-    write_json_private(root/'run.json', {'schema': 'owp.testpack.run/1', 'run_id': str(uuid4()), 'lab_id': lab.lab_id,
-                       'pack_id': pack.manifest['pack_id'], 'source_kind': 'synthetic', 'started_at': utc_now().isoformat(),
-                       'deployment_commits': {p: deploy._marker(lab.root/p)['source']['commit'] for p in ('monitoring','review')}})
+    write_json_private(root/'run.json', {'schema': 'owp.testpack.run/1', **run_context(lab,pack), 'source_kind': 'synthetic'})
     session = TelemetrySession(lab, pack, root)
     try:
         return run_steps(session, root)
     finally:
         session.close()
+        finish_context(root)

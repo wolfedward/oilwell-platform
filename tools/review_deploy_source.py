@@ -25,7 +25,7 @@ TESTPACK_NAMES = {'__init__.py', '__main__.py', 'contracts.py', 'storage.py', 'c
                  'study_inputs.py', 'build.py', 'validate.py', 'lab.py', 'lab_http.py',
                  'modbus_device.py', 'gateway_adapter.py', 'telemetry_run.py', 'waveform_run.py',
                  'inversion_binding.py', 'software_budget.py', 'evidence_report.py', 'evidence_report.html',
-                 'render_evidence.cjs', 'study_run.py', 'report.py'}
+                 'render_evidence.cjs', 'study_run.py', 'report.py', 'viewer.py', 'delivery.py', 'verify_viewer.cjs'}
 
 
 def _included(name):

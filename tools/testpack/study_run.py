@@ -9,7 +9,7 @@ from uuid import uuid4,uuid5,NAMESPACE_URL
 from backend.studies.contracts import canonical
 from tools.review_deploy_paths import private_acl
 from .contracts import CheckResult
-from .lab import checked_handle,restart_owned_component
+from .lab import checked_handle,checked_pack,restart_owned_component,run_context,finish_context
 from .lab_http import LabHttp,LabHttpError
 from .storage import canonical_bytes,load_pack,safe_path,strict_json,generator_fingerprint
 from .study_inputs import bind_study
@@ -50,12 +50,14 @@ def assert_boundaries(detail):
 def run_study_steps(session,root,steps=STEPS):
     results=[];failed=False
     for step in steps:
+        started=time.monotonic()
         actual={};status='not_run'
         if not failed:
             try:actual=session.execute(step);status='passed'
             except Exception as error:
                 failed=True;status='failed';actual={'error_type':type(error).__name__}
                 if isinstance(error,LabHttpError):actual.update(http_status=error.status,error_code=error.code)
+        actual['elapsed_seconds']=round(time.monotonic()-started,6)
         results.append(CheckResult('study-'+step,'http',status,{'software_only':True},actual))
         # Checkpoints may be replaced only within this new run's owned directory.
         (root/'study-checks.json').write_bytes(canonical_bytes({'source_kind':'synthetic','checks':[asdict(r) for r in results]}))
@@ -219,7 +221,7 @@ class StudySession:
 
 
 def run_studies(lab,pack,run_root):
-    checked_handle(lab);pack=load_pack(pack.root)
+    pack=checked_pack(lab,pack)
     root=safe_path(Path(run_root),missing=True)
     if root.exists() or root.parent!=lab.root:raise ValueError('new owned lab child required')
     root.mkdir();private_acl(root)
@@ -232,9 +234,9 @@ def run_studies(lab,pack,run_root):
         expected[case['case_id']]=case['expected'][0]['expected']
     run_id=str(uuid4())
     session=StudySession(LabHttp(lab,'review'),root,templates,expected,manifest_sha,run_id,lab)
-    session.save('run.json',{'schema':'owp.testpack.study-run/1','lab_id':lab.lab_id,'run_id':run_id,
-        'pack_id':pack.manifest['pack_id'],'pack_sha256':manifest_sha,'runner':generator_fingerprint(),
+    session.save('run.json',{'schema':'owp.testpack.study-run/1',**run_context(lab,pack),'run_id':run_id,
         'source_kind':'software_fixture','human_signatures':False})
     results=run_study_steps(session,root)
     load_pack(pack.root)
+    finish_context(root)
     return results

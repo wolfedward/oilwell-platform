@@ -17,6 +17,7 @@ class TestPackTelemetryRun(unittest.TestCase):
         with TemporaryDirectory() as folder:
             checks=run_steps(Recorder(),Path(folder))
         self.assertTrue(all(c.status=='passed' for c in checks))
+        self.assertTrue(all(c.layer=='software_network' for c in checks))
         self.assertLess(calls.index('registry'),calls.index('poll'))
         self.assertLess(calls.index('poll'),calls.index('stored'))
         self.assertLess(calls.index('stored'),calls.index('history'))

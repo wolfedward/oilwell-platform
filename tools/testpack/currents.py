@@ -33,9 +33,11 @@ def generate_currents(config:PackConfig):
                     value,q=math.copysign(8,value),2
                 raw.append(quantize(value,'0.0001'));quality.append(q)
             channels.append(Channel('current_'+chr(97+phase),'A','0.0001','0',tuple(raw),tuple(quality)))
+        peaks=[12,12,12] if name=='amplitude' else [10,8,10] if name=='unbalance' else [10,10,10]
         cases.append(encode_current('current-'+name,config,tuple(channels),rate,
                      {'signal_case':name,'phase_offsets_rad':[0,-math.tau/3,-2*math.tau/3],
-                      'base_frequency_hz':frequency,'fundamental_peak_A':10,'quantization_A':.0001,
+                      'base_frequency_hz':frequency,'fundamental_peak_A':peaks[0] if len(set(peaks))==1 else None,
+                      'fundamental_peak_by_phase_A':peaks,'quantization_A':.0001,
                       'missing_indices':[4*rate,4*rate+31] if name=='gap' else [],
                       'fault_confirmation':False,'anti_aliasing':'analytic band-limited signal; no ADC/filter measured'}))
     return tuple(cases)

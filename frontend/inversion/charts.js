@@ -145,7 +145,8 @@ function mountChart(root, {kind,title,xLabel,yLabel,traces,source}) {
   return {setVisibility(id,visible){const group=groups.get(id);if(group){group.hidden=!visible;group.style.display=visible?'':'none';hide();}},dispose(){disposed=true;hit.removeEventListener('pointermove',pointer);hit.removeEventListener('keydown',keyboard);hit.removeEventListener('pointerleave',hide);hit.removeEventListener('blur',hide);}};
 }
 
-export function mountComparison(elementRoot,{prediction,reference,filled,metadata={}}) {
+export function mountComparison(elementRoot,{prediction,reference,filled,metadata={},labels={}}) {
+  const predictionLabel=labels.prediction||'反演预测',referenceLabel=labels.reference||'已对齐参考';
   const root=element('div',undefined,'inversion-chart-grid');elementRoot.append(root);
   const controls=element('div',undefined,'inversion-trace-controls');root.append(controls);
   const charts=[];
@@ -162,10 +163,10 @@ export function mountComparison(elementRoot,{prediction,reference,filled,metadat
   // support remains separate, including all quality gaps and invalid samples.
   const display=fillPoints.map((p,i)=>({...p,valid:p.valid&&(fillMap.has(p.power_index)||fillMap.has(fillPoints[i-1]?.power_index)||fillMap.has(fillPoints[i+1]?.power_index))}));
   charts.push(mountChart(root,{kind:'comparison',title:'双图对比 · 原始有效支撑',xLabel:'位移（m）',yLabel:'载荷（kN）',source:metadata.source,traces:[
-    {id:'prediction',label:'反演预测',points:pred,color:'#296aa3'},
-    {id:'reference',label:'已对齐参考',points:ref,color:'#ba6931'},
+    {id:'prediction',label:predictionLabel,points:pred,color:'#296aa3'},
+    {id:'reference',label:referenceLabel,points:ref,color:'#ba6931'},
     {id:'filled',label:'仅展示补绘',points:display,color:'#697e91',dashed:true,hidden:true}]}));
-  for(const [id,label] of [['prediction','反演预测'],['reference','已对齐参考'],['filled','展示补绘（虚线，不进入主指标）']]){
+  for(const [id,label] of [['prediction',predictionLabel],['reference',referenceLabel],['filled','展示补绘（虚线，不进入主指标）']]){
     const labelNode=element('label',label),input=element('input');input.type='checkbox';input.checked=id!=='filled';input.dataset.traceToggle=id;
     input.addEventListener('change',()=>charts[0].setVisibility(id,input.checked));labelNode.prepend(input);controls.append(labelNode);
   }

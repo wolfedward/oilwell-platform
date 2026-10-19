@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><main id="root"></main><pre id="result">pending</pre><script type="module">
+const checks=[];const check=(ok,name)=>{if(!ok)throw Error(name);checks.push(name)};
+try{
+ const {mountComparison,twoDecimals}=await import(CHART_MODULE);
+ const root=document.querySelector('#root');
+ const prediction=[0,1,2,3].map(i=>({power_index:String(i),time_ns:String(i*1000000),s_m:1.234+i,load_N:32456+i,status:i===2?'invalid':'valid'}));
+ const reference=prediction.map((p,i)=>({power_index:p.power_index,time_ns:p.time_ns,load_value_si:p.load_N,displacement_value_si:p.s_m,load_reason:i===2?'missing':null,displacement_reason:null,reference_edge_from_previous:i===1,valid:i!==2}));
+ const mounted=mountComparison(root,{prediction,reference,filled:[],metadata:{source:'synthetic'},labels:{prediction:'电功率反演结果',reference:'仿真载荷位移参考'}});
+ check(root.textContent.includes('电功率反演结果')&&root.textContent.includes('仿真载荷位移参考'),'explicit source labels');
+ const chart=root.querySelector('[data-chart-kind="comparison"]');
+ check(chart.querySelectorAll('[data-series="prediction"] circle').length===0,'no permanent point markers');
+ check(chart.querySelectorAll('[data-series="prediction"] path').length===2,'quality gap not joined');
+ root.querySelector('[data-trace-toggle="prediction"]').click();
+ check(chart.querySelector('[data-series="prediction"]').hidden&&!chart.querySelector('[data-series="reference"]').hidden,'independent toggles');
+ const hit=chart.querySelector('[data-chart-hit]');hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+ check(chart.querySelector('[role="status"]').textContent.includes('1.23')&&chart.querySelector('[role="status"]').textContent.includes('32.46'),'two decimals hover');
+ check(twoDecimals(null)==='未知','unknown is not zero');
+ const {renderCase}=await import(VIEWER_MODULE);
+ const other=document.createElement('section');document.body.append(other);
+ renderCase(other,{case_id:'<img src=x onerror=alert(1)>',category:'shape_only',kind:'shape_only',shape:{label:'形态样本',points:[[0,32],[1,60],[2,32],[0,32]]},facts:{},downloads:[]});
+ check(!other.querySelector('img'),'title rendered as text');
+ check(other.textContent.includes('不计算反演精度')&&!other.textContent.includes('RMSE'),'shape is not accuracy evidence');
+ mounted.dispose();document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
+}catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,checks,error:String(error),stack:error.stack})}
+</script></html>

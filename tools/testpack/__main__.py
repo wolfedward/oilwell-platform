@@ -28,10 +28,33 @@ def main(argv=None):
     run.add_argument('--pack',required=True,type=Path)
     run.add_argument('--root',required=True,type=Path)
     run.add_argument('--run',required=True,type=Path)
-    run.add_argument('--stage',choices=('telemetry','waveforms','studies'),default='telemetry')
+    run.add_argument('--stage',choices=('telemetry','waveforms','studies','all'),default='telemetry')
     sub.add_parser('lab-stop').add_argument('--root',required=True,type=Path)
+    report=sub.add_parser('report')
+    report.add_argument('--run',required=True,type=Path)
+    report.add_argument('--output',required=True,type=Path)
+    view=sub.add_parser('view')
+    view.add_argument('--pack',required=True,type=Path)
+    view.add_argument('--report',type=Path)
+    view.add_argument('--port',type=int,default=0)
     args=parser.parse_args(argv)
     try:
+        if args.command=='report':
+            from .lab import load_lab
+            from .report import export_public_report
+            root=safe_path(args.run);lab=load_lab(root.parent)
+            origin=strict_json((root/'run.json').read_bytes())
+            if origin['lab_id']!=lab.lab_id:raise ValueError('run belongs to another lab')
+            output=export_public_report(root,args.output)
+            print(json.dumps({'report':str(output)},ensure_ascii=False));return 0
+        if args.command=='view':
+            from .viewer import serve_viewer
+            viewer=serve_viewer(load_pack(args.pack),args.report,port=args.port)
+            print(json.dumps({'url':f'http://127.0.0.1:{viewer.server_port}/','read_only':True},ensure_ascii=False),flush=True)
+            try:viewer.viewer_thread.join()
+            except KeyboardInterrupt:pass
+            finally:viewer.shutdown();viewer.server_close()
+            return 0
         if args.command.startswith('lab-'):
             from .lab import initialize_lab,load_lab,stop_lab,DEFAULT_PORTS
             from tools.review_deploy import launch
@@ -46,6 +69,13 @@ def main(argv=None):
                 stop_lab(lab)
                 print(json.dumps({'lab_id':lab.lab_id,'status':'stopped'}))
                 return 0
+            if args.stage=='all':
+                from .delivery import run_delivery
+                from .report import overall_status
+                checks,public=run_delivery(lab,load_pack(args.pack),args.run)
+                status=overall_status(checks)
+                print(json.dumps({'lab_id':lab.lab_id,'status':status,'report':str(public)},ensure_ascii=False))
+                return 0 if status=='passed' else 1
             from .telemetry_run import run_telemetry
             from .waveform_run import run_waveforms
             from .study_run import run_studies
@@ -54,7 +84,8 @@ def main(argv=None):
                       'studies':(run_studies,'study-checks.json')}[args.stage]
             checks=selected[0](lab,load_pack(args.pack),args.run)
             passed=bool(checks) and all(c.status=='passed' for c in checks)
-            print(json.dumps({'lab_id':lab.lab_id,'status':'passed' if passed else 'failed',
+            from .report import overall_status
+            print(json.dumps({'lab_id':lab.lab_id,'status':overall_status(checks),
                               'report':str(args.run/selected[1])},ensure_ascii=False))
             return 0 if passed else 1
         if args.command=='generate':

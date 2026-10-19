@@ -1,11 +1,12 @@
 """Only newly owned loopback installations may receive testpack traffic."""
 from copy import deepcopy
+from datetime import datetime,timezone
 from hashlib import sha256
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from .contracts import LabHandle
-from .storage import load_pack, safe_path, strict_json
+from .storage import load_pack, safe_path, strict_json, generator_fingerprint
 from tools import review_deploy as deploy
 from tools.review_deploy_config import deployment_fixture, verify_config_hashes
 from tools.review_deploy_paths import private_acl, write_json_private, replace_json_private, verify_target
@@ -96,6 +97,27 @@ def checked_handle(lab):
     if loaded != lab:
         raise ValueError('lab handle differs from owned marker')
     return loaded
+
+
+def checked_pack(lab,pack):
+    checked_handle(lab)
+    pack=load_pack(pack.root)
+    declaration=deployment_fixture(lab.monitoring_root)
+    if (pack.manifest['pack_id']!=declaration['pack_id'] or
+            sha256((pack.root/'manifest.json').read_bytes()).hexdigest()!=declaration['pack_sha256']):
+        raise ValueError('pack differs from initialized lab')
+    return pack
+
+
+def run_context(lab,pack):
+    return {'run_id':str(uuid4()),'lab_id':lab.lab_id,'pack_id':pack.manifest['pack_id'],
+        'pack_sha256':sha256((pack.root/'manifest.json').read_bytes()).hexdigest(),
+        'started_at':datetime.now(timezone.utc).isoformat(),'runner':generator_fingerprint(),
+        'deployment_commits':{p:deploy._marker(lab.root/p)['source']['commit'] for p in ('monitoring','review')}}
+
+
+def finish_context(root):
+    write_json_private(root/'finished.json',{'finished_at':datetime.now(timezone.utc).isoformat()})
 
 
 def component_root(lab, profile):
