@@ -48,6 +48,7 @@ def run_steps(driver, root):
     failed = False
     path = Path(root) / 'telemetry-checks.json'
     for name in STEPS:
+        started = time.monotonic()
         if failed:
             actual, status = {'reason': 'prior_step_failed'}, 'not_run'
         else:
@@ -60,6 +61,7 @@ def run_steps(driver, root):
                 if isinstance(exc, LabHttpError):
                     actual.update(http_status=exc.status, error_code=exc.code)
             failed = status != 'passed'
+        actual['elapsed_seconds'] = round(time.monotonic() - started, 6)
         checks.append(CheckResult('telemetry-' + name, 'network', status,
                                   {'real_evidence_required': True}, actual))
         output = {'schema': 'owp.testpack.telemetry-checks/1', 'checks': [asdict(c) for c in checks],
@@ -139,8 +141,8 @@ class TelemetrySession:
 
     def post(self, path, *, actor='administrator', **fields):
         body = {'idempotency_key': str(uuid4()), 'reason': '可追溯软件链路测试', **fields}
-        # Existing registry creates return 200, not a fabricated local receipt.
-        return self.http.request('POST', path, body, actor=actor)['data']['entity']
+        expected = 201 if path in ('/api/registry/wells', '/api/registry/devices') or path.endswith('/point-maps') else 200
+        return self.http.request('POST', path, body, actor=actor, expected=expected)['data']['entity']
 
     def step(self, name):
         return getattr(self, name)()
