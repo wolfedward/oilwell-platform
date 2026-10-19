@@ -1,13 +1,14 @@
 """HTTP client restricted to one attested lab, with private actor credentials."""
 import http.client
 import json
+import re
 from urllib.parse import unquote, urlsplit
 
 from .lab import component_root
 from .storage import safe_path, strict_json
 
 
-HEADERS = {'content-type', 'idempotency-key', 'if-match', 'x-waveform-reason'}
+HEADERS = {'content-type', 'idempotency-key', 'if-match', 'x-waveform-reason', 'x-content-sha256'}
 
 
 def validate_request(method, path, headers):
@@ -24,11 +25,16 @@ def validate_request(method, path, headers):
             or any(ord(c) < 32 or ord(c) == 127 for c in decoded)
             or any(part in ('.', '..') for part in parts.path.split('/'))):
         raise ValueError('unsafe API path')
-    if not isinstance(headers, dict) or len(headers) > 4:
+    if not isinstance(headers, dict) or len(headers) > 5:
         raise ValueError('bounded headers required')
     if any(type(k) is not str or k.lower() not in HEADERS or type(v) is not str
            or len(v) > 2048 or any(ord(c) < 32 or ord(c) == 127 for c in v) for k, v in headers.items()):
         raise ValueError('unsafe extra header')
+    if len({k.lower() for k in headers}) != len(headers):
+        raise ValueError('duplicate header')
+    for key, value in headers.items():
+        if key.lower() == 'x-content-sha256' and not re.fullmatch('[0-9a-f]{64}', value):
+            raise ValueError('invalid attachment digest')
 
 
 class LabHttpError(RuntimeError):
@@ -84,9 +90,10 @@ class LabHttp:
     def request(self, method, path, body=None, *, actor, expected=200, raw=False, headers=None):
         extra = headers or {}
         validate_request(method, path, extra)
-        if actor not in self.sessions:
+        if actor is not None and actor not in self.sessions:
             self.login(actor)
-        auth_headers = {'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{self.port}', **self.sessions[actor], **extra}
+        auth_headers = {'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{self.port}',
+                        **(self.sessions[actor] if actor is not None else {}), **extra}
         data = body if isinstance(body, bytes) or body is None else json.dumps(body, ensure_ascii=False, allow_nan=False).encode('utf-8')
         status, payload, _ = self._send(method, path, data, auth_headers)
         if status != expected:

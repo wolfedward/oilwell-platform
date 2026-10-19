@@ -55,6 +55,7 @@ class EvidenceBinding:
     calibration: dict
     origin_id: str | None
     sync_id: str | None
+    reported_configs: dict | None = None
 
 
 @dataclass(frozen=True)

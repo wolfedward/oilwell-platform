@@ -45,6 +45,8 @@ def _encode(case_id,config,channels,rate,window_ns,cycle=None,binding=None):
                 if type(pin['review_version']) is not int or pin['review_version']<2:
                     raise ValueError('evidence review version required')
             sampling,calibration=(pin['id'] for pin in pins)
+            if binding.reported_configs is not None:
+                sampling=binding.reported_configs[channel.role]
         descriptors.append({'channel_id':channel.role,'quantity':'total_active_power' if channel.role=='active_power' else channel.role,
             'unit':channel.unit,'encoding':'i32le','measurement_source':'synthetic',
             'signal_kind':'window_mean' if channel.role=='active_power' else 'instantaneous',

@@ -72,6 +72,22 @@ class TestPackLab(unittest.TestCase):
             with self.assertRaises(ValueError):validate_request('POST','/api/waveforms/imports',{key:'x'})
         validate_request('POST','/api/waveforms/imports/abc/lines/0',{'Content-Type':'application/octet-stream','If-Match':'0'})
 
+    def test_actual_attachment_digest_header_is_bounded(self):
+        headers={'Content-Type':'image/png','If-Match':'0','Idempotency-Key':str(uuid4()),
+                 'X-Waveform-Reason':'Software%20evidence','X-Content-SHA256':'a'*64}
+        validate_request('POST','/api/waveforms/attachments',headers)
+        for digest in ('x','A'*64,'a'*63,'a'*65):
+            with self.assertRaises(ValueError):
+                validate_request('POST','/api/waveforms/attachments',headers|{'X-Content-SHA256':digest})
+
+    def test_anonymous_request_does_not_reuse_actor_cookie(self):
+        from tools.testpack.lab_http import LabHttp
+        client=object.__new__(LabHttp);client.port=19999;client.profile='review';client.sessions={'administrator':{'Cookie':'private'}}
+        with patch.object(client,'login') as login,patch.object(client,'_send',return_value=(401,b'{"ok":false}', '')) as send:
+            client.request('GET','/api/production-studies',actor=None,expected=401)
+            login.assert_not_called()
+            self.assertNotIn('Cookie',send.call_args.args[3])
+
     def test_fixture_cannot_use_legacy_ports_even_via_direct_initialize(self):
         from tools.review_deploy import initialize
         with TemporaryDirectory() as folder,patch('tools.review_deploy.claim_target') as claim:
