@@ -47,5 +47,15 @@ class TestPackReport(unittest.TestCase):
             path.write_text(json.dumps(body),encoding='utf-8')
             with self.assertRaises(ValueError):export_public_report(run,root/'public')
 
+    def test_nested_projection_survives_canonical_key_reordering(self):
+        with TemporaryDirectory() as folder:
+            root=Path(folder);pack=write_pack(root/'pack',PackConfig(),(example(),),GENERATOR)
+            run=root/'run';run.mkdir()
+            actual={'z':{'id':str(uuid4()),'input_sha256':'a'*64,'frame_count':12},
+                    'a':{'id':str(uuid4()),'input_sha256':'b'*64,'frame_count':24}}
+            write_report(pack,(CheckResult('nested','http','passed',{},actual),),run,run_metadata={})
+            public=export_public_report(run,root/'public')
+            self.assertTrue(public.is_file())
+
 
 if __name__=='__main__':unittest.main()

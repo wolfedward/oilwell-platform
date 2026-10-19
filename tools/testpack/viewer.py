@@ -6,6 +6,7 @@ import threading
 from urllib.parse import urlsplit
 
 from .contracts import Artifact,Case
+from .lab import validate_listener_port
 from .report import validate_public
 from .storage import canonical_bytes,load_pack,safe_path,strict_json
 from .waveforms import decode_channels
@@ -47,7 +48,7 @@ def case_data(pack,case):
 
 
 def serve_viewer(pack,public_report=None,*,port=0):
-    if type(port) is not int or port not in range(65536) or port in (8765,8770,8772,8774):raise ValueError('unprotected loopback port required')
+    validate_listener_port(port)
     pack=load_pack(pack.root);repo=Path(__file__).resolve().parents[2]
     report=None
     if public_report is not None:

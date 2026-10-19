@@ -120,8 +120,8 @@ def read_cycle(pack,case_id):
     raw=(pack.root/'cycles'/f'{case_id}.owpwave').read_bytes()
     parsed=scan_file(BytesIO(raw));stream=parsed.manifest.streams[0]
     values={c['role']:[] for c in meta['channels']};qualities={k:[] for k in values}
-    for line in raw.splitlines()[1:]:
-        chunk=parse_frame(line)
+    chunks=sorted((parse_frame(line) for line in raw.splitlines()[1:]),key=lambda c:(c.stream_id,c.sample_start))
+    for chunk in chunks:
         for sample in iter_samples(stream,chunk.data,sample_start=chunk.sample_start):
             values[sample.channel_id].append(0 if sample.raw_value is None else sample.raw_value)
             qualities[sample.channel_id].append(sample.quality)

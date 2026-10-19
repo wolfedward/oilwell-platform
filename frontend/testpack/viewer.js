@@ -47,7 +47,8 @@ export function renderCase(root,data){
   if(!data.prediction?.length){mounted.setVisibility('prediction',false);comparison.querySelector('[data-trace-toggle="prediction"]').disabled=true;}
   comparison.querySelector('[data-trace-toggle="filled"]').closest('label').hidden=true;
   for(const kind of ['power','motion','torque'])comparison.querySelector(`[data-chart-kind="${kind}"]`).hidden=true;
-  lineChart(root,{title:'原始电功率 · 原生时间采样',xLabel:'时间（s）',yLabel:'有功功率（kW）',points:channels.active_power.values.map((v,i)=>({x:i/meta.sample_rate_hz,y:numeric(v),valid:channels.active_power.quality[i]===0}))});
+  const power=channels.active_power;
+  lineChart(root,{title:'原始电功率 · 原生时间采样',xLabel:'时间（s）',yLabel:'有功功率（kW）',points:power.values.map((v,i)=>({x:i/meta.sample_rate_hz,y:numeric(v)===null?null:power.unit==='W'?numeric(v)/1000:power.unit==='kW'?numeric(v):null,valid:power.quality[i]===0}))});
   detail(root,'模型参数与数值诊断（不等同现场标定）',{model:meta.model,diagnostics:meta.diagnostics});
  }else if(data.kind==='history'){
   const daily=data.metadata.daily;

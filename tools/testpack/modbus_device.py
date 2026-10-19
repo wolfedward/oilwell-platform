@@ -7,6 +7,7 @@ import socket
 import socketserver
 import struct
 import threading
+from .lab import validate_listener_port
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -57,6 +58,7 @@ class _Handler(socketserver.BaseRequestHandler):
 
 class ReadOnlyModbusDevice:
     def __init__(self,maps,*,host,port):
+        validate_listener_port(port)
         if host!='127.0.0.1' or type(port) is not int or not 0<=port<=65535 or not maps or set(maps)-{1,2}:
             raise ValueError('bounded loopback unit 1/2 device required')
         self.maps=maps
@@ -75,6 +77,7 @@ class ReadOnlyModbusDevice:
         self.server=None;self.thread=None
 
     def start(self):
+        validate_listener_port(self.port)
         if self.server is not None:raise ValueError('software device already started')
         server=_Server((self.host,self.port),_Handler)
         server.owner=self;server.slots=threading.BoundedSemaphore(16)

@@ -16,7 +16,7 @@ from backend.studies.energy_effects import evaluate_effects
 from backend.studies.spectrum import analyze_spectrum
 from backend.studies.protection import replay_protection
 from .contracts import Artifact,Case,CheckResult
-from .storage import canonical_bytes,load_pack
+from .storage import canonical_bytes,load_pack,safe_path
 from .waveforms import decode_channels
 from .history import integrate_intervals
 
@@ -49,7 +49,7 @@ def validate_pack(pack):
         if case.facts.get('data_kind')=='study':
             continue
         for check in case.expected:
-            path=check['target'];raw=(pack.root/path).read_bytes()
+            path=check['target'];raw=safe_path(pack.root/path).read_bytes()
             actual={'input_sha256':sha256(raw).hexdigest()}
             try:
                 if path.endswith('.owpwave'):

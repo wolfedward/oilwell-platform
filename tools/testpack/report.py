@@ -79,7 +79,7 @@ def _safe_actual(actual):
     def visit(value,depth=0):
         if depth>24:return
         if isinstance(value,dict):
-            for key,item in value.items():
+            for key,item in sorted(value.items()):
                 if key in COUNTS and type(item) in (float,int) and math.isfinite(item):output['counts'].setdefault(key,item)
                 if key in FLAGS and type(item) is bool:output['flags'].setdefault(key,item)
                 if key in ('record_id','run_id','result_id','id','import_id','capture_id') and type(item) is str:

@@ -120,8 +120,8 @@ def decode_channels(case:Case)->dict:
     scales={c['role']:c for c in meta['channels']}
     output={key:{'values':[],'quality':[],'unit':c['unit']} for key,c in scales.items()}
     streams={s.stream_id:s for s in parsed.manifest.streams}
-    for line in raw.splitlines()[1:]:
-        chunk=parse_frame(line)
+    chunks=sorted((parse_frame(line) for line in raw.splitlines()[1:]),key=lambda c:(c.stream_id,c.sample_start))
+    for chunk in chunks:
         for sample in iter_samples(streams[chunk.stream_id],chunk.data,sample_start=chunk.sample_start):
             c=scales[sample.channel_id]
             value=None if sample.raw_value is None else float(Decimal(sample.raw_value)*Decimal(c['scale'])+Decimal(c['offset']))

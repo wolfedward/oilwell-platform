@@ -20,6 +20,10 @@ try{
  renderCase(other,{case_id:'<img src=x onerror=alert(1)>',category:'shape_only',kind:'shape_only',shape:{label:'形态样本',points:[[0,32],[1,60],[2,32],[0,32]]},facts:{},downloads:[]});
  check(!other.querySelector('img'),'title rendered as text');
  check(other.textContent.includes('不计算反演精度')&&!other.textContent.includes('RMSE'),'shape is not accuracy evidence');
+ renderCase(other,{case_id:'cycle-test',kind:'cycle',metadata:{frame_count:2,sample_rate_hz:128,model:{},diagnostics:{}},
+  reference:reference.slice(0,2),prediction:[],channels:{active_power:{unit:'W',values:[1234,2000],quality:[0,0]}},downloads:[]});
+ other.querySelector('.line-chart [data-chart-hit]').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+ check(other.querySelector('.line-chart [role="status"]').textContent.includes('有功功率（kW） 1.23'),'watts converted to displayed kilowatts');
  mounted.dispose();document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
 }catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,checks,error:String(error),stack:error.stack})}
 </script></html>

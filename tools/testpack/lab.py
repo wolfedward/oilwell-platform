@@ -18,6 +18,12 @@ DEFAULT_PORTS = {'monitoring': {'http': 18774, 'postgres': 56432, 'mqtt': 19884}
 PROTECTED_PORTS = {8765, 8770, 8772, 8774, 1884, 1885, 1888, 55432, 55433, 55436}
 
 
+def validate_listener_port(port):
+    if type(port) is not int or not 0<=port<=65535 or port in PROTECTED_PORTS:
+        raise ValueError('unprotected loopback port required')
+    return port
+
+
 def validate_lab_ports(ports, *, probe=True):
     if not isinstance(ports, dict) or set(ports) != {'monitoring', 'review', 'modbus'}:
         raise ValueError('exact loopback lab ports required')

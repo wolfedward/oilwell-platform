@@ -149,6 +149,10 @@ def _case_record(value):
         raise ValueError('case identity/category')
     if not isinstance(value['facts'], dict) or not isinstance(value['expected'], (list, tuple)):
         raise ValueError('case facts/expected')
+    if not isinstance(value['artifact_paths'], (list, tuple)):
+        raise ValueError('case artifact paths')
+    for path in value['artifact_paths']:
+        member_path(path)
     for check in value['expected']:
         if not isinstance(check, dict) or set(check) != {'check_id', 'layer', 'assertion', 'target', 'expected'}:
             raise ValueError('expected check fields')
@@ -156,10 +160,9 @@ def _case_record(value):
             raise ValueError('expected check is not a declarative assertion')
         if not isinstance(check['check_id'], str) or not isinstance(check['target'], str):
             raise ValueError('check identity/target')
-    if not isinstance(value['artifact_paths'], (list, tuple)):
-        raise ValueError('case artifact paths')
-    for path in value['artifact_paths']:
-        member_path(path)
+        member_path(check['target'])
+        if check['target'] not in value['artifact_paths']:
+            raise ValueError('check target must be a declared artifact of its case')
 
 
 def write_pack(target: Path, config: PackConfig, cases: tuple[Case, ...], generator: dict) -> PackIndex:
