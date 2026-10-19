@@ -28,6 +28,7 @@ def main(argv=None):
     run.add_argument('--pack',required=True,type=Path)
     run.add_argument('--root',required=True,type=Path)
     run.add_argument('--run',required=True,type=Path)
+    run.add_argument('--stage',choices=('telemetry','waveforms','studies'),default='telemetry')
     sub.add_parser('lab-stop').add_argument('--root',required=True,type=Path)
     args=parser.parse_args(argv)
     try:
@@ -46,10 +47,15 @@ def main(argv=None):
                 print(json.dumps({'lab_id':lab.lab_id,'status':'stopped'}))
                 return 0
             from .telemetry_run import run_telemetry
-            checks=run_telemetry(lab,load_pack(args.pack),args.run)
+            from .waveform_run import run_waveforms
+            from .study_run import run_studies
+            selected={'telemetry':(run_telemetry,'telemetry-checks.json'),
+                      'waveforms':(run_waveforms,'waveform-checks.json'),
+                      'studies':(run_studies,'study-checks.json')}[args.stage]
+            checks=selected[0](lab,load_pack(args.pack),args.run)
             passed=bool(checks) and all(c.status=='passed' for c in checks)
             print(json.dumps({'lab_id':lab.lab_id,'status':'passed' if passed else 'failed',
-                              'report':str(args.run/'telemetry-checks.json')},ensure_ascii=False))
+                              'report':str(args.run/selected[1])},ensure_ascii=False))
             return 0 if passed else 1
         if args.command=='generate':
             source=safe_path(args.config.absolute())
