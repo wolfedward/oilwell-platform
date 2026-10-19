@@ -2,6 +2,8 @@
 import json
 import hashlib
 import tomllib
+import re
+from uuid import UUID
 from pathlib import Path
 
 from .review_deploy_paths import write_json_private, private_acl
@@ -23,11 +25,38 @@ SEALED_FILES = ('center.toml', 'waveform.toml', 'inversion.toml',
                 'mosquitto.conf', 'mqtt.acl', 'mqtt.passwd')
 
 
+def checked_fixture(fixture):
+    if fixture is None:return None
+    keys={'schema','lab_id','pack_id','pack_sha256','gateway_id','device_ids','modbus_port'}
+    if not isinstance(fixture,dict) or set(fixture)!=keys or fixture['schema']!='owp.testpack.fixture/1':
+        raise ValueError('invalid testpack fixture')
+    UUID(fixture['lab_id'])
+    if (fixture['gateway_id']!='REVIEW-GW' or fixture['device_ids']!=['TESTPACK-PUMP-001','TESTPACK-PUMP-002']
+        or not re.fullmatch(r'tp-[0-9a-f]{24}',fixture['pack_id']) or not re.fullmatch(r'[0-9a-f]{64}',fixture['pack_sha256'])
+        or type(fixture['modbus_port']) is not int or not 1024<=fixture['modbus_port']<=65535
+        or fixture['modbus_port'] in {8765,8770,8772,8774,1884,1885,1888,55432,55433,55436}):
+        raise ValueError('unapproved testpack fixture values')
+    return fixture
+
+
+def deployment_fixture(root):
+    path=Path(root)/'private/fixture.json'
+    if not path.exists():return None
+    from .testpack.storage import safe_path,strict_json
+    safe_path(path)
+    if path.stat().st_size>4096:raise ValueError('fixture too large')
+    return checked_fixture(strict_json(path.read_bytes()))
+
+
+def _sealed_files(root):
+    return SEALED_FILES+(('fixture.json','gateway.toml') if deployment_fixture(root) else ())
+
+
 def config_hashes(root):
     """Seal every generated input consumed by the launched components."""
     private = Path(root) / 'private'
     result = {}
-    for name in SEALED_FILES:
+    for name in _sealed_files(root):
         path = private / name
         if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
             raise ValueError('deployment config unavailable or linked')
@@ -36,7 +65,7 @@ def config_hashes(root):
 
 
 def verify_config_hashes(root, expected):
-    if not isinstance(expected, dict) or set(expected) != set(SEALED_FILES):
+    if not isinstance(expected, dict) or set(expected) != set(_sealed_files(root)):
         raise ValueError('deployment config inventory mismatch')
     if config_hashes(root) != expected:
         raise ValueError('deployment config changed since initialization')
@@ -52,12 +81,12 @@ def pg_runtime(profile='review'):
     return PG_RUNTIME + (('monitoring_reader',) if checked_profile(profile) == 'monitoring' else ())
 
 
-def mqtt_accounts(profile='review'):
-    return MQTT_ACCOUNTS + (('mqtt_monitoring_test',) if checked_profile(profile) == 'monitoring' else ())
+def mqtt_accounts(profile='review',*,fixture=None):
+    return MQTT_ACCOUNTS + (('mqtt_monitoring_test',) if checked_profile(profile) == 'monitoring' else ()) + (('mqtt_testpack',) if checked_fixture(fixture) else ())
 
 
-def runtime_secrets(profile='review'):
-    return (*pg_runtime(profile), *mqtt_accounts(profile))
+def runtime_secrets(profile='review',*,fixture=None):
+    return (*pg_runtime(profile), *mqtt_accounts(profile,fixture=fixture))
 
 
 def deployment_profile(root):
@@ -103,10 +132,11 @@ def _write(path, content):
     private_acl(path)
 
 
-def write_configs(root, *, ports, credentials, source_ref, profile='review'):
+def write_configs(root, *, ports, credentials, source_ref, profile='review', fixture=None):
     """Create configs once; no inline passwords and no changes to existing files."""
     root = Path(root).absolute()
-    if set(credentials) != set(runtime_secrets(profile)) or not all(credentials.values()):
+    checked_fixture(fixture)
+    if set(credentials) != set(runtime_secrets(profile,fixture=fixture)) or not all(credentials.values()):
         raise ValueError('complete distinct runtime secrets required')
     if len(set(credentials.values())) != len(credentials):
         raise ValueError('runtime secrets must be distinct')
@@ -166,11 +196,15 @@ def write_configs(root, *, ports, credentials, source_ref, profile='review'):
              'inversion': private / 'inversion.toml'}
     for key, content in (('center', center), ('waveform', wave), ('inversion', inversion)):
         _write(paths[key], content)
+    if fixture is not None:
+        write_json_private(private/'fixture.json',fixture)
+        _write(private/'gateway.toml',_gateway_fixture_config(root,ports,fixture))
     return paths
 
 
-def broker_configuration(root, *, mqtt_port, profile='review'):
+def broker_configuration(root, *, mqtt_port, profile='review',fixture=None):
     checked_profile(profile)
+    checked_fixture(fixture)
     root = Path(root).absolute()
     private = root / 'private'
     lines = ['allow_anonymous false', f'listener {mqtt_port} 127.0.0.1',
@@ -187,6 +221,25 @@ def broker_configuration(root, *, mqtt_port, profile='review'):
         acl += ('user review_mqtt_monitoring_test\n'
                 'topic write oilfield/v1/REVIEW-GW/MONITORING-TEST-1/telemetry\n'
                 'topic write oilfield/v1/REVIEW-GW/MONITORING-TEST-2/telemetry\n')
+    if fixture is not None:
+        acl+='user review_mqtt_testpack\n'
+        for device in fixture['device_ids']:
+            acl+=f'topic write oilfield/v1/REVIEW-GW/{device}/telemetry\ntopic read oilfield/v2/REVIEW-GW/{device}/ingest-ack\n'
     _write(private / 'mosquitto.conf', '\n'.join(lines) + '\n')
     _write(private / 'mqtt.acl', acl)
     return private / 'mosquitto.conf'
+
+
+def _gateway_fixture_config(root,ports,fixture):
+    from .testpack.history import telemetry_point_map
+    text=('[gateway]\nid = "REVIEW-GW"\nconfirmation_mode = "application"\n'
+          f'spool_database = {_q(str(root/"private/testpack-spool.db"))}\n'
+          'poll_interval_seconds = 1\nreceipt_timeout_seconds = 2\nbase_backoff_seconds = 0.2\nmax_backoff_seconds = 2\n'
+          '[gateway.spool_limits]\nmax_messages = 10000\nmax_payload_bytes = 67108864\nmin_free_bytes = 67108864\n\n'
+          +_mqtt_section('mqtt','mqtt_testpack',ports['mqtt'],'testpack-'+fixture['lab_id'][:8])
+          +'topic_prefix = "oilfield"\npublish_timeout_seconds = 3\n')
+    for unit,device in enumerate(fixture['device_ids'],1):
+        text+=f'\n[[modbus.devices]]\ndevice_id = {_q(device)}\ntransport = "tcp"\nhost = "127.0.0.1"\nport = {fixture["modbus_port"]}\ntimeout_seconds = 1\nretries = 0\n'
+        for point in telemetry_point_map(unit):
+            text+=f'\n[[modbus.devices.points]]\npoint_code = {_q(point.point_code)}\nunit_id = {unit}\nfunction_code = 4\naddress = {point.address}\ndata_type = "float32"\nbyte_order = "big"\nword_order = "big"\nunit = {_q(point.unit)}\n'
+    return text

@@ -20,11 +20,18 @@ TOOL_NAMES = {'review_deploy.py', 'review_deploy_paths.py', 'review_deploy_confi
               'review_deploy_source.py', 'review_deploy_pg.py', 'review_deploy_process.py',
               'review_deploy_backup.py', 'review_deploy_child.py', 'review_deploy_ready.py',
               'review_deploy_worker.py'}
+TESTPACK_NAMES = {'__init__.py', '__main__.py', 'contracts.py', 'storage.py', 'config.py',
+                 'mechanics.py', 'cycles.py', 'currents.py', 'waveforms.py', 'history.py',
+                 'study_inputs.py', 'build.py', 'validate.py', 'lab.py', 'lab_http.py',
+                 'modbus_device.py', 'gateway_adapter.py', 'telemetry_run.py', 'waveform_run.py',
+                 'inversion_binding.py', 'evidence_report.py', 'study_run.py', 'reports.py'}
 
 
 def _included(name):
     return (name in EXACT or name in {'backend', 'frontend', 'assets', 'tools'} or name.startswith(PREFIXES) or
-            name.startswith('tools/') and name.split('/')[-1] in TOOL_NAMES)
+            name in {'tools/testpack/' + item for item in TESTPACK_NAMES} or
+            name in {'config/testpack/smoke.json', 'config/testpack/extended.json'} or
+            name in {'tools/' + item for item in TOOL_NAMES})
 
 
 def _public_files(repo):

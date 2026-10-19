@@ -89,21 +89,24 @@ def _role_env(base, credentials, roles):
     return env
 
 
-def start_services(root, *, ports, credentials, on_start=None, profile='review'):
+def start_services(root, *, ports, credentials, on_start=None, profile='review', components=None):
     root = Path(root).absolute()
     from .review_deploy_config import checked_profile
     checked_profile(profile)
+    if components is not None and (not isinstance(components, (set, frozenset)) or not components or components - {'http', 'center'}):
+        raise ValueError('selective starts allow only HTTP or center')
     python = str(root / 'venv' / 'Scripts' / 'python.exe')
     code = root / 'code'
     private = root / 'private'
     base = os.environ.copy()
     processes = {}
-    if not MOSQUITTO.is_file():
-        raise RuntimeError('Mosquitto executable unavailable')
-    processes['broker'] = _start([str(MOSQUITTO), '-c', str(private / 'mosquitto.conf')],
-                                 root=root, env=_role_env(base, credentials, ()), log_name='broker.stdout.log')
-    if on_start:
-        on_start('broker', processes['broker'])
+    if components is None:
+        if not MOSQUITTO.is_file():
+            raise RuntimeError('Mosquitto executable unavailable')
+        processes['broker'] = _start([str(MOSQUITTO), '-c', str(private / 'mosquitto.conf')],
+                                     root=root, env=_role_env(base, credentials, ()), log_name='broker.stdout.log')
+        if on_start:
+            on_start('broker', processes['broker'])
     specs = (
         ('center', ['-m', 'backend.center', '--config', str(private / 'center.toml')],
          ('mqtt_center', 'reliable_ingestor')),
@@ -119,10 +122,14 @@ def start_services(root, *, ports, credentials, on_start=None, profile='review')
          ('inversion_reader', 'inversion_operator', 'wave_reader', 'wave_operator', 'wave_receiver')),
     )
     for name, arguments, roles in specs:
+        if components is not None and name not in components:
+            continue
         processes[name] = _start([python, *arguments], root=root,
                                  env=_role_env(base, credentials, roles), log_name=name + '.log')
         if on_start:
             on_start(name, processes[name])
+    if components is not None and 'http' not in components:
+        return processes
     if not port_available(ports['http']):
         raise ValueError('review HTTP port occupied')
     env = _role_env(base, credentials, ('mqtt_center', 'reliable_ingestor', 'foundation_reader', 'registry_writer',

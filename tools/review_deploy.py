@@ -14,7 +14,7 @@ from .review_deploy_backup import count_business_rows, dump_database, restore_da
 from .review_deploy_config import (PG_OWNERS, PG_RUNTIME, MQTT_ACCOUNTS, GATEWAY,
                                    broker_configuration, config_hashes, verify_config_hashes,
                                    runtime_secrets, write_configs)
-from .review_deploy_config import pg_runtime, mqtt_accounts, checked_profile, deployment_profile
+from .review_deploy_config import pg_runtime, mqtt_accounts, checked_profile, deployment_profile, checked_fixture, deployment_fixture
 from .review_deploy_paths import claim_target, private_acl, replace_json_private, safe_target, verify_target, write_json_private
 from .review_deploy_pg import (cluster_running, connection_settings, initialize_cluster,
                                probe_system_identifier, start_cluster, stop_cluster)
@@ -37,13 +37,13 @@ def _credential_file(root):
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
         raise ValueError('private credential file unavailable')
     credentials = json.loads(path.read_text(encoding='utf-8'))
-    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(_marker(root).get('profile', 'review')))):
+    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(_marker(root).get('profile', 'review'), fixture=deployment_fixture(root)))):
         raise ValueError('private credential inventory mismatch')
     return credentials
 
 
-def _new_credentials(profile='review'):
-    return {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *runtime_secrets(profile))}
+def _new_credentials(profile='review', *, fixture=None):
+    return {name: secrets.token_urlsafe(32) for name in (*PG_OWNERS, *runtime_secrets(profile, fixture=fixture))}
 
 
 def _marker(root):
@@ -82,12 +82,12 @@ def _venv(root):
             raise RuntimeError('pinned dependencies installation failed')
 
 
-def _broker_passwords(root, credentials, profile='review'):
+def _broker_passwords(root, credentials, profile='review', *, fixture=None):
     if not MOSQUITTO_PASSWD.is_file():
         raise RuntimeError('Mosquitto password tool unavailable')
     password_file = Path(root) / 'private' / 'mqtt.passwd'
     with password_file.open('x', encoding='utf-8', newline='\n') as stream:
-        for name in mqtt_accounts(profile):
+        for name in mqtt_accounts(profile, fixture=fixture):
             stream.write(f'review_{name}:{credentials[name]}\n')
     private_acl(password_file)
     result = subprocess.run([str(MOSQUITTO_PASSWD), '-U', str(password_file)],
@@ -114,9 +114,14 @@ def _preflight(target, source, ports):
     return target, source
 
 
-def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review'):
+def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', fixture=None):
     checked_profile(profile)
+    checked_fixture(fixture)
     ports = ports or _ports(8770, 55432, 1884)
+    if fixture is not None:
+        from .testpack.lab import PROTECTED_PORTS
+        if any(port in PROTECTED_PORTS or port == fixture['modbus_port'] for port in ports.values()):
+            raise ValueError('fixture requires separate non-protected ports')
     target, source = _preflight(target, source, ports)
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports
@@ -127,14 +132,15 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review'):
     marker['source'] = source_record
     _update(target, marker)
     _venv(target)
-    credentials = _new_credentials(profile)
+    extra = {} if fixture is None else {'fixture': fixture}
+    credentials = _new_credentials(profile, **extra)
     write_json_private(target / 'private' / 'credentials.json', credentials)
     accounts = run_exported_backend(target, 'identity_init')
     source_ref = str(uuid.uuid4())
-    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets(profile)},
-                  source_ref=source_ref, profile=profile)
-    broker_configuration(target, mqtt_port=ports['mqtt'], profile=profile)
-    _broker_passwords(target, credentials, profile)
+    write_configs(target, ports=ports, credentials={name: credentials[name] for name in runtime_secrets(profile, **extra)},
+                  source_ref=source_ref, profile=profile, **extra)
+    broker_configuration(target, mqtt_port=ports['mqtt'], profile=profile, **extra)
+    _broker_passwords(target, credentials, profile, **extra)
     marker['config_hashes'] = config_hashes(target)
     _validate_configs(target)
     system_id = initialize_cluster(target, port=ports['postgres'], credentials=credentials, profile=profile)
@@ -256,6 +262,8 @@ def stop(root):
 
 def backup(root):
     root, marker = _checked(root)
+    if deployment_fixture(root) is not None:
+        raise ValueError('testpack fixture backup is not supported')
     # This explicit command establishes quiescence before combining stores.
     if marker['state'] != 'stopped':
         stop(root)
@@ -291,6 +299,8 @@ def restore(backup_path, *, target, source=DEFAULT_SOURCE, ports=None):
     ports = ports or _ports(8771, 55433, 1885)
     target, source = _preflight(target, source, ports)
     backup_manifest = verify_backup(backup_path)
+    if backup_manifest.get('fixture') is not None:
+        raise ValueError('testpack fixture restore is not supported')
     profile = checked_profile(backup_manifest.get('profile', 'review'))
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports

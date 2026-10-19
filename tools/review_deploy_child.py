@@ -10,21 +10,21 @@ import uuid
 
 
 def _credentials(root):
-    from .review_deploy_config import PG_OWNERS, runtime_secrets, deployment_profile
+    from .review_deploy_config import PG_OWNERS, runtime_secrets, deployment_profile, deployment_fixture
     path = root / 'private' / 'credentials.json'
     if path.is_symlink() or path.stat().st_nlink != 1:
         raise ValueError('credential file unavailable')
     credentials = json.loads(path.read_text(encoding='utf-8'))
-    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(deployment_profile(root)))):
+    if set(credentials) != set((*PG_OWNERS, *runtime_secrets(deployment_profile(root), fixture=deployment_fixture(root)))):
         raise ValueError('credential inventory mismatch')
     return credentials
 
 
-def _with_runtime_env(credentials, action, profile='review'):
+def _with_runtime_env(credentials, action, profile='review', *, fixture=None):
     from .review_deploy_config import env_name, runtime_secrets
     previous = os.environ.copy()
     try:
-        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets(profile)})
+        os.environ.update({env_name(role): credentials[role] for role in runtime_secrets(profile, fixture=fixture)})
         return action()
     finally:
         os.environ.clear()
@@ -32,8 +32,9 @@ def _with_runtime_env(credentials, action, profile='review'):
 
 
 def _validate_configs(root, credentials):
-    from .review_deploy_config import deployment_profile
+    from .review_deploy_config import deployment_profile, deployment_fixture
     profile = deployment_profile(root)
+    fixture = deployment_fixture(root)
     from backend.center.config import load_center_config, load_query_postgres_config
     from backend.registry.config import load_registry_config
     from backend.ingest_reliability.config import load_reliability_config
@@ -51,11 +52,16 @@ def _validate_configs(root, credentials):
                       load_inversion_config(private / 'inversion.toml')]
         if not all(components):
             raise ValueError('review component disabled')
+        if fixture is not None:
+            from backend.gateway.config import load_gateway_config
+            gateway = load_gateway_config(private / 'gateway.toml')
+            if gateway.confirmation_mode != 'application' or gateway.mqtt.host != '127.0.0.1':
+                raise ValueError('fixture gateway configuration mismatch')
         if profile == 'monitoring':
             from backend.monitoring.config import load_monitoring_config
             if load_monitoring_config(private / 'center.toml') is None:
                 raise ValueError('monitoring component disabled')
-    _with_runtime_env(credentials, check, profile)
+    _with_runtime_env(credentials, check, profile, fixture=fixture)
     return {'validated': True}
 
 
