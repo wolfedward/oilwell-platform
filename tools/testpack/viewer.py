@@ -1,5 +1,6 @@
 """Read-only loopback viewer with a fixed file/data allowlist; no API proxy."""
 from hashlib import sha256
+from fractions import Fraction
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 import threading
@@ -10,6 +11,7 @@ from .lab import validate_listener_port
 from .report import validate_public
 from .storage import canonical_bytes,load_pack,safe_path,strict_json
 from .waveforms import decode_channels
+from .viewer_details import capture_summary,quality_summary,reference_summary,scene_summary
 
 
 def case_data(pack,case):
@@ -25,9 +27,14 @@ def case_data(pack,case):
         model=Case(case['case_id'],case['category'],tuple(artifacts),case['facts'],tuple(case['expected']))
         channels=decode_channels(model)
         meta=strict_json(next(a.content for a in artifacts if a.path.endswith('.json')))
-        result.update(kind=kind,metadata=meta,channels=channels,prediction=[])
+        wire=strict_json(next(a.content for a in artifacts if a.path.endswith('.owpwave')).splitlines()[0])
+        capture=capture_summary(wire,meta,channels)
+        result.update(kind=kind,metadata=meta,channels=channels,prediction=[],capture=capture,
+                      quality_summary=quality_summary(channels),scene=scene_summary(case['case_id'],case['category']))
         if kind=='cycle':
-            result['reference']=[{'power_index':str(i),'time_ns':str(i*7812500),
+            result['reference_summary']=reference_summary(channels,cycle_support_complete=capture['cycle_support_complete'])
+            result['reference']=[{'power_index':str(int(capture['first_sample_index'])+i),
+                'time_ns':str(Fraction(capture['offset_ns'])+i*Fraction(capture['sample_period_ns'])),
                 'load_value_si':None if channels['load']['values'][i] is None else channels['load']['values'][i]*1000,
                 'displacement_value_si':channels['displacement']['values'][i],
                 'load_reason':None if channels['load']['quality'][i]==0 else 'invalid_quality',

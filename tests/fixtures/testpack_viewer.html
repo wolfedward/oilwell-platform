@@ -15,7 +15,7 @@ try{
  const hit=chart.querySelector('[data-chart-hit]');hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
  check(chart.querySelector('[role="status"]').textContent.includes('1.23')&&chart.querySelector('[role="status"]').textContent.includes('32.46'),'two decimals hover');
  check(twoDecimals(null)==='未知','unknown is not zero');
- const {renderCase}=await import(VIEWER_MODULE);
+ const {renderCase,renderReport,inversionEvidence}=await import(VIEWER_MODULE);
  const other=document.createElement('section');document.body.append(other);
  renderCase(other,{case_id:'<img src=x onerror=alert(1)>',category:'shape_only',kind:'shape_only',shape:{label:'形态样本',points:[[0,32],[1,60],[2,32],[0,32]]},facts:{},downloads:[]});
  check(!other.querySelector('img'),'title rendered as text');
@@ -24,6 +24,35 @@ try{
   reference:reference.slice(0,2),prediction:[],channels:{active_power:{unit:'W',values:[1234,2000],quality:[0,0]}},downloads:[]});
  other.querySelector('.line-chart [data-chart-hit]').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
  check(other.querySelector('.line-chart [role="status"]').textContent.includes('有功功率（kW） 1.23'),'watts converted to displayed kilowatts');
+ const blocked={check_id:'cycle-test-approved-inversion',layer:'numeric',status:'blocked',actual:{counts:{domain_speed_torque_bound_Nm:207.6221805288084,fixed_torque_bound_Nm:100,fixed_speed_bound_rad_s:.00001,uncovered_speed_error_rad_s:.000035156514264824925},flags:{parameter_submitted:false},study_records:[]}};
+ const report={status:'blocked',layers:{numeric:{blocked:1}},run_metadata:{source_commit:'historical-generator-commit'},checks:[blocked]};
+ const data={case_id:'cycle-test',kind:'cycle',metadata:{frame_count:2,sample_rate_hz:128,model:{},diagnostics:{}},
+  reference:reference.slice(0,2),prediction:[],channels:{active_power:{unit:'W',values:[1234,2000],quality:[0,0]}},downloads:[],
+  scene:{label:'注入噪声',perturbation:'noise'},capture:{device_id:'TESTPACK-PUMP-001',simulation_start_local:'2026-10-01T00:00:00+08:00',cycle_duration_s:8,strokes_per_min:7.5,sample_rate_hz:128,frame_count:1025,offset_ns:'0',sample_period_ns:'7812500'},
+  reference_summary:{load_range_kn:[32,60],stroke_m:2.64,area_kj:null,area_reason:'open_endpoints'},
+  quality_summary:{status:'usable_samples',channels:[{role:'active_power',unit:'W',total:2,valid:2,missing:0,abnormal:0,codes:{'0':2,'1':0,'2':0,'3':0,'4':0},invalid_numeric:0}]},
+  inversion_evidence:inversionEvidence(report,'cycle-test')};
+ renderCase(other,data);
+ check(other.textContent.includes('TESTPACK-PUMP-001')&&other.textContent.includes('2026-10-01')&&other.textContent.includes('仿真起始时间'),'capture identity and simulation time');
+ check(other.textContent.includes('8.00 s')&&other.textContent.includes('7.50 次/min')&&other.textContent.includes('32.00–60.00 kN'),'native cycle parameters');
+ check(other.textContent.includes('注入噪声')&&other.textContent.includes('质量码均有效（不等于工况正常）'),'scene and quality are separate');
+ check(other.querySelector('[data-area-status]').textContent.includes('首末点未闭合'),'open reference not a complete card area');
+ check(other.querySelector('[data-quality-table]').textContent.includes('削顶'),'per channel quality codes visible');
+ check(other.querySelector('[data-budget-panel]').textContent.includes('207.6222')&&other.querySelector('[data-budget-panel]').textContent.includes('100'),'actual torque budget numbers');
+ check(other.querySelector('[data-budget-panel]').textContent.includes('1.000000e-5')&&other.querySelector('[data-budget-panel]').textContent.includes('3.515651e-5'),'tiny budgets never rounded to zero');
+ check(other.textContent.includes('未提交参数')&&other.textContent.includes('不代表现场反演精度'),'blocked evidence is not a prediction');
+ check(other.querySelector('[data-trace-toggle="prediction"]').disabled,'blocked prediction stays disabled');
+ const absent=inversionEvidence({checks:[blocked,{...blocked,check_id:'cycle-test-extra-approved-inversion'}]},'cycle-test-ex');
+ check(absent.case_check===null,'no prefix match between cases');
+ renderCase(other,{...data,inversion_evidence:inversionEvidence({checks:[{check_id:'inversion-comparison',layer:'numeric',status:'not_run',actual:{counts:{}}}]},'cycle-test')});
+ check(other.querySelector('[data-budget-panel]').textContent.includes('没有该样本的逐项反演结果')&&other.textContent.includes('全包反演比较：未运行'),'extended never borrows smoke results');
+ check(!other.querySelector('[data-budget-panel]').textContent.includes('207.6222'),'old case budget cleared');
+ renderCase(other,{...data,inversion_evidence:inversionEvidence(null,'cycle-test')});
+ check(other.querySelector('[data-budget-panel]').textContent.includes('未加载匹配报告'),'no report is not a failed budget');
+ renderCase(other,{...data,reference_summary:{...data.reference_summary,area_kj:4,area_reason:null,signed_work_kj:4}});
+ check(other.querySelector('[data-area-status]').textContent.includes('4.00 kJ'),'closed card area units');
+ renderReport(other,report);
+ check(other.textContent.includes('1.000000e-5')&&other.textContent.includes('3.515651e-5'),'report preserves small values too');
  mounted.dispose();document.querySelector('#result').textContent=JSON.stringify({ok:true,checks});
 }catch(error){document.querySelector('#result').textContent=JSON.stringify({ok:false,checks,error:String(error),stack:error.stack})}
 </script></html>
