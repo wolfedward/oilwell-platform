@@ -108,7 +108,18 @@ def _layers(checks):
     return {layer:dict(Counter(c['status'] for c in checks if c['layer']==layer)) for layer in LAYERS}
 
 
-def write_report(pack,checks,run_root,*,run_metadata):
+def project_inversion_outcome(value):
+    from .report_inversion_v2 import project
+    return project(value)
+
+
+def _v2_status(checks,outcomes):
+    observed=[{'status':row['assertion_status']} for row in outcomes]
+    if not outcomes or any(row['approved_execution_status']=='not_run' for row in outcomes):observed.append({'status':'not_run'})
+    return overall_status([*checks,*observed])
+
+
+def write_report(pack,checks,run_root,*,run_metadata,inversion_outcomes=None):
     pack=load_pack(pack.root);root=safe_path(Path(run_root));_metadata(run_metadata)
     path=root/'report.json'
     if path.exists():raise ValueError('report already exists; preserve historical report')
@@ -130,20 +141,34 @@ def write_report(pack,checks,run_root,*,run_metadata):
         'status':overall_status(chosen),'layers':_layers(public),'checks':public,
         'hardware':{'status':'not_run'},'limitations':LIMITS,
         'private_evidence_sha256':sha256(canonical_bytes(evidence)).hexdigest()}
+    if inversion_outcomes is not None:
+        projected=[project_inversion_outcome(o) for o in inversion_outcomes]
+        evidence['inversion_outcomes']=projected
+        result.update(schema='owp.testpack.public-report/2',inversion_outcomes=projected,
+            status=_v2_status(public,projected),
+            limitations=[s for s in LIMITS if s!='fixed_inversion_budget_not_approved']+['finite_synthetic_validation_not_field_accuracy'],
+            private_evidence_sha256=sha256(canonical_bytes(evidence)).hexdigest())
     validate_public(result)
     with path.open('xb') as stream:stream.write(canonical_bytes({'schema':'owp.testpack.private-report/1','public':result,'evidence':evidence}))
     return path
 
 
 def validate_public(body):
-    if type(body) is not dict or set(body)!=PUBLIC_KEYS or body['schema']!='owp.testpack.public-report/1':raise ValueError('public fields')
+    v2=isinstance(body,dict) and body.get('schema')=='owp.testpack.public-report/2'
+    if type(body) is not dict or set(body)!=PUBLIC_KEYS|({'inversion_outcomes'} if v2 else set()) or body['schema'] not in ('owp.testpack.public-report/1','owp.testpack.public-report/2'):raise ValueError('public fields')
+    if v2:
+        from .report_inversion_v2 import validate
+        outcomes=body['inversion_outcomes']
+        if type(outcomes) is not list or len(outcomes)>10000 or len({v['case_id'] for v in outcomes})!=len(outcomes):raise ValueError('inversion outcome identities')
+        for value in outcomes:validate(value)
     if not re.fullmatch('tp-[0-9a-f]{24}',body['pack_id']):raise ValueError('pack id')
     for key in ('pack_sha256','private_evidence_sha256'):
         if not re.fullmatch('[0-9a-f]{64}',body[key]):raise ValueError('public digest')
     from .storage import _generator
     _generator(body['generator']);_metadata(body['run_metadata'])
     if set(body['counts'])!={'cases','files','generated_history_frames','generated_daily_rows','cycle_cases','shape_only_cases'} or any(type(v) is not int or v<0 for v in body['counts'].values()):raise ValueError('public counts')
-    if body['hardware']!={'status':'not_run'} or body['limitations']!=LIMITS:raise ValueError('public scope')
+    limits=[s for s in LIMITS if s!='fixed_inversion_budget_not_approved']+['finite_synthetic_validation_not_field_accuracy'] if v2 else LIMITS
+    if body['hardware']!={'status':'not_run'} or body['limitations']!=limits:raise ValueError('public scope')
     if type(body['checks']) is not list or len(body['checks'])>10000:raise ValueError('public checks')
     seen=set()
     for check in body['checks']:
@@ -166,7 +191,8 @@ def validate_public(body):
             if any(not re.fullmatch('[0-9a-f]{64}',row[k]) for k in ('input_sha256','result_sha256')):raise ValueError('study digest')
             if set(row['metrics'])-set(STUDY_METRICS) or any(type(v) not in (int,float) or not math.isfinite(v) for v in row['metrics'].values()):raise ValueError('study metric')
     if not REQUIRED.keys()<=seen:raise ValueError('missing required checks')
-    if body['status']!=overall_status(body['checks']) or body['layers']!=_layers(body['checks']):raise ValueError('report status not derived from checks')
+    expected_status=_v2_status(body['checks'],body['inversion_outcomes']) if v2 else overall_status(body['checks'])
+    if body['status']!=expected_status or body['layers']!=_layers(body['checks']):raise ValueError('report status not derived from checks')
     return body
 
 
@@ -178,8 +204,10 @@ def export_public_report(run_root,target):
     public=validate_public(record['public'])
     if sha256(canonical_bytes(record['evidence'])).hexdigest()!=public['private_evidence_sha256']:raise ValueError('private evidence changed')
     evidence=record['evidence']
-    if set(evidence)!={'checks','run_metadata'} or evidence['run_metadata']!=public['run_metadata'] or len(evidence['checks'])!=len(public['checks']):
+    v2=public['schema']=='owp.testpack.public-report/2'
+    if set(evidence)!=({'checks','run_metadata','inversion_outcomes'} if v2 else {'checks','run_metadata'}) or evidence['run_metadata']!=public['run_metadata'] or len(evidence['checks'])!=len(public['checks']):
         raise ValueError('public evidence binding mismatch')
+    if v2 and evidence['inversion_outcomes']!=public['inversion_outcomes']:raise ValueError('public inversion evidence binding mismatch')
     for original,shown in zip(evidence['checks'],public['checks']):
         expected={'check_id':original['check_id'],'layer':original['layer'],'status':original['status'],
             'expected_sha256':sha256(canonical_bytes(original['expected'])).hexdigest(),

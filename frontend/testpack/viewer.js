@@ -95,7 +95,10 @@ export function renderCase(root,data){
   const meta=data.metadata,channels=data.channels,reference=data.reference,c=data.capture,s=data.reference_summary;
   captureDetails(root,data);
   metrics(root,[['原始采样点',c?.frame_count??meta.frame_count],['采样率',`${c?.sample_rate_hz??meta.sample_rate_hz} Hz`],['有效点载荷范围',s?.load_range_kn?`${twoDecimals(s.load_range_kn[0])}–${twoDecimals(s.load_range_kn[1])} kN`:'未知'],['完整参考冲程',s?.stroke_m==null?'未知':`${twoDecimals(s.stroke_m)} m`],['声明周期时长',c?.cycle_duration_s==null?'未知':`${twoDecimals(c.cycle_duration_s)} s`],['声明冲次',c?.strokes_per_min==null?'未知':`${twoDecimals(c.strokes_per_min)} 次/min`]]);
-  root.append(node('p','当前没有已批准的电功率反演曲线。下图仅显示仿真载荷位移参考；不得据此认定现场反演精度。','warning'));
+  root.append(node('p',data.inversion_summary?.approved_execution_status==='passed'?
+   '本报告有已批准的软件反演结果；本页仅加载原始数据，完整反演双图请在实际结果页面查看。软件同源比较不代表现场精度。':
+   '当前没有已批准的电功率反演曲线。下图仅显示仿真载荷位移参考；不得据此认定现场反演精度。','warning'));
+  if(data.inversion_summary?.assertion_status)inversionOutcomes(root,[data.inversion_summary]);
   const comparison=node('div');root.append(comparison);
   const mounted=mountComparison(comparison,{prediction:data.prediction||[],reference,filled:[],metadata:{source:'synthetic / 软件模型'},labels:{prediction:'电功率反演结果',reference:'仿真载荷位移参考'}});
   if(!data.prediction?.length){mounted.setVisibility('prediction',false);comparison.querySelector('[data-trace-toggle="prediction"]').disabled=true;}
@@ -139,6 +142,22 @@ function studyTable(root,records){
  for(const r of records){const row=node('tr');row.append(node('td',r.kind),node('td',r.status),node('td',`${r.dependency_current?'有效':'已失效'} / ${r.eligible?'是':'否'}`));const td=node('td');td.append(node('span',Object.entries(r.metrics).map(([k,v])=>`${k}: ${twoDecimals(v)}`).join('；')||'摘要见详情'));detail(td,'记录与校验摘要',r);row.append(td);table.append(row);}root.append(table);
 }
 
+function inversionOutcomes(root,outcomes){
+ if(!outcomes?.length)return;
+ const section=node('section');section.append(node('h3','反演实际执行与拒绝断言'));
+ section.append(node('p','合成数据软件验证；同源周期比较不是独立现场比较，软件账号复核不是人工签名。','warning'));
+ const execution={passed:'执行通过',refused:'已拒绝（非成功反演）',not_run:'尚未执行',failed:'执行失败'};
+ for(const value of outcomes){
+  const card=node('section',undefined,'budget-panel');card.dataset.inversionOutcome=value.case_id;
+  card.append(node('h4',value.case_id),node('p',`断言${statusNames[value.assertion_status]||value.assertion_status} · ${execution[value.approved_execution_status]||'状态未知'}`),
+   node('p',`阶段 ${value.phase} · 预期 ${value.expected_outcome} · 实际 ${value.observed_outcome} · 原因 ${value.reason_code||'无'}`));
+  const metrics=value.metrics||{};
+  if(value.approved_execution_status==='passed')card.append(node('p',`原始覆盖率 ${metrics.original_coverage} · 共同参考覆盖率 ${metrics.joint_coverage} · 载荷 RMSE ${metrics.load_rmse_N} N`));
+  if(Object.keys(value.proof_summary||{}).length)detail(card,'逐点最大误差界（原始全精度，不四舍五入为零）',value.proof_summary);
+  detail(card,'实际记录与摘要',{record_ids:value.record_ids,digests:value.digests,evidence_sha256:value.evidence_sha256});section.append(card);
+ }root.append(section);
+}
+
 export function renderReport(root,report){
  root.replaceChildren();root.append(node('h2','实际运行报告'));
  root.append(node('p','此处读取原有运行报告；查看器页面升级不代表重新执行算法、网络链路或硬件验证。报告版本及运行标识见下方。','subtle'));
@@ -146,6 +165,7 @@ export function renderReport(root,report){
  const headline=node('p',`整体状态：${statusNames[report.status]||report.status}`,'status '+report.status);root.append(headline);
  metrics(root,Object.entries(report.layers).map(([layer,states])=>[layer,Object.entries(states).map(([s,n])=>`${statusNames[s]} ${n}`).join(' / ')||'未运行']));
  root.append(node('p','硬件验证：未运行。软件账号复核不代表人工签名；未执行远程控制。','warning'));
+ inversionOutcomes(root,report.inversion_outcomes);
  const studies=report.checks.flatMap(c=>c.actual.study_records||[]);if(studies.length){root.append(node('h3','实际研究结果与依赖状态'));studyTable(root,studies);}
  const budgets=report.checks.filter(c=>c.layer==='numeric'&&c.check_id.endsWith('-approved-inversion'));
  if(budgets.length){const group=node('details');group.append(node('summary',`逐样本反演预算说明（${budgets.length} 项）`));for(const check of budgets)budgetPanel(group,{report_loaded:true,case_check:check});root.append(group);}

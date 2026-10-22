@@ -5,6 +5,17 @@ from fractions import Fraction
 import math
 
 
+def inversion_detail(pack,report,case_id):
+    from hashlib import sha256
+    from .report import validate_public
+    if report is None:return {'approved_execution_status':'not_run','case_id':case_id}
+    validate_public(report)
+    if report['pack_id']!=pack.manifest['pack_id'] or report['pack_sha256']!=sha256((pack.root/'manifest.json').read_bytes()).hexdigest():
+        raise ValueError('report belongs to another package')
+    rows=[row for row in report.get('inversion_outcomes',[]) if row['case_id']==case_id]
+    return rows[0] if rows else {'approved_execution_status':'not_run','case_id':case_id}
+
+
 def _finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 

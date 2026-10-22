@@ -11,7 +11,7 @@ from .lab import validate_listener_port
 from .report import validate_public
 from .storage import canonical_bytes,load_pack,safe_path,strict_json
 from .waveforms import decode_channels
-from .viewer_details import capture_summary,quality_summary,reference_summary,scene_summary
+from .viewer_details import capture_summary,quality_summary,reference_summary,scene_summary,inversion_detail
 
 
 def case_data(pack,case):
@@ -89,7 +89,9 @@ def serve_viewer(pack,public_report=None,*,port=0):
                 elif path=='/data/manifest.json':raw=canonical_bytes(pack.manifest);media='application/json'
                 elif path=='/data/report.json':raw=canonical_bytes(report);media='application/json'
                 elif path.startswith('/data/cases/') and path.endswith('.json') and path[12:-5] in cases:
-                    raw=canonical_bytes(case_data(pack,cases[path[12:-5]]));media='application/json'
+                    value=case_data(pack,cases[path[12:-5]])
+                    value['inversion_summary']=inversion_detail(pack,report,path[12:-5])
+                    raw=canonical_bytes(value);media='application/json'
                 elif path in downloads:
                     item=downloads[path];raw=safe_path(pack.root/item['path']).read_bytes()
                     if len(raw)!=item['size_bytes'] or sha256(raw).hexdigest()!=item['sha256']:raise ValueError('package changed')

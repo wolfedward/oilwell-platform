@@ -1,6 +1,6 @@
 import {createInversionClient} from './client.js';
 import {element,mountActionForm,errorText} from './forms.js';
-import {mountComparison,numeric,twoDecimals,cycleRate,referenceSupported} from './charts.js';
+import {mountComparison,numeric,twoDecimals,cycleRate,referenceSupported,fraction} from './charts.js';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SOURCE_LABELS={synthetic:'合成数据',bench_measurement:'台架测量',field_measurement:'现场测量',unknown:'来源未确认'};
@@ -46,25 +46,60 @@ function validateIdentity(detail,value) {
 
 export async function loadResultPoints(client,detail,current) {
   const points={prediction:[],comparison:[],display_only_comparison:[],display_only_fills:[]};
+  const v2=detail.body.schema==='inversion.result/2';if(v2)points.proof=[];
   let total=null,offset=0;
   do{
     const page=await client.get(`/results/${detail.id}/points?offset=${offset}&limit=1000`);
     if(!page||!current())return null;
     validateIdentity(detail,page);
-    if(!Number.isSafeInteger(page.total)||page.total<0||page.total>131072||page.offset!==offset||page.limit!==1000||!Array.isArray(page.rows)||page.rows.length!==Math.min(1000,page.total-offset))throw Error('结果分页数量不完整，请重新读取。');
+    if(!Number.isSafeInteger(page.total)||page.total<0||page.total>(v2?163840:131072)||page.offset!==offset||page.limit!==1000||!Array.isArray(page.rows)||page.rows.length!==Math.min(1000,page.total-offset))throw Error('结果分页数量不完整，请重新读取。');
     if(total!==null&&page.total!==total)throw Error('结果分页数量已变化，请重新读取。');
     total=page.total;
     for(const row of page.rows){
       if(!Object.hasOwn(points,row.kind)||!Array.isArray(row.columns)||!Array.isArray(row.values)||row.columns.length!==row.values.length||row.columns.length>64||new Set(row.columns).size!==row.columns.length||row.columns.some(name=>typeof name!=='string'||['__proto__','constructor','prototype'].includes(name)))throw Error('结果点格式无效。');
       const point=Object.fromEntries(row.columns.map((name,index)=>[name,row.values[index]]));
       if(typeof point.power_index!=='string'||!/^\d+$/.test(point.power_index)||typeof point.time_ns!=='string')throw Error('结果原始索引或时间格式无效。');
+      if(v2&&['prediction','proof'].includes(row.kind)){
+        const previous=points[row.kind].at(-1);
+        if(point.power_index!==String(points[row.kind].length))throw Error('原生索引重复或缺失。');
+        const [n,d]=fraction(point.time_ns);if(previous){const [pn,pd]=fraction(previous.time_ns);if(n*pd<=pn*d)throw Error('原生时间不是递增。');}
+      }
       points[row.kind].push(point);
       if(points[row.kind].length>32768)throw Error('单类结果点超过 32768 上限。');
     }
     offset+=page.rows.length;
   }while(offset<total);
   if(points.prediction.length!==detail.body.point_count)throw Error('预测点总数与结果不一致。');
+  if(v2&&(points.proof.length!==points.prediction.length||points.proof.some((p,i)=>p.time_ns!==points.prediction[i].time_ns||p.power_index!==points.prediction[i].power_index)))throw Error('逐点证明数量或原始时间不一致。');
   return {points,total};
+}
+
+function proofNumber(value){
+  const number=numeric(value);
+  return number===null?'未知':number!==0&&Math.abs(number)<.01?number.toExponential(6):String(value);
+}
+
+function renderProof(root,body,proof){
+  if(body.schema!=='inversion.result/2')return;
+  const section=element('section',undefined,'inversion-report');section.append(element('h2','有限输入逐点误差证明'));
+  metadataList(section,[['原始输入证明状态',body.source_proof?.status],['证明拒绝原因',body.source_proof?.reason_codes],
+    ['原始预测状态',body.prediction_status],['原始预测原因',body.prediction_reason_codes],['参数核心摘要',body.parameter_core_sha256],
+    ['比较独立性','同源合成周期，不构成独立现场比较；不能据此认证现场精度。']]);
+  const details=element('details');details.dataset.nativeProofCount=String(proof.length);details.append(element('summary',`逐点证明 ${proof.length} 点（完整读取，按 100 点查看）`));
+  const content=element('div'),back=element('button','上一页','button'),next=element('button','下一页','button');let offset=0;
+  function show(){
+    content.replaceChildren();
+    for(const point of proof.slice(offset,offset+100)){
+      const row=element('article');row.append(element('h4',`原始索引 ${point.power_index} · ${point.status} · ${point.time_ns} ns`));
+      metadataList(row,[['拒绝原因',(point.reason_codes||[]).join(', ')||'无'],['运动状态 / 原因',`${point.motion_status} · ${(point.motion_reason_codes||[]).join(', ')||'无'}`],
+        ['原始角度点索引',point.angle_indices],['基础速度界（rad/s）',proofNumber(point.base?.[1])],
+        ['物理 N 界（N·m）',proofNumber(point.physical_N_error_Nm)],['物理 J 界（m）',proofNumber(point.physical_J_error_m)],
+        ['数值 N 界（N·m）',proofNumber(point.numerical_N_error_Nm)],['数值 J 界（m）',proofNumber(point.numerical_J_error_m)],['数值位移界（m）',proofNumber(point.numerical_s_error_m)]]);
+      content.append(row);
+    }
+    back.disabled=offset===0;next.disabled=offset+100>=proof.length;
+  }
+  back.onclick=()=>{offset=Math.max(0,offset-100);show();};next.onclick=()=>{offset+=100;show();};show();details.append(content,back,next);section.append(details);root.append(section);
 }
 
 function ranges(points,key) {
@@ -135,6 +170,7 @@ export function mountResultDetail(ctx,root,client,id) {
         ['已对齐参考载荷范围',referenceRange?referenceRange.map(value=>twoDecimals(value/1000)).join(' — ')+' kN':'未知']]);
       chart=mountComparison(root,{prediction:loaded.points.prediction,reference:loaded.points.comparison,filled:loaded.points.display_only_fills,metadata:{source:sourceLabel}});
       renderComparison(root,comparison.comparison,'原始支撑比较');
+      renderProof(root,detail.body,loaded.points.proof||[]);
       if(comparison.filled_comparison)renderComparison(root,comparison.filled_comparison,'仅展示补绘比较（不改变主指标或现场判定）');
       const states=element('details');states.append(element('summary','逐点状态（完整读取，按 100 点查看）'));root.append(states);
       let stateOffset=0;const stateBody=element('div'),previous=element('button','上一页','button'),next=element('button','下一页','button');states.append(stateBody,previous,next);

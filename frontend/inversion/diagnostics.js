@@ -3,6 +3,14 @@ import {element} from './forms.js';
 // Keep this list aligned with backend.inversion.queries.DIAGNOSTIC_REASONS.
 // Each entry gives the operator a concrete fact to check before a new run.
 const REASONS={
+  coverage_basis_mismatch:['有限输入证明依据不匹配','核对注册工况、原始编码、绑定摘要和误差来源；不得用参考曲线替代证明。'],
+  proof_series_truncated:['原生证明序列不完整','核对全部原始样本、通道时间索引和归档分块，保留缺口，不补零重算。'],
+  proof_nonfinite:['证明计算出现非有限量','核对原始数值和机械参数适用域；保留拒绝记录，不裁剪数值掩盖异常。'],
+  proof_root_ambiguous:['机构几何分支无法唯一确认','核对安装几何、装配分支和完整周期；不得自动选择另一解。'],
+  proof_rounding_ambiguous:['当前误差包围无法确认编码舍入','核对原始编码与量化规则，保留不确定结果，不缩小既定误差。'],
+  proof_resource_limit:['证明计算达到固定资源上限','保留输入与诊断，检查采样规模和参数适用范围；不得自动扩大限额。'],
+  proof_runtime_unavailable:['锁定的数值证明运行库不可用','核对专用环境、原生库版本及安装摘要；不得改用普通浮点替代。'],
+  proof_context_required:['数值证明执行上下文缺失','检查固定精度与单线程执行上下文，保留记录并联系系统维护人员。'],
   full_cycle_unconfirmed:['完整物理周期尚未确认','检查角度时间序列、周期边界和同步缺口。'],
   no_valid_points:['没有可用的预测点','检查原始通道质量和逐点预测原因，再重新采集或配对。'],
   insufficient_coverage:['有效支撑不足','检查角度完整周期、原始通道质量与缺口。'],

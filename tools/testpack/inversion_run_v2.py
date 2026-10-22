@@ -222,6 +222,11 @@ def check_native_budget(body,prediction,proof):
             if (a['status']!='valid' or p['reason_codes'] or any(p[k] is None for k in ('s_m','load_N','error_bound_N')) or
                     not 0<=Q(p['error_bound_N'])<=1000):raise ValueError('valid load lacks proof')
         elif p['load_N'] is not None or not p['reason_codes']:raise ValueError('invalid load must remain null')
+    valid=[(p,a) for p,a in zip(prediction,proof) if p['status']=='valid']
+    if not valid:raise ValueError('no validated native load')
+    return {'verified':True,'max_base_speed_rad_s':str(max(Q(a['base'][1]) for p,a in valid)),
+        'max_load_error_N':str(max(Q(p['error_bound_N']) for p,a in valid)),
+        **{k:str(max(Q(a[k]) for p,a in valid)) for k in PROOF_COLUMNS[-5:]}}
 
 
 def approved_execution(session,facts,model,root,case_id):
@@ -249,7 +254,7 @@ def approved_execution(session,facts,model,root,case_id):
     if any(p['power_index']!=q['power_index'] or p['time_ns']!=q['time_ns'] for p,q in zip(prediction,proof)):
         raise ValueError('proof not bound to native prediction')
     body=result['body'];compare=comparison['comparison']
-    check_native_budget(body,prediction,proof)
+    proof_summary=check_native_budget(body,prediction,proof)
     if (result['execution']!='completed' or result['current_applicability']['state']!='applicable' or
         body['prediction_status']!='applicable' or Q(body['coverage_fraction'])<Q(4,5) or
         compare['scope']!='original_valid_support' or Q(compare['coverage']['joint_fraction']['value'])<Q(4,5) or
@@ -267,7 +272,7 @@ def approved_execution(session,facts,model,root,case_id):
     output=dict(request=request,model=model,selection=selection,run=terminal,result=result,review=reviewed['review'],
         comparison=comparison,export=export,export_file_sha256=sha256(payload).hexdigest(),
         native_prediction_count=len(prediction),native_proof_count=len(proof),export_bytes=len(payload),
-        enqueue_to_terminal_seconds=enqueue_to_terminal_seconds)
+        enqueue_to_terminal_seconds=enqueue_to_terminal_seconds,proof_summary=proof_summary)
     save(root,case_id+'-predictions.json',list(prediction));save(root,case_id+'-proofs.json',list(proof))
     save(root,case_id+'-execution.json',output)
     return output
