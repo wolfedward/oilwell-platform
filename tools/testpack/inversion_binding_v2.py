@@ -43,7 +43,7 @@ def _body(case,pins):
     policy=dict(POLICY_BODY)
     return {'schema':'inversion.parameter-set/2','assembly_id':pins['assembly_id'],
         'assembly_version':pins['assembly_version'],'source_kind':'synthetic',
-        'valid_from':pins['valid_from'],'valid_to':pins['valid_to'],'parent_version':None,
+        'valid_from':pins['valid_from'],'valid_to':pins['valid_to'],'parent_version':pins.get('parent_version'),
         'geometry':dict(case.body['geometry'])|{'evidence_refs':evidence('geometry')},
         'bodies':dict(case.body['bodies'])|{'evidence_refs':evidence('bodies'),
             'component_ledger':[{'id':'motor','name':'Software upstream inertia','owner':'upstream'},

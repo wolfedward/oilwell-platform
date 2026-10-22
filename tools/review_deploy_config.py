@@ -34,7 +34,7 @@ def checked_fixture(fixture):
     if (fixture['gateway_id']!='REVIEW-GW' or fixture['device_ids']!=['TESTPACK-PUMP-001','TESTPACK-PUMP-002']
         or not re.fullmatch(r'tp-[0-9a-f]{24}',fixture['pack_id']) or not re.fullmatch(r'[0-9a-f]{64}',fixture['pack_sha256'])
         or type(fixture['modbus_port']) is not int or not 1024<=fixture['modbus_port']<=65535
-        or fixture['modbus_port'] in {8765,8770,8772,8774,1884,1885,1888,55432,55433,55436}):
+        or fixture['modbus_port'] in {8765,8770,8772,8774,18882,18883,1884,1885,1888,55432,55433,55436}):
         raise ValueError('unapproved testpack fixture values')
     return fixture
 

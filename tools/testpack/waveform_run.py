@@ -205,8 +205,8 @@ class WaveformSession:
             'captures':[{'key':key,'manifest_sha256':archive['manifest_sha256'],'origins':[ref(origin)]}],
             'channels':[{'role':c.role,'capture':key,'stream_id':'native','channel_id':c.role,
                 'first_index':'0','last_index':'1024',
-                'sampling_config':{'id':binding.sampling[c.role]['id'],'content_sha256':binding.sampling[c.role]['content_sha256'],'version':'2'},
-                'calibration':{'id':binding.calibration[c.role]['id'],'content_sha256':binding.calibration[c.role]['content_sha256'],'version':'2'}} for c in cycle.channels],
+                'sampling_config':{'id':binding.sampling[c.role]['id'],'content_sha256':binding.sampling[c.role]['content_sha256'],'version':str(binding.sampling[c.role]['review_version'])},
+                'calibration':{'id':binding.calibration[c.role]['id'],'content_sha256':binding.calibration[c.role]['content_sha256'],'version':str(binding.calibration[c.role]['review_version'])}} for c in cycle.channels],
             'cycle':{'capture':key,'cycle_id':manifest['cycle']['cycle_id']},'sync':ref(sync)}
         return sel,profile_body
 
@@ -215,7 +215,7 @@ class WaveformSession:
         pair=self.post('/pairs',{'selection':selection,'method_version':'linear_adjacent/1'})
         output={'quality':quality,'pair':pair,'dataset':None}
         if pair['body']['joint_result']['status']!='eligible':return output
-        output['pair_review']=self.post('/pairs/'+pair['id']+'/review',{'decision':'approve'},1,'reviewer')
+        output['pair_review']=self.post('/pairs/'+pair['id']+'/review',{'decision':'approve'},int(pair['version']),'reviewer')
         draft=self.post('/datasets',{'title':'Software testpack '+case_id,'purpose':'software_pair_test','split_plan':{'kind':'none'}})
         draft=self.post('/datasets/'+draft['id']+'/update',{'changes':{'upsert_members':[{
             'kind':'pair','reference_id':pair['id'],'quality_run_id':pair['left_quality_run_id'],'split':'unassigned'}]}},draft['revision'])

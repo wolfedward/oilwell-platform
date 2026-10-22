@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from .contracts import LabHandle
-from .storage import load_pack, safe_path, strict_json, generator_fingerprint
+from .storage import load_pack, safe_path, strict_json, generator_fingerprint, generator_fingerprint_v2
 from tools import review_deploy as deploy
 from tools.review_deploy_config import deployment_fixture, verify_config_hashes
 from tools.review_deploy_paths import private_acl, write_json_private, replace_json_private, verify_target
@@ -15,7 +15,9 @@ from tools.review_deploy_process import port_available, start_services, stop_ser
 
 DEFAULT_PORTS = {'monitoring': {'http': 18774, 'postgres': 56432, 'mqtt': 19884},
                  'review': {'http': 18770, 'postgres': 56433, 'mqtt': 19885}, 'modbus': 15020}
-PROTECTED_PORTS = {8765, 8770, 8772, 8774, 1884, 1885, 1888, 55432, 55433, 55436}
+PROTECTED_PORTS = {8765, 8770, 8772, 8774, 18882, 18883, 1884, 1885, 1888, 55432, 55433, 55436}
+V2_PORTS = {'monitoring': {'http': 18784, 'postgres': 56442, 'mqtt': 19894},
+            'review': {'http': 18780, 'postgres': 56443, 'mqtt': 19895}, 'modbus': 15030}
 
 
 def validate_listener_port(port):
@@ -116,9 +118,10 @@ def checked_pack(lab,pack):
 
 
 def run_context(lab,pack):
+    fingerprint=generator_fingerprint_v2 if pack.manifest['configuration'].get('schema')=='owp.testpack.config/2' else generator_fingerprint
     return {'run_id':str(uuid4()),'lab_id':lab.lab_id,'pack_id':pack.manifest['pack_id'],
         'pack_sha256':sha256((pack.root/'manifest.json').read_bytes()).hexdigest(),
-        'started_at':datetime.now(timezone.utc).isoformat(),'runner':generator_fingerprint(),
+        'started_at':datetime.now(timezone.utc).isoformat(),'runner':fingerprint(),
         'deployment_commits':{p:deploy._marker(lab.root/p)['source']['commit'] for p in ('monitoring','review')}}
 
 

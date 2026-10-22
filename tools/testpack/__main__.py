@@ -24,6 +24,7 @@ def main(argv=None):
     initialize.add_argument('--pack',required=True,type=Path)
     initialize.add_argument('--root',required=True,type=Path)
     initialize.add_argument('--source',required=True,type=Path)
+    initialize.add_argument('--ports-file',type=Path)
     run=sub.add_parser('lab-run')
     run.add_argument('--pack',required=True,type=Path)
     run.add_argument('--root',required=True,type=Path)
@@ -59,7 +60,12 @@ def main(argv=None):
             from .lab import initialize_lab,load_lab,stop_lab,DEFAULT_PORTS
             from tools.review_deploy import launch
             if args.command=='lab-init':
-                lab=initialize_lab(args.root,pack=load_pack(args.pack),source=args.source,ports=DEFAULT_PORTS)
+                ports=DEFAULT_PORTS
+                if args.ports_file is not None:
+                    source=safe_path(args.ports_file.absolute())
+                    if source.stat().st_size>4096:raise ValueError('port mapping too large')
+                    ports=strict_json(source.read_bytes())
+                lab=initialize_lab(args.root,pack=load_pack(args.pack),source=args.source,ports=ports)
                 launch(lab.monitoring_root)
                 launch(lab.review_root)
                 print(json.dumps({'lab_id':lab.lab_id,'status':'running'},ensure_ascii=False))

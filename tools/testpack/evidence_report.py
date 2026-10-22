@@ -19,11 +19,24 @@ def evidence_html(summary):
 
 
 def render_evidence(summary:dict,target:Path)->Path:
+    return _render(summary,target,'.png')
+
+
+def render_evidence_pdf(summary:dict,target:Path)->Path:
+    """Print the escaped evidence source as a real searchable PDF."""
+    return _render(summary,target,'.pdf')
+
+
+def _render(summary,target,suffix):
     target=safe_path(target,missing=True)
-    if target.exists() or target.suffix!='.png':
-        raise ValueError('new PNG target required')
+    if target.exists() or target.suffix!=suffix:
+        raise ValueError('new bounded evidence target required')
     source=target.with_suffix('.html'); data=target.with_suffix('.json')
-    for path,raw in ((source,evidence_html(summary).encode('utf-8')),(data,canonical_bytes(summary))):
+    page=evidence_html(summary)
+    if suffix=='.pdf':
+        page=page.replace('</style>','@page{size:A4;margin:18mm}body{margin:0;font-size:11px}h1{font-size:20px}pre{font-size:9px;line-height:1.4;overflow-wrap:anywhere;padding:10px}footer{margin-top:12px}</style>')
+        page=page.replace('本页截图','本页 PDF')
+    for path,raw in ((source,page.encode('utf-8')),(data,canonical_bytes(summary))):
         with path.open('xb') as stream:stream.write(raw)
     runtime=Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node'
     node=os.environ.get('OWP_TESTPACK_NODE') or shutil.which('node') or str(runtime/'bin/node.exe')
@@ -35,8 +48,9 @@ def render_evidence(summary:dict,target:Path)->Path:
     if result.returncode or not target.is_file():
         raise RuntimeError('evidence rendering failed; source retained')
     payload=target.read_bytes()
-    if not payload.startswith(b'\x89PNG\r\n\x1a\n') or len(payload)>4194304:
-        raise ValueError('evidence PNG outside attachment contract')
+    signature=b'%PDF-' if suffix=='.pdf' else b'\x89PNG\r\n\x1a\n'
+    if not payload.startswith(signature) or len(payload)>4194304:
+        raise ValueError('evidence outside attachment contract')
     record={p.name:sha256(p.read_bytes()).hexdigest() for p in (source,data,target)}
     with target.with_suffix('.hashes.json').open('xb') as stream:stream.write(canonical_bytes(record))
     return target

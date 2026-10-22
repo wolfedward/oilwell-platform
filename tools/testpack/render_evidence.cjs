@@ -18,7 +18,9 @@ const { chromium } = require('playwright');
     await page.evaluate(() => document.fonts.ready);
     const height = await page.evaluate(() => document.documentElement.scrollHeight);
     if (height > 16000) throw new Error('page height exceeds evidence bound');
-    const png = await page.screenshot({fullPage: true});
-    fs.writeFileSync(target, png, {flag: 'wx'});
+    const bytes = target.endsWith('.pdf')
+      ? await page.pdf({format: 'A4', printBackground: true, preferCSSPageSize: true})
+      : await page.screenshot({fullPage: true});
+    fs.writeFileSync(target, bytes, {flag: 'wx'});
   } finally {await browser.close();}
 })().catch(() => {process.exitCode = 1;});

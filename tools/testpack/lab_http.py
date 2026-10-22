@@ -12,8 +12,10 @@ HEADERS = {'content-type', 'idempotency-key', 'if-match', 'x-waveform-reason', '
 
 
 def validate_request(method, path, headers):
-    if method not in ('GET', 'POST', 'HEAD') or type(path) is not str or len(path) > 8192 or not path.startswith('/api/'):
+    if method not in ('GET', 'POST', 'HEAD', 'PATCH') or type(path) is not str or len(path) > 8192 or not path.startswith('/api/'):
         raise ValueError('only bounded API requests allowed')
+    if method=='PATCH' and not re.fullmatch(r'/api/roles/[1-9][0-9]{0,9}',path):
+        raise ValueError('only an owned role permission test may use PATCH')
     decoded = path
     for _ in range(4):
         next_value = unquote(decoded)
@@ -55,9 +57,19 @@ class LabHttp:
         try:
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
-            content = response.read(16 * 1024 * 1024 + 1)
-            if len(content) > 16 * 1024 * 1024:
-                raise ValueError('API response exceeds bound')
+            limit=16 * 1024 * 1024
+            declared=response.getheader('Content-Length')
+            if declared is not None and (not re.fullmatch(r'0|[1-9][0-9]{0,8}',declared) or int(declared)>limit):
+                raise ValueError('API response length outside bound')
+            chunks=[];size=0
+            while True:
+                chunk=response.read(min(65536,limit+1-size))
+                if not chunk:break
+                chunks.append(chunk);size+=len(chunk)
+                if size>limit:raise ValueError('API response exceeds bound')
+            content=b''.join(chunks)
+            if method!='HEAD' and declared is not None and len(content)!=int(declared):
+                raise ValueError('API response length mismatch')
             return response.status, content, response.getheader('Set-Cookie', '')
         finally:
             connection.close()
@@ -96,9 +108,12 @@ class LabHttp:
                         **(self.sessions[actor] if actor is not None else {}), **extra}
         data = body if isinstance(body, bytes) or body is None else json.dumps(body, ensure_ascii=False, allow_nan=False).encode('utf-8')
         status, payload, _ = self._send(method, path, data, auth_headers)
-        if status != expected:
+        allowed=expected if type(expected) is tuple else (expected,)
+        if status not in allowed:
             try:
-                code = strict_json(payload).get('error', {}).get('code', 'unexpected_status')
+                parsed=strict_json(payload)
+                code = parsed.get('code',parsed.get('error', {}).get('code', 'unexpected_status'))
+                if type(code) is not str or len(code)>128:code='unexpected_status'
             except (ValueError, TypeError):
                 code = 'non_json_response'
             raise LabHttpError(status, code)
