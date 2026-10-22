@@ -234,6 +234,16 @@ class BindingWorkflowTests(unittest.TestCase):
         try:return importlib.import_module('tools.testpack.inversion_run_v2')
         except ModuleNotFoundError:self.fail('v2 waveform and inversion workflow absent')
 
+    def test_attachment_pin_uses_actual_waveform_attachment_dto(self):
+        module=self.workflow();pin=getattr(module,'attachment_pin',None)
+        self.assertTrue(callable(pin),'attachment DTO adapter absent')
+        from backend.waveforms.evidence_contracts import Attachment
+        from backend.waveforms.queries import public
+        for media in ('image/png','application/pdf'):
+            identifier=uuid4();body=public(Attachment(identifier,media,1234,'a'*64,'TEST'))
+            self.assertNotIn('content_sha256',body)
+            self.assertEqual(pin(body),{'id':str(identifier),'content_sha256':'a'*64})
+
     def test_repeated_case_assignments_have_disjoint_well_identities(self):
         module=self.workflow();assign=getattr(module,'assign_case',None)
         self.assertTrue(callable(assign),'fresh case assignment boundary absent')

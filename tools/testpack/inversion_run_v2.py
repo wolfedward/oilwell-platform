@@ -142,6 +142,13 @@ def assign_case(session,pack_id,case_id,assembly_id,interval):
         valid_from=interval['valid_from'],valid_to=interval['valid_to'],close_assignment_id=None))
 
 
+def attachment_pin(item):
+    # Waveform Attachment DTO uses sha256; only inversion pins use content_sha256.
+    from backend.inversion.contracts import identity,digest
+    identity(item['id']);digest(item['sha256'])
+    return {'id':item['id'],'content_sha256':item['sha256']}
+
+
 def prepare_case(wave,session,pack,case_id,root,*,before_review=None):
     """Use actual returned evidence pins and physical identity; original pack is read-only."""
     config=parse_config_v2(pack.manifest['configuration']);cycle,original=read_cycle(pack,case_id)
@@ -165,7 +172,7 @@ def prepare_case(wave,session,pack,case_id,root,*,before_review=None):
     if pair_bundle['dataset'] is None:return facts
     if pair['review_state']!='approve':raise ValueError('pair not independently approved')
     interval=common(config.start_utc);assembly_id=str(uuid4())
-    attachment={k:physical[k] for k in ('id','content_sha256')}
+    attachment=attachment_pin(physical)
     assembly=post(session,'/assemblies',dict(assembly_id=assembly_id,manufacturer='OWP software laboratory',
         model='Registered synthetic four-bar',asset_number=case_id,mechanism='conventional_crank_balanced',
         source_kind='synthetic',source_organization='OWP software laboratory',parent_version=None,
@@ -189,7 +196,7 @@ def prepare_case(wave,session,pack,case_id,root,*,before_review=None):
     require_budget(budget)
     summary=budget_pdf_summary(case_id,budget,parameter)
     pdf=wave.pdf(summary,case_id+'-budget')
-    pins['budget_attachment']={k:pdf[k] for k in ('id','content_sha256')}|{
+    pins['budget_attachment']=attachment_pin(pdf)|{
         'purpose':'uncertainty','source_description':'Actual finite synthetic input budget PDF; no field accuracy claim'}
     final_contract=coverage_for(case,pins,evidence)
     raw=bind_v2(case,pins,final_contract)
