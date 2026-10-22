@@ -1,0 +1,17 @@
+{
+  "baseline": "f779f96626b233136427c2f0982ef25e15afa66b",
+  "files": {
+    "backend/inversion/contracts.py": "fee957958b87e3c493f032c77cdad702e337ef9aef06ebb96b2d226002b04bce",
+    "backend/inversion/parameter_contracts.py": "339d854624ca970437ad6b88638793e0a00d38291a46efb08bd2bfa03dde7d5b",
+    "backend/inversion/series.py": "3cad2ab332bea501428f81d7e223800689489c9511493ab87eb8935ebbcc3227",
+    "backend/inversion/policy.py": "8e55ebb87e2c2fd98a0b8c58bbc000859648ea2953aaabe12662f580c8101c64",
+    "backend/inversion/geometry.py": "d848a254abe3f3997c9a38700af7dd8d7b40e165d50405debc0f8ced7b2fcf43",
+    "backend/inversion/mechanics.py": "01e5b24cfd1ea29efef64132af504d937f8654d223bf1d824cbf65d561a1c7e4",
+    "backend/inversion/small_linalg.py": "0843d44b0ad6d0cdff8f11bdc8be531d9a67072cf998c52f40f35371c5f37563",
+    "backend/inversion/motion.py": "aed2a3cff282c052790ff27604eeaafd517c858e425cb9c05cf4dea32d10365c",
+    "backend/inversion/losses.py": "96807de939f13672a7637f7aed9640cdb42684c25fc91faf5051fc09e9623a94",
+    "backend/inversion/solver.py": "dfd5b5097b64b70c1632ee2efb2a1dedead9b3e359af41e97d38593ca3cd3b12",
+    "backend/inversion/comparison.py": "62332c75a094b0a0a66ee5e2130c44215f96dd528a68df3bc2942e6b1fe3723f",
+    "backend/inversion/display_fill.py": "6736dd1b38582626a0b6d1b09a8853b149fbe50eeb179132b18afa28099b3099"
+  }
+}

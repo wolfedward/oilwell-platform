@@ -1,0 +1,2 @@
+# Approved CPython 3.13 Windows x64 binary only. No source builds or float fallback.
+python-flint==0.9.0 --hash=sha256:1f3a3672d589e376d47288dcebcb712997dc719880a4dbf1779bf0f2b20d0293
