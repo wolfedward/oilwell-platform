@@ -72,6 +72,8 @@ $taskTests = @(
 
 发布器建立 `$taskRoot/source/code` 不可变源、独立 venv、`pack-v2-smoke`、离线报告和 `lab-v2-smoke`。两实例端口：monitoring HTTP 18784 / PostgreSQL 56442 / MQTT 19894；review HTTP 18780 / PostgreSQL 56443 / MQTT 19895；Modbus 15030。任一端口占用即拒绝，绝不停止其他服务。公开日志不含账户密码。
 
+批量离线制包进程限时：smoke 为 900 秒，含 44 条独立正例轨迹的 extended 为 7200 秒。它只限制整包生成工具，不改变单 case 的区间算子预算、精度或正式 worker 的 180 秒期限；不得把整包准备时间写成单次反演耗时。
+
 `release.json` 的 `ready` 只代表组件/数值运行时就绪，`approved_execution_status` 仍为 `not_run`。
 
 ```powershell

@@ -70,6 +70,14 @@ def _child(stage,args,log,timeout):
     if result.returncode:raise ValueError('exported validation failed; retained log: '+str(log))
 
 
+def generation_timeout(profile):
+    # Whole offline pack construction, not the immutable 180s per-run deadline.
+    # Extended enumerates 44 independent trajectories (smoke enumerates four).
+    if profile=='smoke':return 900
+    if profile=='extended':return 7200
+    raise ValueError('unknown validation profile')
+
+
 def deliver(root:Path,source:Path,*,profile:str):
     if profile not in ('smoke','extended'):raise ValueError('unknown validation profile')
     root=validate_lab_target(Path(root));source=_clean(source)
@@ -92,7 +100,7 @@ def deliver(root:Path,source:Path,*,profile:str):
     release.update(source=marker['source'],stage=str(stage));replace_json_private(root/'release.json',release)
     pack=root/('pack-v2-'+profile);offline=root/('offline-v2-'+profile+'.json')
     _child(stage,['generate','--config',stage/'code/config/testpack'/('inversion-v2-'+profile+'.json'),
-        '--output',pack],root/'generate.log',900)
+        '--output',pack],root/'generate.log',generation_timeout(profile))
     _child(stage,['validate','--pack',pack,'--report',offline],root/'offline.log',7200)
     from .inversion_run_v2 import positive_case_ids
     package=load_pack(pack)

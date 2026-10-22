@@ -35,6 +35,16 @@ class ReleaseV2Tests(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec(name),'release implementation missing')
         return importlib.import_module(name)
 
+    def test_package_generation_budget_covers_extended_without_changing_worker_deadline(self):
+        module=self.module('tools.testpack.deliver_v2')
+        timeout=getattr(module,'generation_timeout',None)
+        self.assertTrue(callable(timeout),'profile-specific preparation bound absent')
+        self.assertEqual(timeout('smoke'),900)
+        self.assertEqual(timeout('extended'),7200)
+        with self.assertRaises(ValueError):timeout('unknown')
+        from backend.inversion.capacity import InversionLimits
+        self.assertEqual(InversionLimits(80*1024**2).deadline_seconds,180)
+
     def test_release_contains_v2_runtime_and_registry(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);expected=repository(root/'repo')
