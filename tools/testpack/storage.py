@@ -114,7 +114,7 @@ def _generator(value):
     keys = {'version', 'source_commit', 'source_sha256', 'python_version', 'rng'}
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError('generator fields')
-    if (value['version'] != 'owp.testpack.generator/1' or value['rng'] != 'sha256-counter/1'
+    if (value['version'] not in ('owp.testpack.generator/1','owp.testpack.generator/2') or value['rng'] != 'sha256-counter/1'
             or not re.fullmatch(r'[0-9a-f]{40,64}', str(value['source_commit']))
             or not re.fullmatch(r'[0-9a-f]{64}', str(value['source_sha256']))
             or not re.fullmatch(r'\d+\.\d+\.\d+', str(value['python_version']))):
@@ -123,7 +123,30 @@ def _generator(value):
 
 def pack_identity(config: PackConfig, generator: dict) -> str:
     _generator(generator)
-    return 'tp-'+hashlib.sha256(canonical_bytes({'configuration': config_dict(config), 'generator': generator})).hexdigest()[:24]
+    configuration=configuration_dict(config)
+    version='owp.testpack.generator/'+configuration['schema'].rsplit('/',1)[1]
+    if generator['version']!=version: raise ValueError('configuration/generator version mismatch')
+    return 'tp-'+hashlib.sha256(canonical_bytes({'configuration': configuration, 'generator': generator})).hexdigest()[:24]
+
+
+def configuration_dict(config):
+    from .config_v2 import PackConfigV2,config_dict_v2
+    if type(config) is PackConfigV2: return config_dict_v2(config)
+    if type(config) is PackConfig: return config_dict(config)
+    raise ValueError('unsupported configuration type')
+
+
+def configuration_parse(body):
+    if type(body) is not dict: raise ValueError('configuration object required')
+    if body.get('schema')=='owp.testpack.config/2':
+        from .config_v2 import parse_config_v2
+        return parse_config_v2(body)
+    return parse_config(body)
+
+
+def generator_for(config):
+    schema=configuration_dict(config)['schema']
+    return generator_fingerprint_v2() if schema=='owp.testpack.config/2' else generator_fingerprint()
 
 
 def generator_fingerprint() -> dict:
@@ -140,6 +163,29 @@ def generator_fingerprint() -> dict:
     return {'version':'owp.testpack.generator/1','source_commit':commit,
             'source_sha256':hashlib.sha256(canonical_bytes(members)).hexdigest(),
             'python_version':platform.python_version(),'rng':'sha256-counter/1'}
+
+
+def generator_sources_v2():
+    """Explicit source closure, including the exact-arithmetic infrastructure."""
+    root=Path(__file__).resolve().parents[2]
+    paths=set()
+    for folder,pattern in (('tools/testpack','*.py'),('config/testpack','*.json')):
+        paths.update((root/folder).rglob(pattern))
+    paths.update(root/('backend/inversion/'+name) for name in (
+        'synthetic_registry.py','interval_runtime.py','contracts.py','transactions.py'))
+    members=[]
+    for path in sorted(paths):
+        safe_path(path)
+        members.append({'path':path.relative_to(root).as_posix(),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    return tuple(members)
+
+
+def generator_fingerprint_v2():
+    root=Path(__file__).resolve().parents[2]
+    commit=subprocess.run(['git','-C',str(root),'rev-parse','HEAD'],capture_output=True,check=True,timeout=10).stdout.decode().strip()
+    return {'version':'owp.testpack.generator/2','source_commit':commit,
+        'source_sha256':hashlib.sha256(canonical_bytes(generator_sources_v2())).hexdigest(),
+        'python_version':platform.python_version(),'rng':'sha256-counter/1'}
 
 
 def _case_record(value):
@@ -170,7 +216,7 @@ def write_pack(target: Path, config: PackConfig, cases: tuple[Case, ...], genera
     if target.exists() or not target.parent.is_dir():
         raise ValueError('target must be new with existing parent')
     manifest = {'schema': 'owp.testpack/1', 'pack_id': pack_identity(config, generator),
-                'profile': config.profile, 'generator': generator, 'configuration': config_dict(config),
+                'profile': config.profile, 'generator': generator, 'configuration': configuration_dict(config),
                 'source': SOURCE, 'cases': [], 'artifacts': []}
     artifacts, names, case_ids = [], set(), set()
     for case in cases:
@@ -233,7 +279,7 @@ def load_pack(root: Path) -> PackIndex:
     manifest = strict_json(data)
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_FIELDS or manifest['schema'] != 'owp.testpack/1':
         raise ValueError('manifest fields/schema')
-    config = parse_config(manifest['configuration'])
+    config = configuration_parse(manifest['configuration'])
     if (manifest['pack_id'] != pack_identity(config, manifest['generator'])
             or manifest['profile'] != config.profile or manifest['source'] != SOURCE):
         raise ValueError('manifest identity/source')

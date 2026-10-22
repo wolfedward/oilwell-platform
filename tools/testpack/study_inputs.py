@@ -9,9 +9,8 @@ from uuid import NAMESPACE_URL,UUID,uuid5
 
 from backend.studies.contracts import validate_envelope
 from .contracts import Artifact,Case
-from .config import config_dict
 from .mechanics import forward_state
-from .storage import canonical_bytes,derive_uniform,generator_fingerprint,pack_identity
+from .storage import canonical_bytes,derive_uniform,generator_for,pack_identity,configuration_dict
 from .waveforms import decode_channels
 
 
@@ -117,8 +116,8 @@ def _protection(config):
 
 
 def generate_studies(config,cycles,history,currents):
-    pack_id=pack_identity(config,generator_fingerprint())
-    refs=[pack_id,'configuration-sha256:'+sha256(canonical_bytes(config_dict(config))).hexdigest()]
+    pack_id=pack_identity(config,generator_for(config))
+    refs=[pack_id,'configuration-sha256:'+sha256(canonical_bytes(configuration_dict(config))).hexdigest()]
     training=_training(config,cycles)
     well='TESTPACK-WELL-001'
     prediction={'schema':'condition.prediction/1','rows':[

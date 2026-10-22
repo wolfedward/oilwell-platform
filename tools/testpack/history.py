@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL,uuid5
 
 from backend.gateway.contracts import PointDefinition,TelemetrySample,UplinkBatch
 from .contracts import Artifact,Case,PackConfig
-from .storage import canonical_bytes,derive_uniform,generator_fingerprint,pack_identity
+from .storage import canonical_bytes,derive_uniform,generator_for,pack_identity
 
 BUSINESS_TZ=timezone(timedelta(hours=8),'Asia/Shanghai')
 POINTS=('flow_rate_m3_h','active_power_kw','voltage_v','current_a','power_factor','strokes_per_min',
@@ -77,7 +77,7 @@ def generate_history(config:PackConfig)->tuple[Case,...]:
     if start.astimezone(BUSINESS_TZ).time().isoformat()!='00:00:00':
         raise ValueError('history start must be Shanghai midnight for full-day accounting')
     wells,count=(2,8) if config.profile=='smoke' else (8,14*96)
-    pack_id=pack_identity(config,generator_fingerprint())
+    pack_id=pack_identity(config,generator_for(config))
     cases=[]
     for unit_id in range(1,wells+1):
         well=f'TESTPACK-WELL-{unit_id:03d}'

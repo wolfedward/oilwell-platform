@@ -12,7 +12,7 @@ from backend.waveforms.files import scan_file
 from backend.waveforms.samples import iter_samples
 from backend.waveforms.wire import parse_frame
 from .contracts import Artifact,Case,Channel,Cycle,EvidenceBinding,PackConfig
-from .storage import canonical_bytes,generator_fingerprint,pack_identity
+from .storage import canonical_bytes,generator_for,pack_identity
 
 
 def wire_bytes(value):
@@ -20,7 +20,7 @@ def wire_bytes(value):
 
 
 def identity(config,case_id,purpose):
-    return str(uuid5(NAMESPACE_URL,pack_identity(config,generator_fingerprint())+'/'+case_id+'/'+purpose))
+    return str(uuid5(NAMESPACE_URL,pack_identity(config,generator_for(config))+'/'+case_id+'/'+purpose))
 
 
 def _encode(case_id,config,channels,rate,window_ns,cycle=None,binding=None):
@@ -59,7 +59,7 @@ def _encode(case_id,config,channels,rate,window_ns,cycle=None,binding=None):
             'chunk_count':(count+chunk_frames-1)//chunk_frames,'decoded_bytes':len(data),'data_sha256':sha256(data).hexdigest(),
             'channels':descriptors}
     manifest={**common,'kind':'manifest','boot_id':boot,'capture_kind':'cycle' if cycle else 'event','source_kind':'synthetic',
-              'producer':{'manufacturer':'OWP synthetic software model','recorder_version':'owp.testpack.generator/1'},
+              'producer':{'manufacturer':'OWP synthetic software model','recorder_version':generator_for(config)['version']},
               'source_evidence':binding.origin_id if binding else None,'utc_start':config.start_utc,'utc_uncertainty_ns':'0',
               'clock_domain_id':'synthetic-clock','sync_evidence_id':binding.sync_id if binding else None,
               'window_ns':str(window_ns),'cycle':cycle,'streams':[stream]}
@@ -79,7 +79,7 @@ def _encode(case_id,config,channels,rate,window_ns,cycle=None,binding=None):
 
 def _metadata(case_id,config,channels,extra):
     return {'schema':'owp.testpack.wave-metadata/1','case_id':case_id,
-            'pack_id':pack_identity(config,generator_fingerprint()),'source_kind':'synthetic',
+            'pack_id':pack_identity(config,generator_for(config)),'source_kind':'synthetic',
             'channels':[{k:getattr(c,k) for k in ('role','unit','scale','offset')} for c in channels],**extra}
 
 

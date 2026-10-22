@@ -92,7 +92,13 @@ def main(argv=None):
             source=safe_path(args.config.absolute())
             if source.stat().st_size>65536:
                 raise ValueError('configuration too large')
-            pack=build(parse_config(strict_json(source.read_bytes())),args.output)
+            configuration=strict_json(source.read_bytes())
+            if isinstance(configuration,dict) and configuration.get('schema')=='owp.testpack.config/2':
+                from .config_v2 import parse_config_v2
+                from .build_v2 import build_v2
+                pack=build_v2(parse_config_v2(configuration),args.output)
+            else:
+                pack=build(parse_config(configuration),args.output)
             print(json.dumps({'pack_id':pack.manifest['pack_id'],'root':str(pack.root),'source':'synthetic'},ensure_ascii=False))
             return 0
         report=safe_path(args.report,missing=True)
