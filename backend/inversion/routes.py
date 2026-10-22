@@ -52,6 +52,7 @@ def route(method, path):
 
 def query(raw, action):
     allowed = {'offset','limit'} if action.endswith('.list') or action in ('audit','results.points') else set()
+    if action=='results.points':allowed|={'kind'}
     if action == 'parameters.list': allowed |= {'assembly_id'}
     if action == 'audit': allowed |= {'action','subject_id'}
     if action == 'requests.get': allowed = {'action','intent'}
@@ -62,6 +63,7 @@ def query(raw, action):
     except (ValueError, UnicodeError): raise InversionContractError() from None
     out = dict(pairs)
     if len(out) != len(pairs) or set(out)-allowed: raise InversionContractError()
+    if 'kind' in out and out['kind'] not in ('prediction','comparison','display_only_comparison','display_only_fills','proof'):raise InversionContractError()
     if 'include_input_metadata' in out:
         if out['include_input_metadata'] != 'true': raise InversionContractError()
         out['include_input_metadata'] = True
@@ -71,7 +73,7 @@ def query(raw, action):
             if out.get('intent') not in ('quantitative','evidence'): raise InversionContractError()
         elif 'intent' in out: raise InversionContractError()
     if 'offset' in allowed:
-        out['offset'] = integer_text(out.get('offset','0'), maximum=131072 if action=='results.points' else 100000)
+        out['offset'] = integer_text(out.get('offset','0'), maximum=163840 if action=='results.points' else 100000)
         out['limit'] = integer_text(out.get('limit','50'), minimum=1, maximum=1000 if action=='results.points' else 100)
     if 'subject_id' in out: out['subject_id'] = identity(out['subject_id'])
     if 'assembly_id' in out:

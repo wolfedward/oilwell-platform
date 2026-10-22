@@ -268,8 +268,8 @@ class RunService:
 
     def publish(self,attempt,prepared,authority)->ResultRecord | None:
         """Publish an applicable result, or return None after durable blocking."""
-        from .result_codec import PreparedResult
-        if type(prepared) is not PreparedResult: raise ValueError('Validated prepared result required')
+        from .result_dispatch import validate_result
+        validate_result(prepared)
         before=self.get(attempt.run_id)
         # Refreshed here even if a caller supplied an older valid snapshot.
         current=self._authority(before.authority,before.actor)

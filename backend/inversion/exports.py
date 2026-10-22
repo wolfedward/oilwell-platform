@@ -22,6 +22,7 @@ from .transactions import Change, MutationRequest, lock
 RESULT_FIELDS=frozenset(('schema','input_sha256','cycle','prediction_status','prediction_reason_codes',
     'coverage_fraction','point_count','valid_point_count','metadata','comparison','filled_comparison',
     'reference_sources','source_kind','input_applicability','field_accuracy_certified','external_evidence_admission_required'))
+V2_RESULT_FIELDS=frozenset(('source_proof','proof_columns','parameter_core_sha256'))
 PRIVATE_KEY=re.compile(r'password|passwd|pwd|secret|credential|token|connection|dsn|path|username|email|actor|authority|session|private_key|api_key',re.I)
 PRIVATE_TEXT=re.compile(r'(?:[A-Za-z]:[\\/]|\\\\|(?:^|\s)/[^\s]+|(?:postgres(?:ql)?|file)://|(?:password|passwd|pwd|secret|token|dsn|connection_string|api_key|private_key)\s*[:=])',re.I)
 
@@ -35,7 +36,8 @@ def public_value(value):
     return safe_text(value) if isinstance(value,str) else value
 
 def public_result(body):
-    return public_value({k:v for k,v in body.items() if k in RESULT_FIELDS})
+    allowed=RESULT_FIELDS|V2_RESULT_FIELDS if body.get('schema')=='inversion.result/2' else RESULT_FIELDS
+    return public_value({k:v for k,v in body.items() if k in allowed})
 
 def csv_cell(value):
     if not isinstance(value,str): value=json.dumps(value,ensure_ascii=False,separators=(',',':'))

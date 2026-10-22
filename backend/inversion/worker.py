@@ -154,7 +154,7 @@ def _execute(factory,configuration,attempt,directory,control):
         if current.state!='running' or current.reason_code=='cancel_requested': raise InversionError('run_terminal')
     try:
         from .compute_child import write_input
-        from .result_codec import read
+        from .result_dispatch import read_result
         services.runs._authority(run.authority,run.actor)
         prepared=services.acquisition.prepare_input(run.request,run.actor,check=check)
         check(); input_path=directory/'input.json'; output_path=directory/'result.bin'
@@ -163,7 +163,7 @@ def _execute(factory,configuration,attempt,directory,control):
         while child.poll() is None:
             check(); time.sleep(.02)
         if child.wait()!=0: raise InversionError('compute_failed')
-        check(); result=read(output_path,prepared.snapshot); check()
+        check(); result=read_result(output_path,prepared.snapshot); check()
         authority=services.runs._authority(run.authority,run.actor)
         services.runs.publish(attempt,result,authority)
         control.send(('done',None))

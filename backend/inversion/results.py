@@ -11,7 +11,8 @@ from psycopg.types.json import Jsonb
 from backend.waveforms.commands import Actor
 from .contracts import AuthoritySnapshot, InversionCommand, canonical_bytes, freeze
 from .input_contracts import InputSnapshot
-from .result_codec import PreparedResult, MAX_RESULT
+from .result_codec import MAX_RESULT
+from .result_dispatch import PreparedResultAny,decode_result
 from .history import recheck_with_cursor
 from .parameters import actor_key, expected
 from .runs import authority_body
@@ -40,7 +41,7 @@ class StoredResult:
     execution: str
     author: object
     request_sha256: str
-    prepared: PreparedResult
+    prepared: PreparedResultAny
     content_sha256: str
     body: object
 
@@ -94,7 +95,7 @@ class ResultService:
                 # Repeatable read keeps this budget and subsequent rows coherent.
                 cur.execute('SELECT count(*),COALESCE(sum(octet_length(payload)),0) FROM inversion.result_chunks WHERE result_id=%s',(id,))
                 count,size=cur.fetchone()
-                if count>4*32768 or len(metadata)+size>MAX_RESULT: refuse('result_size_limit')
+                if count>5*32768 or len(metadata)+size>MAX_RESULT: refuse('result_size_limit')
                 cur.execute('SELECT ordinal,payload,content_sha256 FROM inversion.result_chunks WHERE result_id=%s ORDER BY ordinal',(id,))
                 chunks=[]; total=len(metadata)
                 for ordinal,payload,digest in cur:
@@ -102,7 +103,7 @@ class ResultService:
                     if ordinal!=len(chunks) or sha256(payload).hexdigest()!=digest: refuse('result_chunk_corrupt')
                     if total>MAX_RESULT: refuse('result_size_limit')
                     chunks.append(payload)
-                prepared=PreparedResult(snapshot,metadata,tuple(chunks))
+                prepared=decode_result(snapshot,metadata,tuple(chunks))
                 if prepared.content_sha256!=row[3]: refuse('result_digest_corrupt')
                 if row[4]!='completed' or prepared.status!='applicable': refuse('result_lifecycle_invalid')
             except (ValueError,KeyError,TypeError) as error:

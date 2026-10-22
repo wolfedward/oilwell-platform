@@ -15,8 +15,10 @@ MECHANICAL_FIELDS = frozenset(('assembly_id','manufacturer','model','asset_numbe
 
 # Explicit producers: solver.predict terminal reasons and history.recheck plus
 # the parameter/model admission routines it calls. Never echo arbitrary events.
+V2_SOURCE_REASONS=frozenset('''coverage_basis_mismatch proof_series_truncated proof_nonfinite proof_root_ambiguous
+    proof_rounding_ambiguous proof_resource_limit proof_runtime_unavailable proof_context_required'''.split())
 DIAGNOSTIC_REASONS={
-    'not_applicable':frozenset(('full_cycle_unconfirmed','no_valid_points','insufficient_coverage')),
+    'not_applicable':frozenset(('full_cycle_unconfirmed','no_valid_points','insufficient_coverage'))|V2_SOURCE_REASONS,
     'input_changed':frozenset('''dataset_changed member_changed pair_review_changed evidence_changed capture_changed
         applicability_changed parameter_pin_changed model_pin_changed selection_changed selection_incompatible
         operating_conditions_unknown operating_condition_interval channel_installation_changed archive_capture_missing
@@ -27,7 +29,7 @@ DIAGNOSTIC_REASONS={
         assignment_well_mismatch parameter_missing model_missing parameter_interval physical_interval source_mismatch
         attachment_missing attachment_purpose attachment_mismatch evidence_unavailable evidence_binding evidence_interval
         condition_domain timing_envelope coverage_mismatch calibration_binding calibration_incomplete artifact_changed
-        artifact_unavailable model_not_installed'''.split()),
+        artifact_unavailable model_not_installed'''.split())|V2_SOURCE_REASONS,
 }
 
 
@@ -100,11 +102,12 @@ def result_view(view):
     return result
 
 
-def point_page(view, offset, limit):
+def point_page(view, offset, limit, kind=None):
     """Page complete persisted rows without numeric conversions or resampling."""
     rows=[]; total=0
     for raw in view.chunks:
         block=json.loads(raw)
+        if kind is not None and kind!=block['kind']:continue
         for row in block['rows']:
             if offset <= total < offset+limit: rows.append(dict(kind=block['kind'],columns=block['columns'],values=row))
             total+=1
