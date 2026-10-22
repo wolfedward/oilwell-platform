@@ -49,6 +49,7 @@ def approved_with_cursor(cur,request,bucket,*,start,end,uncertainty,alignment):
         expected=getattr(request,key); expected=str(expected) if type(expected) is UUID else expected
         if selection[2].get(key)!=expected: refuse('selection_changed')
     if (parsed.policy.model_version!=model.installed_id or parsed.policy.algorithm!=model.body['artifact']['algorithm']
+        or parsed.schema!=model.body['artifact']['parameter_schema']
         or selection[2]['policy_sha256']!=parameter.body['policy']['content_sha256']): refuse('selection_incompatible')
     return parameter,model,parsed,dict(id=str(selection[0]),version=selection[1],body=selection[2])
 

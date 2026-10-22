@@ -10,6 +10,26 @@ def fixture_body():
     return json.loads((Path(__file__).parent/'fixtures/inversion_v2_contract.json').read_bytes())
 
 
+def declared_fixture():
+    """Installed declaration only, with deliberately unproved fake input hashes."""
+    from backend.inversion.contracts import canonical_bytes
+    from backend.inversion.coverage_contracts import parameter_core_bytes
+    from backend.inversion.coverage_sources import checker_sha256,installed_generator_sha256
+    from backend.inversion.synthetic_registry import installed_config,case_definition
+    body=fixture_body(); coverage=body['coverage_contract']
+    config_sha=sha256(canonical_bytes(installed_config('smoke'))).hexdigest()
+    definition=case_definition(config_sha,'cycle-base')
+    for key in ('geometry','bodies'): body[key].update(dict(definition.body[key]))
+    body['drive'].update({key:value for key,value in definition.body['drive'].items() if key not in ('loss_W','loss_error_W')})
+    coverage.update(config_sha256=config_sha,case_id='cycle-base',generator_sha256=installed_generator_sha256())
+    coverage['motion'].update(theta0_rad='4.68689893991090706065',rate_rad_s='0.78539816339744830962',
+        epsilon_rad='0',omega_max_rad_s='0.786',acceleration_max_rad_s2='0',third_derivative_max_rad_s3='0',
+        fourth_derivative_max_rad_s4='0',support_start_ns='1790783999968750000',support_end_ns='1790784008031250000')
+    coverage['binding']['checker_sha256']=checker_sha256()
+    coverage['binding']['parameter_core_sha256']=sha256(parameter_core_bytes(body)).hexdigest()
+    return body
+
+
 def registered_fixture(case_id='cycle-base'):
     """Native numeric evidence only: fake pins confer NO service approval."""
     from backend.inversion.contracts import canonical_bytes

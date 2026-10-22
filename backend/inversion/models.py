@@ -26,6 +26,9 @@ class InstalledModel:
             fail()
 
     def snapshot(self):
+        if self.installed_id=='beam_energy_balance/2':
+            from .model_manifest_v2 import snapshot_v2
+            return snapshot_v2(self)
         try:
             # Paths belong solely to the installed server configuration, not any command body.
             files=[{'name':path.name,'sha256':sha256(path.read_bytes()).hexdigest()} for path in self.files]
@@ -42,9 +45,11 @@ class InstalledModel:
 
 
 _ROOT=Path(__file__).parent
+from .model_manifest_v2 import installed_v2
 INSTALLED_MODELS=MappingProxyType({'beam_energy_balance/1':InstalledModel('beam_energy_balance/1',1,
     tuple(_ROOT/name for name in ('contracts.py','parameter_contracts.py','series.py','policy.py','geometry.py',
-        'mechanics.py','small_linalg.py','motion.py','losses.py','solver.py','comparison.py','display_fill.py')))})
+        'mechanics.py','small_linalg.py','motion.py','losses.py','solver.py','comparison.py','display_fill.py'))),
+    'beam_energy_balance/2':installed_v2()})
 
 
 @dataclass(frozen=True)

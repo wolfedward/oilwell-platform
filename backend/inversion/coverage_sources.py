@@ -210,44 +210,64 @@ def _parameters_match(parameters,case):
     _require(parameters.phase.zero_reading_rad==0 and parameters.phase.encoder_direction==1 and parameters.phase.unwrap_kind=='unwrapped')
 
 
+def verify_declarations(parameters: ParameterSetV2):
+    """Check installed declarations only; this never certifies native input bytes.
+
+    Governance may use this bounded metadata check. Runtime verification below
+    still rechecks every archived code, quality, time, hash and power integral.
+    """
+    _require(type(parameters) is ParameterSetV2 and not parameters.missing)
+    _require(parse_parameter_set_v2(parameters.raw)==parameters)
+    coverage=parameters.coverage_contract.body; motion=coverage['motion']; measurement=coverage['measurement']
+    case=case_definition(coverage['config_sha256'],coverage['case_id'])
+    _require(coverage['binding']['checker_sha256']==checker_sha256()
+        and coverage['generator_sha256']==installed_generator_sha256())
+    _parameters_match(parameters,case)
+    _require(int(coverage['cycle']['start_ns'])==EPOCH and int(coverage['cycle']['end_ns'])==EPOCH+8*10**9)
+    _require(any(c.start_ns==EPOCH and c.end_ns==EPOCH+8*10**9 and c.physical_cycle_id==coverage['cycle']['physical_cycle_id'] for c in parameters.provenance.calibration_cycles))
+    _require(int(coverage['power_support']['window_ns'])==1000000)
+    variant=case.body['variant']; noisy=variant=='noise'; shifted=variant=='shifted'
+    physics_id='cycle-base' if variant in ('noise','missing','clipped','shifted') else case.case_id
+    root=_root(case.config_sha256,physics_id)
+    with _context() as flint:
+        rate=2*flint.arb.pi()/8; eps=Q(case.body['motion']['epsilon'])
+        _require(max(abs(Q(motion['theta0_rad'])-root.lo),abs(Q(motion['theta0_rad'])-root.hi))<=Q(1,10**20))
+        rate_image=enclose(rate)
+        _require(max(abs(Q(motion['rate_rad_s'])-rate_image.lo),abs(Q(motion['rate_rad_s'])-rate_image.hi))<=Q(1,10**20))
+        _require(Q(motion['epsilon_rad'])==eps)
+        calculated=tuple(enclose(value).hi for value in (rate*ball(1+abs(eps)),rate**2*ball(abs(eps)),rate**3*ball(abs(eps)),rate**4*ball(abs(eps))))
+    derivatives=tuple(_bound(motion[name],minimum) for name,minimum in zip(('omega_max_rad_s','acceleration_max_rad_s2','third_derivative_max_rad_s3','fourth_derivative_max_rad_s4'),calculated))
+    common=_bound(coverage['time']['common_offset_bound_ns'],Q(15625000) if shifted else Q(0))/10**9
+    differential=_bound(coverage['time']['differential_bound_ns'],Q(0))/10**9
+    support=(Q(motion['support_start_ns']),Q(motion['support_end_ns']))
+    _require(Q(EPOCH-250000000)<=support[0]<=EPOCH and EPOCH+8*10**9<=support[1]<=EPOCH+8250000000)
+    angle_noise=_bound(measurement['angle_noise_error_rad'],Q(1,10**6) if noisy else Q(0))
+    power_noise=_bound(measurement['power_noise_error_W'],Q(10) if noisy else Q(0))
+    angle_error=_bound(measurement['angle_quantization_rad'],Q(1,2*10**8))+_bound(measurement['angle_calibration_error_rad'],Q(0))+angle_noise
+    power_error=_bound(measurement['power_quantization_W'],Q(1,200))+power_noise
+    _bound(measurement['loss_error_W'],Q(2,100))
+    average_bound=Q(measurement['power_average_mismatch_W'])
+    for role in ('active_power','crank_angle'):
+        item=coverage['inputs'][role]; encoding=item['encoding']; pin=item['pin']
+        _require(item['count']==1025 and pin['first_index']==0 and pin['last_index']==1024)
+        _require(Q(encoding['offset'])==0 and Q(encoding['scale'])==(Q(1,100) if role=='active_power' else Q(1,10**8)))
+        pre=_bound(encoding['pre_encoding_error_bound'],Q(1,100) if role=='active_power' else Q(1,10**20))
+        if role=='active_power': power_error+=pre+average_bound
+        else: angle_error+=pre
+    return case,derivatives,common,differential,support,angle_error,power_error,average_bound
+
+
 def verify_sources(evidence: PredictionEvidence, parameters: ParameterSetV2) -> SourceProof:
     case=None; digest='0'*64
     try:
         _require(type(evidence) is PredictionEvidence and type(parameters) is ParameterSetV2 and not parameters.missing)
-        # No caller-created dataclass can bypass the raw contract parser.
-        _require(parse_parameter_set_v2(parameters.raw)==parameters)
-        case=case_definition(evidence.config_sha256,evidence.case_id)
-        coverage=parameters.coverage_contract.body; measurement=coverage['measurement']; motion=coverage['motion']
+        case,derivatives,common,differential,support,angle_error,power_error,average_bound=verify_declarations(parameters)
+        coverage=parameters.coverage_contract.body
         digest=sha256(canonical_bytes({'power':evidence.power.channel_sha256,'angle':evidence.angle.channel_sha256,
             'contract':parameters.coverage_contract.raw_sha256,'checker':checker_sha256()})).hexdigest()
-        _require(coverage['binding']['checker_sha256']==checker_sha256()
-            and evidence.generator_sha256==installed_generator_sha256())
         for key in ('pack_id','case_id','config_sha256','generator_sha256'): _require(coverage[key]==getattr(evidence,key))
-        _parameters_match(parameters,case)
-        _require(int(coverage['cycle']['start_ns'])==EPOCH and int(coverage['cycle']['end_ns'])==EPOCH+8*10**9)
-        _require(any(c.start_ns==EPOCH and c.end_ns==EPOCH+8*10**9 and c.physical_cycle_id==coverage['cycle']['physical_cycle_id'] for c in parameters.provenance.calibration_cycles))
-        _require(int(coverage['power_support']['window_ns'])==1000000)
         variant=case.body['variant']; noisy=variant=='noise'; shifted=variant=='shifted'
         physics_id='cycle-base' if variant in ('noise','missing','clipped','shifted') else case.case_id
-        root=_root(case.config_sha256,physics_id)
-        with _context() as flint:
-            rate=2*flint.arb.pi()/8; eps=Q(case.body['motion']['epsilon'])
-            _require(max(abs(Q(motion['theta0_rad'])-root.lo),abs(Q(motion['theta0_rad'])-root.hi))<=Q(1,10**20))
-            rate_image=enclose(rate)
-            _require(max(abs(Q(motion['rate_rad_s'])-rate_image.lo),abs(Q(motion['rate_rad_s'])-rate_image.hi))<=Q(1,10**20))
-            _require(Q(motion['epsilon_rad'])==eps)
-            calculated=tuple(enclose(value).hi for value in (rate*ball(1+abs(eps)),rate**2*ball(abs(eps)),rate**3*ball(abs(eps)),rate**4*ball(abs(eps))))
-        derivatives=tuple(_bound(motion[name],minimum) for name,minimum in zip(('omega_max_rad_s','acceleration_max_rad_s2','third_derivative_max_rad_s3','fourth_derivative_max_rad_s4'),calculated))
-        common=_bound(coverage['time']['common_offset_bound_ns'],Q(15625000) if shifted else Q(0))/10**9
-        differential=_bound(coverage['time']['differential_bound_ns'],Q(0))/10**9
-        support=(Q(motion['support_start_ns']),Q(motion['support_end_ns']))
-        _require(Q(EPOCH-250000000)<=support[0]<=EPOCH and EPOCH+8*10**9<=support[1]<=EPOCH+8250000000)
-        angle_noise=_bound(measurement['angle_noise_error_rad'],Q(1,10**6) if noisy else Q(0))
-        power_noise=_bound(measurement['power_noise_error_W'],Q(10) if noisy else Q(0))
-        angle_error=_bound(measurement['angle_quantization_rad'],Q(1,2*10**8))+_bound(measurement['angle_calibration_error_rad'],Q(0))+angle_noise
-        power_error=_bound(measurement['power_quantization_W'],Q(1,200))+power_noise
-        _bound(measurement['loss_error_W'],Q(2,100))
-        average_bound=Q(measurement['power_average_mismatch_W'])
         for channel in (evidence.power,evidence.angle):
             role=channel.role; item=coverage['inputs'][role]; encoding=item['encoding']
             _require(len(channel.raw)==1025 and channel.pin.first_index==0 and channel.pin.last_index==1024)
@@ -259,9 +279,6 @@ def verify_sources(evidence: PredictionEvidence, parameters: ParameterSetV2) -> 
             for name,value in (('raw',channel.raw),('time',[str(t) for t in channel.time_ns]),('quality',channel.quality)):
                 _require(item[name+'_sha256']==sha256(canonical_bytes(value)).hexdigest())
             _require(Q(encoding['scale'])==channel.scale and Q(encoding['offset'])==channel.offset)
-            pre=_bound(encoding['pre_encoding_error_bound'],Q(1,100) if role=='active_power' else Q(1,10**20))
-            if role=='active_power': power_error+=pre+average_bound
-            else: angle_error+=pre
         budget=ProofBudget()
         for i in range(1025):
             budget.consume(129)  # Charge even cache hits; no resource-limit bypass.

@@ -13,7 +13,8 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 from .contracts import (InversionCommand, JsonObject, canonical_bytes, strict_json, freeze,
     fields, identity, integer, name, text, utc, fail)
-from .parameter_contracts import parse_parameter_set, AttachmentPin
+from .parameter_contracts import AttachmentPin
+from .version_dispatch import parse_parameters as parse_parameter_set
 from .geometry import build_geometry
 from .transactions import InversionTransactions, InversionError, MutationRequest, LockPlan, Change, Receipt
 
@@ -262,14 +263,23 @@ class ParameterService(GovernanceService):
             for field in ('temperature_K','supply_voltage_V','supply_frequency_Hz'):
                 actual,domain=getattr(condition,field),getattr(parameter.domain,field)
                 if actual.min<domain.min or actual.max>domain.max: refuse('condition_domain')
-        coverage=provenance.coverage
         alignment=uncertainty_ns if alignment_ns is None else alignment_ns
         if type(alignment) not in (int,Fraction) or alignment<0: fail()
-        if int(coverage['max_time_alignment_error_ns'])<alignment: refuse('timing_envelope')
-        for field in ('domain','uncertainty'):
-            if coverage[field+'_sha256']!=sha256(canonical_bytes(record.body[field])).hexdigest(): refuse('coverage_mismatch')
-        if coverage['policy_sha256']!=record.body['policy']['content_sha256']: refuse('coverage_mismatch')
-        for item in coverage['scopes']: self._attachments(cur,[strict_json(canonical_bytes(item['attachment_pin']))],item['scope'])
+        if parameter.schema=='inversion.parameter-set/2':
+            from .coverage_sources import verify_declarations
+            verify_declarations(parameter)
+            coverage=parameter.coverage_contract.body
+            if Fraction(coverage['time']['common_offset_bound_ns'])+Fraction(coverage['time']['differential_bound_ns'])<alignment:
+                refuse('timing_envelope')
+            budget=strict_json(canonical_bytes(coverage['binding']['budget_attachment_pin']))
+            self._attachments(cur,[budget],budget['purpose'])
+        else:
+            coverage=provenance.coverage
+            if int(coverage['max_time_alignment_error_ns'])<alignment: refuse('timing_envelope')
+            for field in ('domain','uncertainty'):
+                if coverage[field+'_sha256']!=sha256(canonical_bytes(record.body[field])).hexdigest(): refuse('coverage_mismatch')
+            if coverage['policy_sha256']!=record.body['policy']['content_sha256']: refuse('coverage_mismatch')
+            for item in coverage['scopes']: self._attachments(cur,[strict_json(canonical_bytes(item['attachment_pin']))],item['scope'])
         for binding in provenance.channel_bindings:
             self._attachments(cur,binding.installation_evidence_refs,'installation')
             pin=binding.channel_pin
@@ -319,7 +329,12 @@ class ParameterService(GovernanceService):
             version=record.review_version+1
             attestation={'parameter_sha256':record.content_sha256}
             if action in ('submit','approve'):
-                attestation['coverage']=strict_json(canonical_bytes(record.body['provenance']['coverage']))
+                if record.body['schema']=='inversion.parameter-set/2':
+                    attestation['coverage_contract']=strict_json(canonical_bytes(record.body['coverage_contract']))
+                    attestation['parameter_core_sha256']=record.body['coverage_contract']['binding']['parameter_core_sha256']
+                    attestation['native_source_verification']='required_at_execution'
+                else:
+                    attestation['coverage']=strict_json(canonical_bytes(record.body['provenance']['coverage']))
                 attestation['meaning']='Independent human review of declared engineering basis; not field precision certification'
             cur.execute('INSERT INTO inversion.reviews(id,subject_id,version,action,actor,reason,body) VALUES(%s,%s,%s,%s,%s,%s,%s)',
                 (uuid4(),id,version,action,Jsonb(asdict(cmd.actor)),cmd.reason,Jsonb(attestation)))

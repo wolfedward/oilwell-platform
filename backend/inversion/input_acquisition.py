@@ -48,9 +48,12 @@ class InputAcquisition:
             check(); self._authorize(actor)
             context=self.exporter.open(record.id,actor=actor)
             stream=context.stream_capture(key); manifest=None; hashes={}; sizes={}; counts={}; wanted=set()
+            file_hash=sha256();file_bytes=0
             try:
                 for raw in stream:
                     check()
+                    file_hash.update(raw);file_bytes+=len(raw)
+                    if file_bytes>33554432: refuse('input_size_limit')
                     if raw==b'\n': continue
                     frame=parse_frame(raw)
                     if manifest is None:
@@ -72,6 +75,8 @@ class InputAcquisition:
                     hashes[spec.stream_id].update(frame.data); sizes[spec.stream_id]+=len(frame.data); counts[spec.stream_id]+=1
                     if spec.stream_id in wanted: buffers[(key,spec.stream_id)].extend(frame.data)
                 if manifest is None: refuse('file_identity')
+                if file_bytes!=file['descriptor']['content_length'] or file_hash.hexdigest()!=file['descriptor']['file_sha256']:
+                    refuse('file_identity')
                 for spec in manifest.streams:
                     if counts[spec.stream_id]!=spec.chunk_count or sizes[spec.stream_id]!=spec.decoded_bytes or hashes[spec.stream_id].hexdigest()!=spec.data_sha256:
                         refuse('file_identity')
@@ -155,6 +160,23 @@ class InputAcquisition:
             cur=conn.cursor(); cur.execute("SET LOCAL statement_timeout='3s'")
             cur.execute("SET LOCAL lock_timeout='1s'")
             parameters,applicability=applicability_with_cursor(cur,request,self.bucket,observation,pins,physical['source_intervals'])
+            v2=parameters.schema=='inversion.parameter-set/2'
+            native_evidence=None;source_binding=None
+            if v2:
+                from .input_contracts_v2 import extract_prediction_evidence,prediction_evidence_bytes,check_evidence_binding
+                native_evidence,source_binding=extract_prediction_evidence(context,manifests,member.files,evidence,pins,selection,
+                    purpose=version['purpose'],check=check)
+                check_evidence_binding(native_evidence,parameters)
+                # context times already include cross-capture UTC shifts. Add
+                # the reference anchor exactly once to ALL four series.
+                series={role:replace(item,samples=tuple(replace(sample,time_ns=sample.time_ns+anchor) for sample in item.samples))
+                    for role,item in series.items()}
+                cycle=replace(cycle,start_ns=cycle.start_ns+anchor,end_ns=cycle.end_ns+anchor)
+                declared=parameters.coverage_contract.body['time']
+                bound=Fraction(declared['common_offset_bound_ns'])+Fraction(declared['differential_bound_ns'])
+                if budget>bound: refuse('timing_envelope')
+                prediction=PredictionInputs(series['active_power'],series['crank_angle'],cycle,prediction.power_window_ns,bound)
+                reference=ReferenceInputs(series['load'],series['displacement'])
             from .solver import _full_cycle
             complete,diagnostic=_full_cycle(prediction,parameters,parameters.policy)
             if not complete: refuse('full_cycle_'+diagnostic['reason'])
@@ -174,6 +196,10 @@ class InputAcquisition:
                 numerical_assumptions=applicability['model_body']['artifact']['numerical_assumptions'],
                 samples={role:[dict(index=str(s.index),time_ns=str(s.time_ns),value_si=str(s.value_si) if s.value_si is not None else None,quality=s.quality)
                                for s in item.samples] for role,item in series.items()})
+            if v2:
+                from .contracts import strict_json
+                body.update(schema='inversion.input/2',parameter_core_sha256=parameters.parameter_core_sha256,
+                    prediction_evidence=strict_json(prediction_evidence_bytes(native_evidence)),source_binding=source_binding)
             encoded=canonical_bytes(body)
             if len(encoded)>67108864: refuse('input_size_limit')
             snapshot=InputSnapshot(body,encoded,sha256(encoded).hexdigest())
@@ -185,4 +211,7 @@ class InputAcquisition:
             if reasons: refuse('input_changed')
             conn.rollback()
         check()
+        if v2:
+            from .input_contracts_v2 import PreparedInputV2
+            return PreparedInputV2(prediction,reference,parameters,parameters.policy,snapshot,native_evidence)
         return PreparedInput(prediction,reference,parameters,parameters.policy,snapshot)

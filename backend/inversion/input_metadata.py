@@ -91,6 +91,32 @@ def observation_metadata(value):
     return result
 
 
+def v2_metadata(body, parameter, request):
+    """Finite identity-only projection; no native codes or private evidence."""
+    def digest(value):
+        if type(value) is not str or not re.fullmatch('[0-9a-f]{64}',value): refuse()
+        return value
+    coverage=mapping(parameter['coverage_contract'])
+    core=digest(body['parameter_core_sha256'])
+    if (parameter.get('schema')!='inversion.parameter-set/2' or parameter.get('source_kind')!='synthetic'
+            or body.get('purpose')!='software_pair_test' or core!=coverage['binding']['parameter_core_sha256']
+            or sha256(canonical_bytes(parameter)).hexdigest()!=request['parameter_sha256']): refuse()
+    bindings=[]
+    for item in mapping_rows(body['source_binding'],2):
+        row=fields(item,('schema','pack_id','case_id','import_id','original_identity_basis'),128)
+        if row['schema']!='owp.testpack.binding/1' or row['original_identity_basis']!='approved_origin_mapping':refuse()
+        for key in ('config_sha256','generator_sha256','original_file_sha256','bound_file_sha256','archive_file_sha256','manifest_sha256'):
+            row[key]=digest(item[key])
+        if row['bound_file_sha256']!=row['archive_file_sha256']:refuse()
+        if any(row[key]!=coverage[key] for key in ('pack_id','case_id','config_sha256','generator_sha256')):refuse()
+        pin=mapping(item['origin_pin'])
+        row['origin_pin']=dict(id=scalar(pin['id'],128),content_sha256=digest(pin['content_sha256']),version=exact(pin['version']))
+        bindings.append(row)
+    if not bindings or len({canonical_bytes(row) for row in bindings})!=len(bindings):refuse()
+    return dict(parameter_core_sha256=core,source_kind='synthetic',purpose='software_pair_test',
+        verification_scope='synthetic_software_verification',field_accuracy_certified=False,source_binding=bindings)
+
+
 def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, request_sha256):
     """Caller supplies the SAME hash-verified StoredResult snapshot and identities."""
     try:
@@ -155,6 +181,7 @@ def project_input_metadata(body, *, result_id, content_sha256, snapshot_sha256, 
                 selection=dict(id=scalar(selected['id'],128),version=selected['version'],rollback_selection_id=scalar(selected_body.get('rollback_selection_id'),128)),
                 well_id=scalar(well.get('id'),128),
                 operating_conditions=approved))
+        if body.get('schema')=='inversion.input/2': result['v2']=v2_metadata(body,parameter,request)
         if len(canonical_bytes(result)) > MAX_METADATA_BYTES: refuse('input_metadata_size_limit')
         # Defense in depth only AFTER construction of the finite nested allowlist.
         from .exports import public_value
