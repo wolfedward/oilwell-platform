@@ -11,11 +11,12 @@ from ctypes import wintypes as w
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 
 from backend.inversion.contracts import canonical_bytes
-from tools.review_deploy import _marker
+from tools.review_deploy import _marker,BASE_PYTHON
 from tools.review_deploy_process import inspect_pid,owned_process
 from .lab import checked_handle
 from .storage import safe_path,strict_json
@@ -32,17 +33,64 @@ def command_argv(command):
     finally:kernel.LocalFree(argv)
 
 
-def validate_candidate(root,worker,supervisor,compute,request):
-    root=safe_path(root)
-    if supervisor.get('parent_pid')!=worker['pid'] or compute.get('parent_pid')!=supervisor['pid']:
-        raise ValueError('compute ancestry mismatch')
-    if 'spawn_main' not in supervisor['command']:raise ValueError('not a fresh spawn supervisor')
+def _image(process,path):
+    return Path(process['executable']).resolve()==path.resolve()
+
+
+def _worker(root,process):
+    venv=root/'venv/Scripts/python.exe'
+    return ((_image(process,venv) or _image(process,BASE_PYTHON)) and
+        command_argv(process['command'])==[str(venv),'-m','tools.review_deploy_worker','inversion',
+            '--config',str(root/'private/inversion.toml')])
+
+
+def _spawn(worker,process):
+    argv=command_argv(process['command'])
+    if (not _image(process,BASE_PYTHON) or len(argv)<4 or
+        Path(argv[0]).resolve()!=BASE_PYTHON.resolve() or argv[-3]!='-c' or
+        argv[-1]!='--multiprocessing-fork' or tuple(argv[1:-3]) not in ((),('-B',))):return False
+    # CPython 3.13.2 spawn.py / popen_spawn_win32.py; no arbitrary -c code.
+    match=re.fullmatch(r'from multiprocessing\.spawn import spawn_main; spawn_main\(parent_pid=([1-9][0-9]{0,9}), pipe_handle=([1-9][0-9]{0,19})\)',argv[-2])
+    return bool(match and int(match[1])==worker['pid'] and int(match[2])<2**64)
+
+
+def _compute_argv(root,compute):
     argv=command_argv(compute['command'])
     code=str((root/'code').resolve())
     bootstrap="import sys; from pathlib import Path; sys.path.insert(0,"+repr(code)+"); from backend.inversion.compute_child import compute; compute(Path(sys.argv[1]),Path(sys.argv[2]))"
     if (len(argv)!=7 or argv[1:5]!=['-I','-B','-c',bootstrap] or
         Path(argv[0]).resolve()!=(root/'venv/Scripts/python.exe').resolve()):
         raise ValueError('not the installed credential-free numerical command')
+    return argv
+
+
+def validate_chain(root,chain,request):
+    """Only worker [redirect] -> spawn -> [redirect] compute is supported.
+
+    A venv launcher and its base interpreter can have IDENTICAL command lines.
+    Actual image paths distinguish them; only the final base interpreter pauses.
+    """
+    root=safe_path(root);venv=root/'venv/Scripts/python.exe'
+    if not 3<=len(chain)<=5 or len({p['pid'] for p in chain})!=len(chain):
+        raise ValueError('bounded unique process chain required')
+    if any(type(p['pid']) is not int or p['pid']<=0 for p in chain):raise ValueError('exact process IDs required')
+    if any(b.get('parent_pid')!=a['pid'] for a,b in zip(chain,chain[1:])):raise ValueError('compute ancestry mismatch')
+    worker=chain[0];index=1
+    if not _worker(root,worker):raise ValueError('not the installed inversion worker')
+    if _image(worker,venv):
+        worker=chain[index];index+=1
+        if not _image(worker,BASE_PYTHON) or worker['command']!=chain[0]['command']:
+            raise ValueError('worker redirect identity mismatch')
+    supervisor=chain[index];index+=1
+    if not _spawn(worker,supervisor):raise ValueError('not the exact fresh spawn supervisor')
+    if index>=len(chain):raise ValueError('compute interpreter absent')
+    compute=chain[index];index+=1
+    if _image(compute,venv):
+        if index>=len(chain):raise ValueError('compute redirector is not an interpreter')
+        launcher=compute;compute=chain[index];index+=1
+        if compute['command']!=launcher['command']:raise ValueError('compute redirect command mismatch')
+    if index!=len(chain) or not _image(compute,BASE_PYTHON):raise ValueError('unsupported compute image or extra redirect')
+    argv=_compute_argv(root,compute)
     input_path=safe_path(Path(argv[5]));output_path=safe_path(Path(argv[6]),missing=True)
     stage=input_path.parent;staging=safe_path(root/'private/inversion-staging')
     if (input_path.name!='input.json' or output_path!=stage/'result.bin' or stage.parent!=staging or
@@ -51,6 +99,44 @@ def validate_candidate(root,worker,supervisor,compute,request):
     body=strict_json(input_path.read_bytes())
     if canonical_bytes(body['snapshot']['request'])!=canonical_bytes(request):raise ValueError('different run input')
     return stage
+
+
+def find_chain(root,marked,request):
+    """Bounded role discovery, never a recursive substring/PID search."""
+    root=safe_path(root);venv=root/'venv/Scripts/python.exe'
+    if not _worker(root,marked):raise ValueError('unrecognized marked worker')
+    prefixes=[(marked,)]
+    if _image(marked,venv):
+        prefixes=[(marked,p) for p in children(marked['pid']) if
+            _image(p,BASE_PYTHON) and p['command']==marked['command']]
+    if len(prefixes)>1:raise ValueError('multiple worker redirects')
+    candidates=[]
+    for prefix in prefixes:
+        for supervisor in children(prefix[-1]['pid']):
+            if not _spawn(prefix[-1],supervisor):continue
+            for child in children(supervisor['pid']):
+                if not (_image(child,venv) or _image(child,BASE_PYTHON)):continue
+                try:_compute_argv(root,child)
+                except ValueError:continue
+                tails=[(child,)] if _image(child,BASE_PYTHON) else [
+                    (child,p) for p in children(child['pid']) if
+                    _image(p,BASE_PYTHON) and p['command']==child['command']]
+                for tail in tails:
+                    chain=(*prefix,supervisor,*tail)
+                    validate_chain(root,chain,request);candidates.append(chain)
+    if len(candidates)>1:raise ValueError('multiple compute children; refuse fault injection')
+    return candidates[0] if candidates else None
+
+
+def refresh_chain(chain):
+    """Recheck every OS parent relation and identity while native handles are held."""
+    fresh=[inspect_pid(chain[0]['pid'])]
+    if not owned_process(chain[0],fresh[0]):raise ValueError('marked worker identity changed')
+    for parent,expected in zip(chain,chain[1:]):
+        matches=[p for p in children(parent['pid']) if owned_process(expected,p)]
+        if len(matches)!=1:raise ValueError('process ancestry changed during pinning')
+        fresh.append(matches[0])
+    return tuple(fresh)
 
 
 def children(parent):
@@ -180,21 +266,13 @@ def pause_compute(lab,request):
     with ExitStack() as stack:
         worker_handle=stack.enter_context(pin_process(worker));candidate=None
         while time.monotonic()<until:
-            worker_handle.require_alive();parents=children(worker['pid'])
-            candidates=[]
-            for parent in parents:
-                if 'spawn_main' not in parent['command']:continue
-                for child in children(parent['pid']):
-                    if 'backend.inversion.compute_child' not in child['command']:continue
-                    validate_candidate(root,worker,parent,child,request)
-                    candidates.append((parent,child))
-            if len(candidates)>1:raise ValueError('multiple compute children; refuse fault injection')
-            if candidates:candidate=candidates[0];break
+            worker_handle.require_alive();candidate=find_chain(root,worker,request)
+            if candidate is not None:break
             time.sleep(.1)
         if candidate is None:raise TimeoutError('fresh compute child not found')
-        parent,child=candidate
-        parent_handle=stack.enter_context(pin_process(parent));process=stack.enter_context(pin_process(child))
-        validate_candidate(root,worker,parent,child,request)
-        worker_handle.require_alive();parent_handle.require_alive()
+        handles=[worker_handle,*[stack.enter_context(pin_process(p)) for p in candidate[1:]]]
+        validate_chain(root,refresh_chain(candidate),request)
+        for handle in handles:handle.require_alive()
+        process=handles[-1]
         stack.enter_context(ThreadPause(process))
         yield process
