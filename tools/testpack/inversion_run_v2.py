@@ -278,6 +278,11 @@ def approved_execution(session,facts,model,root,case_id):
     return output
 
 
+def require_offline_checks(checks):
+    from .validate import offline_passed
+    if not offline_passed(checks):raise ValueError('offline package assertions failed; no approvals issued')
+
+
 def run_inversion_cases(lab,pack,run_root):
     pack=checked_pack(lab,pack);root=safe_path(Path(run_root),missing=True)
     if root.exists() or root.parent!=lab.root:raise ValueError('new owned run path required')
@@ -287,7 +292,8 @@ def run_inversion_cases(lab,pack,run_root):
     checks=validate_pack_v2(pack)
     save(root,'offline-checks.json',{'checks':[asdict(c) for c in checks]})
     budgets={c.check_id.removesuffix('-finite-inversion'):c for c in checks if c.check_id.endswith('-finite-inversion')}
-    if any(c.status!='passed' for c in checks):raise ValueError('offline package assertions failed; no approvals issued')
+    require_offline_checks(checks)
+    if set(budgets)!=set(positive_case_ids(pack))|set(FAULTS):raise ValueError('finite budget inventory incomplete')
     journal=root/'command-intents';journal.mkdir();private_acl(journal)
     outcomes=[];wave=V2WaveformSession(lab,root);session=InversionSession(LabHttp(lab,'review'),journal_root=journal)
     model=registered_model(session)
@@ -300,7 +306,6 @@ def run_inversion_cases(lab,pack,run_root):
     # Negative waveform cases must never create a parameter with a failed
     # finite budget. Adequate missing support is still subject to waveform eligibility.
     for case_id in FAULTS:
-        if case_id not in budgets:continue
         report=budgets[case_id].actual
         if not report['passed']:
             outcome=InversionOutcome(case_id,'passed','refused','refused','budget',

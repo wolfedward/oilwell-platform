@@ -169,6 +169,9 @@ def _publisher_probe(root, credentials):
 
 
 def _dispatch(action, root):
+    if action == 'numeric_inventory':
+        from backend.inversion.model_manifest_v2 import numerical_inventory
+        return numerical_inventory()
     if action == 'fingerprint':
         from backend.review_runtime import _source_hashes
         return {'schema_sha256': _source_hashes()[0]}

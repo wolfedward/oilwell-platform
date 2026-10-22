@@ -80,6 +80,9 @@ def _venv(root):
                                  stdout=output, stderr=subprocess.STDOUT, creationflags=flags, timeout=600)
         if install.returncode:
             raise RuntimeError('pinned dependencies installation failed')
+    if _marker(root).get('inversion_v2') is True:
+        from .review_deploy_numeric import install as install_numeric
+        install_numeric(root)
 
 
 def _broker_passwords(root, credentials, profile='review', *, fixture=None):
@@ -114,9 +117,11 @@ def _preflight(target, source, ports):
     return target, source
 
 
-def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', fixture=None):
+def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', fixture=None, inversion_v2=False):
     checked_profile(profile)
     checked_fixture(fixture)
+    if inversion_v2 is not False and (inversion_v2 is not True or fixture is None):
+        raise ValueError('v2 deployment requires an explicit isolated testpack fixture')
     ports = ports or _ports(8770, 55432, 1884)
     if fixture is not None:
         from .testpack.lab import PROTECTED_PORTS
@@ -126,6 +131,7 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', f
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports
     marker['profile'] = profile
+    if inversion_v2:marker['inversion_v2'] = True
     write_json_private(target / 'private' / 'marker.json', marker)
     _private_directories(target)
     source_record = export_committed_source(source, target / 'code')
@@ -221,6 +227,9 @@ def launch(root):
         evidence = wait_for_readiness(root, marker, timeout=60)
         if not readiness_complete(evidence):
             raise RuntimeError('bounded review component readiness was not established')
+        if marker.get('inversion_v2') is True:
+            from .review_deploy_numeric import verify as verify_numeric
+            marker['numeric_readiness'] = verify_numeric(root)
     except Exception:
         _readiness_receipt(root, marker, evidence, ok=False)
         marker['state'] = 'start_failed'

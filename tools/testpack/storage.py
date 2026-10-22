@@ -182,10 +182,27 @@ def generator_sources_v2():
 
 def generator_fingerprint_v2():
     root=Path(__file__).resolve().parents[2]
-    commit=subprocess.run(['git','-C',str(root),'rev-parse','HEAD'],capture_output=True,check=True,timeout=10).stdout.decode().strip()
+    commit=generator_commit_v2(root)
     return {'version':'owp.testpack.generator/2','source_commit':commit,
         'source_sha256':hashlib.sha256(canonical_bytes(generator_sources_v2())).hexdigest(),
         'python_version':platform.python_version(),'rng':'sha256-counter/1'}
+
+
+def generator_commit_v2(root):
+    """Owned immutable exports have explicit provenance, never an ancestor Git HEAD."""
+    root=Path(root).resolve(strict=True)
+    if (root/'.git').exists():
+        commit=subprocess.run(['git','-C',str(root),'rev-parse','HEAD'],capture_output=True,
+            check=True,timeout=10).stdout.decode().strip()
+    else:
+        from tools.review_deploy_paths import verify_target
+        from tools.review_deploy_source import verify_export
+        if root.name!='code':raise ValueError('unowned generator source tree')
+        marker=verify_target(root.parent)
+        verify_export(root,marker['source'])
+        commit=marker['source']['commit']
+    if not re.fullmatch('[0-9a-f]{40,64}',commit):raise ValueError('invalid source commit')
+    return commit
 
 
 def _case_record(value):

@@ -116,7 +116,7 @@ def compute_environment(directory):
 def launch_compute(input_path,output_path):
     root=str(Path(__file__).resolve().parents[2])
     bootstrap="import sys; from pathlib import Path; sys.path.insert(0,"+repr(root)+"); from backend.inversion.compute_child import compute; compute(Path(sys.argv[1]),Path(sys.argv[2]))"
-    return subprocess.Popen([sys.executable,'-I','-c',bootstrap,str(input_path),str(output_path)],
+    return subprocess.Popen([sys.executable,'-I','-B','-c',bootstrap,str(input_path),str(output_path)],
         cwd=input_path.parent,env=compute_environment(input_path.parent),stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True,
         creationflags=subprocess.CREATE_NO_WINDOW)

@@ -40,10 +40,10 @@ def validate_candidate(root,worker,supervisor,compute,request):
     argv=command_argv(compute['command'])
     code=str((root/'code').resolve())
     bootstrap="import sys; from pathlib import Path; sys.path.insert(0,"+repr(code)+"); from backend.inversion.compute_child import compute; compute(Path(sys.argv[1]),Path(sys.argv[2]))"
-    if (len(argv)!=6 or argv[1:4]!=['-I','-c',bootstrap] or
+    if (len(argv)!=7 or argv[1:5]!=['-I','-B','-c',bootstrap] or
         Path(argv[0]).resolve()!=(root/'venv/Scripts/python.exe').resolve()):
         raise ValueError('not the installed credential-free numerical command')
-    input_path=safe_path(Path(argv[4]));output_path=safe_path(Path(argv[5]),missing=True)
+    input_path=safe_path(Path(argv[5]));output_path=safe_path(Path(argv[6]),missing=True)
     stage=input_path.parent;staging=safe_path(root/'private/inversion-staging')
     if (input_path.name!='input.json' or output_path!=stage/'result.bin' or stage.parent!=staging or
         not stage.name.startswith('inversion-') or input_path.stat().st_size>64*1024**2):

@@ -26,7 +26,7 @@ class OwnedFaultTests(unittest.TestCase):
             input_path.write_bytes(canonical_bytes({'snapshot':{'request':request}}))
             code=str((root/'code').resolve())
             bootstrap="import sys; from pathlib import Path; sys.path.insert(0,"+repr(code)+"); from backend.inversion.compute_child import compute; compute(Path(sys.argv[1]),Path(sys.argv[2]))"
-            command=subprocess.list2cmdline([str(root/'venv/Scripts/python.exe'),'-I','-c',bootstrap,str(input_path),str(output_path)])
+            command=subprocess.list2cmdline([str(root/'venv/Scripts/python.exe'),'-I','-B','-c',bootstrap,str(input_path),str(output_path)])
             worker={'pid':100,'created':'owned','executable':'python','command':'worker'}
             supervisor={'pid':101,'parent_pid':100,'command':'spawn_main','created':'owned2','executable':'python'}
             child={'pid':102,'parent_pid':101,'command':command,'created':'owned3','executable':'python'}

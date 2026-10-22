@@ -14,24 +14,29 @@ from .review_deploy_paths import private_acl
 
 
 EXACT = {'server.py', 'app.js', 'styles.css', 'index.html', 'workbench.html', 'requirements-production.txt',
-         'assets/heneng-logo.png', 'assets/heneng-logo-original.png'}
+         'requirements-inversion-v2.txt', 'assets/heneng-logo.png', 'assets/heneng-logo-original.png'}
 PREFIXES = ('backend/', 'frontend/')
 TOOL_NAMES = {'review_deploy.py', 'review_deploy_paths.py', 'review_deploy_config.py',
               'review_deploy_source.py', 'review_deploy_pg.py', 'review_deploy_process.py',
               'review_deploy_backup.py', 'review_deploy_child.py', 'review_deploy_ready.py',
-              'review_deploy_worker.py'}
+              'review_deploy_worker.py', 'review_deploy_numeric.py', 'provision_inversion_v2.py'}
 TESTPACK_NAMES = {'__init__.py', '__main__.py', 'contracts.py', 'storage.py', 'config.py',
                  'mechanics.py', 'cycles.py', 'currents.py', 'waveforms.py', 'history.py',
                  'study_inputs.py', 'build.py', 'validate.py', 'lab.py', 'lab_http.py',
                  'modbus_device.py', 'gateway_adapter.py', 'telemetry_run.py', 'waveform_run.py',
                  'inversion_binding.py', 'software_budget.py', 'evidence_report.py', 'evidence_report.html',
-                 'render_evidence.cjs', 'study_run.py', 'report.py', 'viewer.py', 'viewer_details.py', 'delivery.py', 'verify_viewer.cjs'}
+                 'render_evidence.cjs', 'study_run.py', 'report.py', 'viewer.py', 'viewer_details.py', 'delivery.py', 'verify_viewer.cjs',
+                 'config_v2.py', 'build_v2.py', 'forward_v2.py', 'cycles_v2.py', 'budget_v2.py', 'validate_v2.py',
+                 'inversion_binding_v2.py', 'inversion_http_v2.py', 'inversion_run_v2.py', 'inversion_guards_v2.py',
+                 'owned_compute_fault_v2.py', 'owned_v2_verify.py', 'report_inversion_v2.py', 'deliver_v2.py',
+                 'resources_v2.py'}
 
 
 def _included(name):
     return (name in EXACT or name in {'backend', 'frontend', 'assets', 'tools'} or name.startswith(PREFIXES) or
             name in {'tools/testpack/' + item for item in TESTPACK_NAMES} or
-            name in {'config/testpack/smoke.json', 'config/testpack/extended.json'} or
+            name in {'config/testpack/smoke.json', 'config/testpack/extended.json',
+                     'config/testpack/inversion-v2-smoke.json', 'config/testpack/inversion-v2-extended.json'} or
             name in {'tools/' + item for item in TOOL_NAMES})
 
 

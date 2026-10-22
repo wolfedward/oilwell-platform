@@ -68,7 +68,8 @@ def initialize_lab(target, *, pack, source, ports):
                'pack_id': marker['pack_id'], 'pack_sha256': manifest_sha, 'gateway_id': 'REVIEW-GW',
                'device_ids': ['TESTPACK-PUMP-001', 'TESTPACK-PUMP-002'], 'modbus_port': ports['modbus']}
     for profile in ('monitoring', 'review'):
-        result = deploy.initialize(target / profile, source=source, ports=ports[profile], profile=profile, fixture=fixture)
+        extra={'inversion_v2':True} if pack.manifest['configuration'].get('schema')=='owp.testpack.config/2' else {}
+        result = deploy.initialize(target / profile, source=source, ports=ports[profile], profile=profile, fixture=fixture, **extra)
         marker['instances'][profile] = result['instance_id']
         replace_json_private(target / 'private/lab.json', marker)
     marker['state'] = 'ready'
