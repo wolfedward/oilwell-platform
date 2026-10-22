@@ -1,0 +1,543 @@
+{
+  "schema": "inversion.parameter-set/2",
+  "assembly_id": "33333333-3333-4333-8333-333333333333",
+  "assembly_version": 1,
+  "source_kind": "synthetic",
+  "valid_from": "2026-01-01T00:00:00.000000Z",
+  "valid_to": "2027-01-01T00:00:00.000000Z",
+  "parent_version": null,
+  "provenance": {
+    "source_organization": "Software test",
+    "source_date": "2026-01-01",
+    "notes": "Synthetic unapproved parser fixture only; not field-validated and not installed case proof.",
+    "attachment_pins": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "provenance",
+        "source_description": "Explicit synthetic report section for provenance"
+      }
+    ],
+    "calibration_cycles": [
+      {
+        "start_ns": "1790784000000000000",
+        "end_ns": "1790784008000000000",
+        "physical_cycle_id": "synthetic-cycle-base"
+      }
+    ],
+    "operating_conditions": [
+      {
+        "id": "condition-1",
+        "valid_from": "2026-01-01T00:00:00.000000Z",
+        "valid_to": "2027-01-01T00:00:00.000000Z",
+        "temperature_K": {
+          "min": "290",
+          "max": "310"
+        },
+        "supply_voltage_V": {
+          "min": "380",
+          "max": "420"
+        },
+        "supply_frequency_Hz": {
+          "min": "49",
+          "max": "51"
+        },
+        "source_description": "Controlled software case",
+        "attachment_pins": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "purpose": "operating_conditions",
+            "source_description": "Explicit synthetic report section for operating_conditions"
+          }
+        ]
+      }
+    ],
+    "channel_bindings": [
+      {
+        "role": "active_power",
+        "source": "native_waveform",
+        "channel_pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "active_power",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "installation_evidence_refs": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "purpose": "installation",
+            "source_description": "Explicit synthetic report section for installation"
+          }
+        ],
+        "modbus": null
+      },
+      {
+        "role": "crank_angle",
+        "source": "native_waveform",
+        "channel_pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "crank_angle",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "installation_evidence_refs": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "purpose": "installation",
+            "source_description": "Explicit synthetic report section for installation"
+          }
+        ],
+        "modbus": null
+      },
+      {
+        "role": "load",
+        "source": "native_waveform",
+        "channel_pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "load",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "installation_evidence_refs": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "purpose": "installation",
+            "source_description": "Explicit synthetic report section for installation"
+          }
+        ],
+        "modbus": null
+      },
+      {
+        "role": "displacement",
+        "source": "native_waveform",
+        "channel_pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "displacement",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "installation_evidence_refs": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "purpose": "installation",
+            "source_description": "Explicit synthetic report section for installation"
+          }
+        ],
+        "modbus": null
+      }
+    ]
+  },
+  "geometry": {
+    "pivot_x_m": "1",
+    "pivot_y_m": "2",
+    "crank_radius_m": "0.5",
+    "pitman_length_m": "2",
+    "rear_arm_m": "1",
+    "horsehead_radius_m": "1",
+    "branch": 1,
+    "rotation_sign": 1,
+    "displacement_sign": 1,
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "geometry",
+        "source_description": "Explicit synthetic report section for geometry"
+      }
+    ]
+  },
+  "phase": {
+    "channel_pin": {
+      "gateway_id": "gateway-1",
+      "device_id": "device-1",
+      "capture_id": "22222222-2222-4222-8222-222222222222",
+      "stream_id": "stream-1",
+      "channel_id": "crank_angle",
+      "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "calibration_pin": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "review_version": 1
+      },
+      "sampling_pin": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "review_version": 1
+      },
+      "first_index": 0,
+      "last_index": 1024
+    },
+    "zero_reading_rad": "0",
+    "encoder_direction": 1,
+    "unwrap_kind": "unwrapped",
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "phase",
+        "source_description": "Explicit synthetic report section for phase"
+      }
+    ]
+  },
+  "bodies": {
+    "crank_inertia_kg_m2": "1",
+    "crank_first_moment_x_kg_m": "0",
+    "crank_first_moment_y_kg_m": "0",
+    "beam_inertia_kg_m2": "0",
+    "beam_first_moment_x_kg_m": "0",
+    "beam_first_moment_y_kg_m": "0",
+    "pitman_mass_kg": "0",
+    "pitman_com_fraction": "0.5",
+    "pitman_inertia_kg_m2": "0",
+    "gravity_m_s2": "9.80665",
+    "component_ledger": [
+      {
+        "id": "motor",
+        "name": "Motor",
+        "owner": "upstream"
+      }
+    ],
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "bodies",
+        "source_description": "Explicit synthetic report section for bodies"
+      }
+    ]
+  },
+  "drive": {
+    "supply_kind": "direct_line_induction",
+    "ratio": "10",
+    "upstream_inertia_kg_m2": "1",
+    "loss_grid": {
+      "power_W": [
+        "-250000",
+        "250000"
+      ],
+      "motor_speed_rad_s": [
+        "1",
+        "250"
+      ],
+      "loss_W": [
+        [
+          "1200",
+          "1200"
+        ],
+        [
+          "1200",
+          "1200"
+        ]
+      ],
+      "error_W": [
+        [
+          "0.02",
+          "0.02"
+        ],
+        [
+          "0.02",
+          "0.02"
+        ]
+      ],
+      "evidence_refs": [
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "purpose": "loss_grid",
+          "source_description": "Explicit synthetic report section for loss_grid"
+        }
+      ]
+    },
+    "crank_friction_Nm": "0",
+    "viscous_friction_Nm_s": "0",
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "drive",
+        "source_description": "Explicit synthetic report section for drive"
+      }
+    ]
+  },
+  "domain": {
+    "power_W": {
+      "min": "-250000",
+      "max": "250000"
+    },
+    "speed_rad_s": {
+      "min": "0.1",
+      "max": "2"
+    },
+    "acceleration_rad_s2": {
+      "min": "-2",
+      "max": "2"
+    },
+    "temperature_K": {
+      "min": "250",
+      "max": "350"
+    },
+    "supply_voltage_V": {
+      "min": "300",
+      "max": "500"
+    },
+    "supply_frequency_Hz": {
+      "min": "45",
+      "max": "55"
+    },
+    "bandwidth_Hz": {
+      "min": "1",
+      "max": "1000"
+    },
+    "window_ns": {
+      "min": "1",
+      "max": "10000000"
+    },
+    "load_N": {
+      "min": "0",
+      "max": "100000"
+    },
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "domain",
+        "source_description": "Explicit synthetic report section for domain"
+      }
+    ]
+  },
+  "uncertainty": {
+    "torque_bound_Nm": "100",
+    "factor_bound_m": "0.0001",
+    "speed_bound_rad_s": "0.00001",
+    "numerical_budget_Nm": "0.01",
+    "numerical_factor_budget_m": "0.0000001",
+    "evidence_refs": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "uncertainty",
+        "source_description": "Explicit synthetic report section for uncertainty"
+      }
+    ]
+  },
+  "policy": {
+    "body": {
+      "schema": "inversion.algorithm-policy/2",
+      "algorithm": "beam_energy_balance/2",
+      "model_version": "beam_energy_balance/2",
+      "numerical_margin": "0.001",
+      "motion_max_time_span_ns": "250000000",
+      "motion_max_angle_span_rad": "0.5",
+      "motion_max_residual_rad": "0.0001",
+      "motion_max_condition": "10000",
+      "max_load_error_N": "1000",
+      "min_coverage_fraction": "0.8",
+      "reference_max_gap_ns": "20000000",
+      "fill_max_time_span_ns": "20000000",
+      "fill_max_angle_span_rad": "0.2",
+      "relative_error_min_denominator_N": "1"
+    },
+    "content_sha256": "a62fc64f28b9a3c6d02ca05cf3a7fb6a8aecf62f34d18dc470de9988f5917bbc"
+  },
+  "coverage_contract": {
+    "schema": "inversion.coverage-contract/1",
+    "scope": "finite_synthetic_input/1",
+    "source_kind": "synthetic",
+    "purpose": "software_pair_test",
+    "field_accuracy_certified": false,
+    "validation_status": "not_field_validated",
+    "pack_id": "synthetic-fixture",
+    "case_id": "base",
+    "config_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "generator_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "inputs": {
+      "active_power": {
+        "pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "active_power",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "original_file_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bound_file_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "channel_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "raw_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "time_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "quality_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "count": 1025,
+        "encoding": {
+          "unit": "W",
+          "scale": "0.01",
+          "offset": "0",
+          "rounding": "nearest_even",
+          "sample_format": "i32",
+          "pre_encoding_error_bound": "0.01"
+        }
+      },
+      "crank_angle": {
+        "pin": {
+          "gateway_id": "gateway-1",
+          "device_id": "device-1",
+          "capture_id": "22222222-2222-4222-8222-222222222222",
+          "stream_id": "stream-1",
+          "channel_id": "crank_angle",
+          "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "calibration_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "sampling_pin": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "review_version": 1
+          },
+          "first_index": 0,
+          "last_index": 1024
+        },
+        "original_file_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bound_file_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "channel_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "raw_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "time_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "quality_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "count": 1025,
+        "encoding": {
+          "unit": "rad",
+          "scale": "0.00000001",
+          "offset": "0",
+          "rounding": "nearest_even",
+          "sample_format": "i32",
+          "pre_encoding_error_bound": "0.00000000000000000001"
+        }
+      }
+    },
+    "cycle": {
+      "start_ns": "1790784000000000000",
+      "end_ns": "1790784008000000000",
+      "physical_cycle_id": "synthetic-cycle-base"
+    },
+    "power_support": {
+      "kind": "centered_mean",
+      "window_ns": "1000000"
+    },
+    "measurement": {
+      "angle_quantization_rad": "0.000000005",
+      "angle_calibration_error_rad": "0",
+      "angle_noise_error_rad": "0",
+      "power_quantization_W": "0.005",
+      "power_noise_error_W": "0",
+      "power_average_mismatch_W": "1",
+      "loss_error_W": "0.02",
+      "parameter_semantics": "exact_registered_constants",
+      "unmodeled_terms": "none_in_registered_family",
+      "basis": "installed_case/1"
+    },
+    "time": {
+      "common_offset_bound_ns": "0",
+      "differential_bound_ns": "0",
+      "basis": "installed_case/1"
+    },
+    "motion": {
+      "family": "linear_sinusoid/1",
+      "theta0_rad": "0",
+      "rate_rad_s": "0.7853981633974483",
+      "epsilon_rad": "0",
+      "omega_max_rad_s": "0.7853981633974483",
+      "acceleration_max_rad_s2": "0",
+      "third_derivative_max_rad_s3": "0",
+      "fourth_derivative_max_rad_s4": "0",
+      "support_start_ns": "1790783999999500000",
+      "support_end_ns": "1790784008000500000",
+      "basis": "installed_case/1",
+      "mechanical_family": "rigid_four_bar_crank_only/1"
+    },
+    "binding": {
+      "parameter_core_sha256": "bf8a7ed6806d978cdd8f8377814b872c27c407b3e770b1f0efb7d7eb90721169",
+      "policy_sha256": "a62fc64f28b9a3c6d02ca05cf3a7fb6a8aecf62f34d18dc470de9988f5917bbc",
+      "checker_version": "finite-input/1",
+      "checker_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "budget_attachment_pin": {
+        "id": "99999999-9999-4999-8999-999999999999",
+        "content_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "purpose": "uncertainty",
+        "source_description": "Synthetic unapproved human-readable budget fixture"
+      }
+    }
+  }
+}
