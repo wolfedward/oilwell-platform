@@ -126,10 +126,20 @@ def registered_model(session):
     if len(found)!=1:raise ValueError('ambiguous installed v2 model')
     current=found[0]
     if current['review_action']!='approve':
-        post(session,'/models/'+current['id']+'/review',{'decision':'approve'},version=current['review_version'],actor=REVIEWER,status=200)
+        # The list LEFT JOIN has null when no review exists; ModelService's
+        # immutable initial review version is 1 (not the installed model version).
+        review_version=1 if current['review_version'] is None else current['review_version']
+        post(session,'/models/'+current['id']+'/review',{'decision':'approve'},version=review_version,actor=REVIEWER,status=200)
         current=next(m for m in session.get('/models?limit=100')['items'] if m['id']==current['id'])
     if current['review_action']!='approve':raise ValueError('model not independently approved')
     return current
+
+
+def assign_case(session,pack_id,case_id,assembly_id,interval):
+    # Guards reuse a synthetic cycle but create independent installations. Their
+    # overlapping observation intervals must not claim the same test well.
+    return post(session,'/assignments',dict(assembly_id=assembly_id,well_id='test:'+pack_id+':'+case_id+':'+assembly_id,
+        valid_from=interval['valid_from'],valid_to=interval['valid_to'],close_assignment_id=None))
 
 
 def prepare_case(wave,session,pack,case_id,root,*,before_review=None):
@@ -161,8 +171,7 @@ def prepare_case(wave,session,pack,case_id,root,*,before_review=None):
         source_kind='synthetic',source_organization='OWP software laboratory',parent_version=None,
         valid_from=interval['valid_from'],valid_to=interval['valid_to'],installation_evidence=[attachment|{
             'purpose':'installation','source_description':'Synthetic software installation basis, not physical equipment'}]))
-    post(session,'/assignments',dict(assembly_id=assembly_id,well_id='test:'+pack.manifest['pack_id']+':'+case_id,
-        valid_from=interval['valid_from'],valid_to=interval['valid_to'],close_assignment_id=None))
+    assign_case(session,pack.manifest['pack_id'],case_id,assembly_id,interval)
     native_cycle=pair['body']['physical_cycles'][0]
     epoch=utc_ns(parse_frame(bound.splitlines()[0]))
     pins=dict(assembly_id=assembly_id,assembly_version=assembly['version'],valid_from=interval['valid_from'],valid_to=interval['valid_to'],

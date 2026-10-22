@@ -35,6 +35,32 @@ class ScriptHttp:
 
 
 class InversionHttpTests(unittest.TestCase):
+    def test_first_model_review_uses_initial_version_when_list_has_no_review(self):
+        from tools.testpack.inversion_run_v2 import registered_model
+        module=api_module(self);identifier=str(uuid4());prefix='/api/production-inversion'
+        unreviewed={'id':identifier,'installed_id':'beam_energy_balance/2','version':2,
+            'content_sha256':'a'*64,'review_version':None,'review_action':None}
+        approved=unreviewed|{'review_version':2,'review_action':'approve'}
+        http=ScriptHttp([
+            ('GET',prefix+'/models?limit=100',{'data':{'items':[]}}),
+            ('POST',prefix+'/models',{'data':{'subject_id':identifier,'version':1}}),
+            ('GET',prefix+'/models?limit=100',{'data':{'items':[unreviewed]}}),
+            ('POST',prefix+'/models/'+identifier+'/review',{'data':{'subject_id':identifier,'version':2}}),
+            ('GET',prefix+'/models?limit=100',{'data':{'items':[approved]}})])
+        self.assertEqual(registered_model(module.InversionSession(http)),approved)
+        self.assertEqual(http.calls[3][2]['command']['expected'],{'kind':'match','version':1})
+        self.assertEqual(http.calls[3][3]['actor'],'reviewer')
+        self.assertFalse(http.steps)
+
+    def test_existing_approved_model_is_never_reapproved(self):
+        from tools.testpack.inversion_run_v2 import registered_model
+        module=api_module(self)
+        model={'id':str(uuid4()),'installed_id':'beam_energy_balance/2',
+            'review_version':2,'review_action':'approve'}
+        http=ScriptHttp([('GET','/api/production-inversion/models?limit=100',{'data':{'items':[model]}})])
+        self.assertEqual(registered_model(module.InversionSession(http)),model)
+        self.assertEqual(len(http.calls),1)
+
     def test_namespace_error_codes(self):
         client=object.__new__(LabHttp);client.port=19999;client.sessions={'author':{}}
         for raw,expected in (({'code':'inversion.self_review','details':{}},'inversion.self_review'),
@@ -207,6 +233,25 @@ class BindingWorkflowTests(unittest.TestCase):
     def workflow(self):
         try:return importlib.import_module('tools.testpack.inversion_run_v2')
         except ModuleNotFoundError:self.fail('v2 waveform and inversion workflow absent')
+
+    def test_repeated_case_assignments_have_disjoint_well_identities(self):
+        module=self.workflow();assign=getattr(module,'assign_case',None)
+        self.assertTrue(callable(assign),'fresh case assignment boundary absent')
+        from backend.inversion.contracts import name
+        prefix='/api/production-inversion/assignments'
+        http=ScriptHttp([('POST',prefix,{'data':{'version':1}}),('POST',prefix,{'data':{'version':1}})])
+        session=api_module(self).InversionSession(http)
+        interval={'valid_from':'2026-10-01T00:00:00+00:00','valid_to':'2026-10-01T00:02:00+00:00'}
+        assemblies=[str(uuid4()),str(uuid4())]
+        for assembly in assemblies:assign(session,'tp-'+'a'*24,'cycle-base',assembly,interval)
+        bodies=[call[2]['body'] for call in http.calls]
+        self.assertNotEqual(bodies[0]['well_id'],bodies[1]['well_id'])
+        for body,assembly in zip(bodies,assemblies):
+            name(body['well_id']);name(body['well_id'][5:])
+            self.assertTrue(body['well_id'].startswith('test:'))
+            self.assertIn(assembly,body['well_id']);self.assertEqual(body['assembly_id'],assembly)
+            self.assertEqual(body['valid_from'],interval['valid_from'])
+            self.assertEqual(body['valid_to'],interval['valid_to']);self.assertIsNone(body['close_assignment_id'])
 
     def test_channel_pins_use_real_sync_and_producer(self):
         module=self.workflow();capture={'gateway_id':'G','device_id':'D','capture_id':str(uuid4())}
