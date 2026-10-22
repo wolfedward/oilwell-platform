@@ -18,6 +18,7 @@ from .interval_runtime import RationalInterval,ProofBudget,ball,enclose,proof_co
 from .parameter_contracts_v2 import ParameterSetV2,parse_parameter_set_v2
 from .synthetic_registry import CaseDefinition,case_definition,counter_fraction
 from .transactions import InversionError
+from .series import Sample,SampleSeries,CycleWindow,PredictionInputs
 
 EPOCH=1790784000000000000
 _SEAL=object()
@@ -35,19 +36,35 @@ class SourceProof:
     power_error_W: tuple[Q,...] | None
     evidence_sha256: str
     derivative_support_ns: tuple[Q,Q] | None
+    _inputs: PredictionInputs | None=field(repr=False,compare=False)
+    _parameter_sha256: str | None=field(repr=False)
     _seal: object=field(repr=False,compare=False)
 
 
-def _result(status,reasons,case,digest,*,derivatives=None,angles=None,times=None,common=None,power=None,support=None):
+def _result(status,reasons,case,digest,*,derivatives=None,angles=None,times=None,common=None,power=None,support=None,inputs=None,parameter_sha=None):
     obj=object.__new__(SourceProof)
     for key,value in zip(SourceProof.__dataclass_fields__,(
-        status,tuple(reasons),case,derivatives,angles,times,common,power,digest,support,_SEAL)):
+        status,tuple(reasons),case,derivatives,angles,times,common,power,digest,support,inputs,parameter_sha,_SEAL)):
         object.__setattr__(obj,key,value)
     return obj
 
 
 def verified(proof):
     return type(proof) is SourceProof and proof._seal is _SEAL and proof.status=='verified'
+
+
+def inputs_from_evidence(evidence,parameters):
+    coverage=parameters.coverage_contract.body
+    def series(channel):
+        return SampleSeries(channel.role,tuple(Sample(time,i,raw*channel.scale+channel.offset if quality==0 else None,quality)
+            for i,(raw,time,quality) in enumerate(zip(channel.raw,channel.time_ns,channel.quality))),channel.pin)
+    return PredictionInputs(series(evidence.power),series(evidence.angle),
+        CycleWindow(Q(coverage['cycle']['start_ns']),Q(coverage['cycle']['end_ns']),coverage['cycle']['physical_cycle_id']),
+        int(coverage['power_support']['window_ns']),Q(coverage['time']['common_offset_bound_ns'])+Q(coverage['time']['differential_bound_ns']))
+
+
+def matches_inputs(proof,inputs,parameters):
+    return verified(proof) and proof._parameter_sha256==parameters.raw_sha256 and proof._inputs==inputs
 
 
 def checker_sha256():
@@ -270,6 +287,7 @@ def verify_sources(evidence: PredictionEvidence, parameters: ParameterSetV2) -> 
                 else: _require(mean.lo>=-20000 and mean.hi<=20000)
             _require(evidence.power.quality[i]==quality and _code(mean,evidence.power.scale)==evidence.power.raw[i])
         return _result('verified',(),case,digest,derivatives=derivatives,angles=(angle_error,)*1025,
-            times=(differential,)*1025,common=common,power=(power_error,)*1025,support=support)
+            times=(differential,)*1025,common=common,power=(power_error,)*1025,support=support,
+            inputs=inputs_from_evidence(evidence,parameters),parameter_sha=parameters.raw_sha256)
     except InversionError as error:
         return _result('refused',(error.code.removeprefix('inversion.'),),case,digest)

@@ -105,7 +105,8 @@ def main(argv=None):
         if report.exists():
             raise ValueError('report must be a new file')
         pack=load_pack(args.pack)
-        checks=validate_pack(pack)
+        from .validate_v2 import validate_versioned
+        checks=validate_versioned(pack)
         passed=offline_passed(checks)
         result={'schema':'owp.testpack.offline-report/1','pack_id':pack.manifest['pack_id'],
                 'status':'passed' if passed else 'failed','scope':'offline and pure numeric only',

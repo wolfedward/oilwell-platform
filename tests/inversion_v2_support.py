@@ -52,3 +52,22 @@ def registered_fixture(case_id='cycle-base'):
     coverage['binding']['parameter_core_sha256']=sha256(parameter_core_bytes(body)).hexdigest()
     evidence=PredictionEvidence(*channels,coverage['pack_id'],case_id,config_sha,gen_sha)
     return body,evidence
+
+
+def prediction_fixture(evidence,parameters):
+    from backend.inversion.series import Sample,SampleSeries,CycleWindow,PredictionInputs,ReferenceInputs,ChannelPin
+    from backend.inversion.synthetic_registry import case_definition
+    from tools.testpack.cycles_v2 import generate_case_v2
+    from backend.inversion.contracts import strict_json
+    cycle=generate_case_v2(case_definition(evidence.config_sha256,evidence.case_id))
+    pins={binding.role:binding.channel_pin for binding in parameters.provenance.channel_bindings}
+    coverage=parameters.coverage_contract.body
+    def series(role):
+        channel=next(c for c in cycle.channels if c.role==role)
+        scale=Q(channel.scale)*(1000 if role=='load' else 1)
+        return SampleSeries(role,tuple(Sample(Q(1790784000000000000+t),i,raw*scale if q==0 else None,q)
+            for i,(t,raw,q) in enumerate(zip(cycle.time_ns,channel.raw,channel.quality))),pins[role])
+    inputs=PredictionInputs(series('active_power'),series('crank_angle'),
+        CycleWindow(Q(coverage['cycle']['start_ns']),Q(coverage['cycle']['end_ns']),coverage['cycle']['physical_cycle_id']),
+        1000000,Q(coverage['time']['common_offset_bound_ns'])+Q(coverage['time']['differential_bound_ns']))
+    return inputs,ReferenceInputs(series('load'),series('displacement'))
