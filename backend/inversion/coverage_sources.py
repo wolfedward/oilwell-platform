@@ -85,11 +85,13 @@ def _require(condition):
 
 
 @contextmanager
-def _context():
+def _context(*, series_cap: int = 4):
+    if type(series_cap) is not int or series_cap not in (4,6):
+        raise ValueError('Supported series cap required')
     with proof_context() as flint:
         cap=flint.ctx.cap
         try:
-            flint.ctx.cap=4
+            flint.ctx.cap=series_cap
             yield flint
         finally: flint.ctx.cap=cap
 
@@ -105,14 +107,42 @@ def _coeff(series,index):
     return value
 
 
+def _panel_quadrature(midpoint, segment, h: Q) -> tuple[object,Q]:
+    """Independent Taylor integral with the full-panel fourth coefficient.
+
+    The symmetric fourth-derivative Taylor remainder integrates to h^5/1920;
+    Arb c4 is the derivative divided by24, hence the coefficient bound h^5/80.
+    """
+    if type(h) is not Q or h<=0: raise ValueError('Positive exact panel width required')
+    check_fraction(h)
+    _coeff(midpoint,4)
+    center,second=_coeff(midpoint,0),_coeff(midpoint,2)
+    enclose(center); enclose(second)
+    whole=enclose(_coeff(segment,4))
+    powers=[h]
+    for _ in range(4): powers.append(check_fraction(powers[-1]*h))
+    result=ball(h)*center+ball(check_fraction(powers[2]/12))*second
+    enclose(result)
+    bound=max(abs(whole.lo),abs(whole.hi))
+    remainder=check_fraction(check_fraction(powers[4]*bound)/80)
+    return result,remainder
+
+
 def _beta(g,theta,flint):
+    # Physical displacement bounds also call this geometry with scalar balls.
+    def constant(value):
+        return _coeff(value,0) if type(value) is flint.arb_series else value
     bx,by,r,a,l=(ball(Q(g[k])) for k in ('pivot_x_m','pivot_y_m','crank_radius_m','rear_arm_m','pitman_length_m'))
     # Installed family has negative D_x,D_y for its entire revolution. This
     # fixes the argument branch; no atan2 jump or unproved unwrap is allowed.
     _require(Q(g['pivot_x_m'])>Q(g['crank_radius_m']) and Q(g['pivot_y_m'])>Q(g['crank_radius_m']))
     dx=g['rotation_sign']*r*theta.sin()-bx; dy=r*theta.cos()-by
-    rho=(dx*dx+dy*dy).sqrt()
+    squared=dx*dx+dy*dy
+    _require(constant(squared)>0 and constant(dx)<0 and a>0)
+    rho=squared.sqrt()
     cosine=(a*a+rho*rho-l*l)/(2*a*rho)
+    c0=constant(cosine)
+    _require(c0>-1 and c0<1)
     return (dy/dx).atan()-flint.arb.pi()+g['branch']*cosine.acos()
 
 
@@ -148,7 +178,7 @@ def _root(config_sha,case_id):
 def _state(model,time,root,flint):
     g,b,d,m=(model[k] for k in ('geometry','bodies','drive','motion'))
     rate=2*flint.arb.pi()/ball(Q(m['period_s'])); epsilon=ball(Q(m['epsilon']))
-    t=flint.arb_series([time,1],prec=4); phase=rate*t
+    t=flint.arb_series([time,1],prec=6); phase=rate*t
     theta=_hull(root,flint)+phase+epsilon*phase.sin()
     omega=rate*(1+epsilon*phase.cos())
     beta=_beta(g,theta,flint)
@@ -157,10 +187,12 @@ def _state(model,time,root,flint):
         +ball(Q(b['crank_first_moment_y_kg_m']))*theta.cos())
     energy+=ball((Q(b['crank_inertia_kg_m2'])+Q(d['upstream_inertia_kg_m2']))/2)*omega*omega
     e=(2*velocity/ball(Q(model['load']['transition_speed_m_s']))).exp()
+    _require(_coeff(e+1,0)>0)
     load=ball(Q(model['load']['mean_N']))+ball(Q(model['load']['half_span_N']))*(e-1)/(e+1)
     power=energy.derivative()+ball(Q(d['crank_friction_Nm']))*omega+ball(Q(d['viscous_friction_Nm_s']))*omega*omega
     power+=load*velocity+ball(Q(d['loss_W']))
     for index in range(3): _coeff(power,index)
+    _coeff(power,4)
     return power,theta
 
 
@@ -168,16 +200,17 @@ def _state(model,time,root,flint):
 def _expected(config_sha,physics_id,index):
     case=case_definition(config_sha,physics_id); model=case.body
     root=_root(config_sha,physics_id); t=Q(index,128)
-    with _context() as flint:
+    with _context(series_cap=6) as flint:
         center,theta=_state(model,ball(t),root,flint)
         width=Q(1,1000); h=width/64; total=flint.arb(0); remainder=Q(0)
         for i in range(64):
             lo=t-width/2+i*h; hi=lo+h
             mid,_=_state(model,ball((lo+hi)/2),root,flint)
             interval,_=_state(model,_hull(RationalInterval(lo,hi),flint),root,flint)
-            second=enclose(2*_coeff(interval,2))
-            total+=_coeff(mid,0)*ball(h)
-            remainder=check_fraction(remainder+h**3*max(abs(second.lo),abs(second.hi))/24)
+            correction,radius=_panel_quadrature(mid,interval,h)
+            total+=correction
+            enclose(total)
+            remainder=check_fraction(remainder+radius)
         mean=total/ball(width)+flint.arb(0,ball(remainder/width))
         mean_interval=enclose(mean); angle_interval=enclose(_coeff(theta,0))
         _require(mean_interval.width<=Q(2,100) and angle_interval.width<=Q(2,10**20))

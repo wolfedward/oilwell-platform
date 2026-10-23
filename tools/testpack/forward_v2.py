@@ -1,7 +1,7 @@
 """Independent Cartesian, analytic interval forward model (not production inverse).
 
-Formal Arb series compute P'' on each real interval; a fixed composite midpoint
-remainder encloses the integral. No finite-difference agreement is used as proof.
+Formal Arb series give a midpoint second-order correction and a symmetric
+whole-panel fourth-order remainder. No finite-difference agreement is a proof.
 API: https://python-flint.readthedocs.io/en/stable/arb_series.html
 """
 from contextlib import contextmanager
@@ -17,11 +17,13 @@ from backend.inversion.transactions import InversionError
 
 
 @contextmanager
-def _context():
+def _context(*, series_cap: int = 4):
+    if type(series_cap) is not int or series_cap not in (4,6):
+        raise ValueError('Supported series cap required')
     with proof_context() as flint:
         cap=flint.ctx.cap
         try:
-            flint.ctx.cap=4
+            flint.ctx.cap=series_cap
             yield flint
         finally: flint.ctx.cap=cap
 
@@ -37,14 +39,44 @@ def _coefficient(value, index):
     return result
 
 
+def _panel_quadrature(midpoint, segment, h: Q) -> tuple[object,Q]:
+    """Integral center h*c0+h^3*c2/12, radius h^5*sup|c4|/80.
+
+    c4 is P''''/24 over the WHOLE panel and root enclosure, not its midpoint.
+    The center remains an Arb ball; its own rounding/parameter error is kept.
+    """
+    if type(h) is not Q or h<=0: raise ValueError('Positive exact panel width required')
+    check_fraction(h)
+    _coefficient(midpoint,4)  # A truncated power series must never imply zero c4.
+    c0,c2=_coefficient(midpoint,0),_coefficient(midpoint,2)
+    enclose(c0); enclose(c2)
+    fourth=enclose(_coefficient(segment,4))
+    h2=check_fraction(h*h); h3=check_fraction(h2*h)
+    h4=check_fraction(h3*h); h5=check_fraction(h4*h)
+    correction=c0*ball(h)+c2*ball(check_fraction(h3/12))
+    enclose(correction)
+    radius=check_fraction(check_fraction(h5*max(abs(fourth.lo),abs(fourth.hi)))/80)
+    return correction,radius
+
+
+def _positive_domain(value):
+    constant=_coefficient(value,0) if hasattr(value,'prec') else value
+    if not constant.is_finite() or not constant>0:
+        raise InversionError('coverage_basis_mismatch')
+
+
 def _joint(g, theta):
     """Two circle intersection, expressed without an inverse trig derivative."""
     bx,by,r,a,l=(ball(Q(g[k])) for k in ('pivot_x_m','pivot_y_m','crank_radius_m','rear_arm_m','pitman_length_m'))
     dx=g['rotation_sign']*r*theta.sin()-bx
     dy=r*theta.cos()-by
-    distance=(dx*dx+dy*dy).sqrt()
+    squared=dx*dx+dy*dy
+    _positive_domain(squared)
+    distance=squared.sqrt()
     along=(a*a-l*l+distance*distance)/(2*distance)
-    height=g['branch']*(a*a-along*along).sqrt()
+    height_squared=a*a-along*along
+    _positive_domain(height_squared)
+    height=g['branch']*height_squared.sqrt()
     # Rear-arm vector relative to beam pivot.
     return (along*dx-height*dy)/distance,(along*dy+height*dx)/distance
 
@@ -109,16 +141,18 @@ def jacobian_enclosure(case, theta: RationalInterval):
 def _state(model, time_ball, root, flint, budget):
     budget.consume()
     g,b,d,m=(model[k] for k in ('geometry','bodies','drive','motion'))
-    t=flint.arb_series([time_ball,1],prec=4)
+    t=flint.arb_series([time_ball,1],prec=6)
     rate=2*flint.arb.pi()/ball(Q(m['period_s']))
     phase=t*rate; epsilon=ball(Q(m['epsilon']))
     theta=_interval(root,flint)+phase+epsilon*phase.sin()
     omega=rate*(1+epsilon*phase.cos())
+    _positive_domain(omega)
     alpha=-epsilon*rate*rate*phase.sin()
     x,y=_joint(g,theta)
     velocity=(x*y.derivative()-y*x.derivative())*ball(Q(g['horsehead_radius_m'])*g['displacement_sign']/Q(g['rear_arm_m'])**2)
     jacobian=velocity/omega
     exp=(2*velocity/ball(Q(model['load']['transition_speed_m_s']))).exp()
+    _positive_domain(exp+1)
     load=ball(Q(model['load']['mean_N']))+ball(Q(model['load']['half_span_N']))*(exp-1)/(exp+1)
     uprime=ball(Q(b['gravity_m_s2']))*(-g['rotation_sign']*ball(Q(b['crank_first_moment_x_kg_m']))*theta.cos()
             -ball(Q(b['crank_first_moment_y_kg_m']))*theta.sin())
@@ -127,6 +161,7 @@ def _state(model, time_ball, root, flint, budget):
     power=torque*omega+load*velocity+ball(Q(d['loss_W']))
     for series in (power,theta,omega,alpha,load,jacobian):
         for k in range(3): _coefficient(series,k)
+    _coefficient(power,4)
     return {'power_W':power,'theta_rad':theta,'omega_rad_s':omega,'alpha_rad_s2':alpha,
             'load_N':load,'J_m':jacobian,'x':x,'y':y}
 
@@ -136,7 +171,7 @@ def forward_enclosures(case: CaseDefinition, time_s: Q, *, budget=None):
     if not Q(-1,1000)<=time_s<=Q(8001,1000): raise InversionError('coverage_time_unsupported')
     budget=ProofBudget() if budget is None else budget
     root=reversal_brackets(case)[0]
-    with _context() as flint:
+    with _context(series_cap=6) as flint:
         state=_state(model,ball(time_s),root,flint,budget)
         width=Q(model['motion']['power_window_ns'],10**9); h=width/64
         integral=flint.arb(0); error=Q(0)
@@ -144,9 +179,10 @@ def forward_enclosures(case: CaseDefinition, time_s: Q, *, budget=None):
             lo=time_s-width/2+i*h; hi=lo+h
             middle=_state(model,ball((lo+hi)/2),root,flint,budget)['power_W']
             segment=_state(model,_interval(RationalInterval(lo,hi),flint),root,flint,budget)['power_W']
-            curvature=enclose(2*_coefficient(segment,2))
-            integral+=_coefficient(middle,0)*ball(h)
-            error=check_fraction(error+h**3*max(abs(curvature.lo),abs(curvature.hi))/24)
+            correction,radius=_panel_quadrature(middle,segment,h)
+            integral+=correction
+            enclose(integral)
+            error=check_fraction(error+radius)
         mean=integral/ball(width)
         mean+=flint.arb(0,ball(error/width))
         output={key:enclose(_coefficient(value,0)) for key,value in state.items() if key not in ('x','y')}
