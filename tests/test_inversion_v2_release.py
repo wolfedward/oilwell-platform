@@ -51,6 +51,7 @@ class ReleaseV2Tests(unittest.TestCase):
             exported=export_committed_source(root/'repo',root/'code')
             self.assertTrue(set(expected)<=set(exported['files']),set(expected)-set(exported['files']))
             self.assertIn('backend/inversion/coverage_sources.py',exported['files'])
+            self.assertIn('tools/testpack/forward_v2.py',exported['files'])
 
     def test_dirty_source_existing_target_refused(self):
         module=self.module('tools.testpack.deliver_v2')

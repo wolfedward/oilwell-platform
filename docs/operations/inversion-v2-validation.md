@@ -17,6 +17,8 @@
 ```powershell
 $taskTests = @(
  'tests.test_inversion_interval_runtime',
+ 'tests.test_inversion_quadrature_v2',
+ 'tests.test_inversion_extended_inventory_v2.InventoryGuardTests',
  'tests.test_inversion_v1_seal',
  'tests.test_inversion_v2_provision',
  'tests.test_inversion_contracts_v2',
@@ -107,3 +109,21 @@ Windows venv 的记录 PID 可能属于转发启动器。故障工具只接受�
 smoke 独立审查通过并释放本轮端口后，以另一个新 `$taskRoot` 和 `--profile extended` 执行同流程。禁止覆盖 smoke。最后阅读器用 `view --port 0` 申请实际可用 loopback socket，记录工具真实返回的 URL；不臆测固定端口。
 
 公开报告仍保留未执行的遥测/研究/浏览器等其他阶段为 `not_run`，整体可能为 `incomplete`；反演验证通过不等于全部年度任务完成。阶段验收追加资料必须列出现场、设备、真实载荷/位移对照、标定与安全联锁尚未验证项。
+
+## 2026-10-23 积分证明修订与全量原生清点
+
+生成端与独立来源校验端分别采用固定64分段的中点二阶修正和对称四阶余项。Arb系数为 `c_k=P^(k)/k!`，每段计算 `T=h*c0_mid+h³*c2_mid/12`、`R=h⁵*sup_panel|c4|/80`；完整平均包围为 `(ΣT+[-ΣR,ΣR])/w`。整段、完整根区间及中心求值误差均保留；不能仅取中点的四阶项。
+
+功率状态输入序列 `prec=6`、局部 `cap=6`，系数工作精度仍128-bit、单线程。根计算仍用原cap4及原夹持规则；缺失四阶系数、非有限数、非法解析域、超位长或无法唯一舍入仍拒绝。此项不改变180秒worker期限、原噪声、通道步长、覆盖率和载荷误差阈值。新方法必须新建包、源码身份、安装及审批，旧通过/失败报告不改写。
+
+普通白名单只运行快速 `InventoryGuardTests`；不要直接运行整个 `test_inversion_extended_inventory_v2` 模块。实际清点必须在本轮新smoke闭环和审查通过、新extended准备成功之后显式执行：
+
+```powershell
+$env:OILWELL_QUADRATURE_EXTENDED_RELEASE = $taskExtended
+& $taskPython -B -m unittest tests.test_inversion_extended_inventory_v2.ExtendedNativeTests -v
+if ($LASTEXITCODE -ne 0) { throw 'Extended native inventory failed' }
+```
+
+缺少明确目录时该测试失败而非skip。实际检查重新读取44正例全部1025帧、四通道，共45100帧/180400原码，并核对四故障证明。原生格式本身没有scale/offset字段，所以额外读取并核对每个cycle的外部元数据，不能把解码器默认值当原始声明。
+
+检查入口仅用新导出树自己的Python/cwd重建输入绑定与校验摘要，避免工作树换行或代码身份混入已安装报告；重新核对release/export/pack、全部实际波形及离线证明的摘要。该过程不启动服务、不访问数据库、不重新运行物理轨迹，也不创建审批。它证明本轮实际生成、编码、离线独立校验记录的完整性和关联，不是第二次独立物理验证或现场精度证明。正式HTTP闭环17/57项仍单独执行和报告。

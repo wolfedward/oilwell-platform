@@ -54,3 +54,25 @@ class InstalledV2Tests(unittest.TestCase):
         with patch.object(Path,'read_bytes',changed):
             self.assertNotEqual(model.snapshot(),before)
 
+    def test_each_quadrature_source_changes_its_installed_identity(self):
+        from backend.inversion.coverage_sources import checker_sha256
+        from tools.testpack.storage import generator_fingerprint_v2
+        model=self.module().installed_v2(); before=model.snapshot()
+        generator=generator_fingerprint_v2()['source_sha256']; checker=checker_sha256()
+        original=Path.read_bytes
+        for filename,key in (('forward_v2.py','generator_sha256'),('coverage_sources.py','checker_sha256')):
+            with self.subTest(filename=filename):
+                def changed(path):
+                    raw=original(path)
+                    return raw+b'\n# simulated method change' if path.name==filename else raw
+                with patch.object(Path,'read_bytes',changed):
+                    after=model.snapshot()
+                    self.assertNotEqual(after[key],before[key])
+                    if filename=='forward_v2.py':
+                        self.assertNotEqual(generator_fingerprint_v2()['source_sha256'],generator)
+                        self.assertEqual(checker_sha256(),checker)
+                    else:
+                        self.assertNotEqual(checker_sha256(),checker)
+                        self.assertEqual(generator_fingerprint_v2()['source_sha256'],generator)
+                self.assertEqual(model.snapshot(),before)
+
