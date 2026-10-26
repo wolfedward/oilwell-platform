@@ -20,7 +20,7 @@ def repository(root):
     _add_public_kit_fixture(root)
     names=['server.py','requirements-production.txt','requirements-inversion-v2.txt',
         'backend/inversion/coverage_sources.py','backend/inversion/synthetic_registry.py',
-        'tools/provision_inversion_v2.py','tools/review_deploy_numeric.py']
+        'tools/provision_inversion_v2.py','tools/review_deploy_numeric.py','tools/review_deploy_offline.py']
     names += [p.relative_to(REPO).as_posix() for p in (REPO/'tools/testpack').glob('*.py')]
     names += [p.relative_to(REPO).as_posix() for p in (REPO/'config/testpack').glob('*.json')]
     for name in names:

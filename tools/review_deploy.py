@@ -61,28 +61,37 @@ def _private_directories(root):
         private_acl(path)
 
 
-def _venv(root):
+def _venv(root, *, offline_wheels=None):
     if not BASE_PYTHON.is_file():
         raise RuntimeError('base Python unavailable')
     root = Path(root)
     python = root / 'venv' / 'Scripts' / 'python.exe'
-    if python.exists():
+    if python.exists() or (offline_wheels is not None and (root / 'venv').exists()):
         raise ValueError('dedicated environment already exists')
+    snapshot = None
+    if offline_wheels is not None:
+        from .review_deploy_offline import stage_snapshot, install_production, finish_install
+        snapshot = stage_snapshot(root, offline_wheels, BASE_PYTHON)
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     with (root / 'logs' / 'venv-install.log').open('ab') as output:
-        create = subprocess.run([str(BASE_PYTHON), '-m', 'venv', str(root / 'venv')],
+        create = subprocess.run([str(BASE_PYTHON), '-I', '-B', '-m', 'venv', str(root / 'venv')],
                                 stdout=output, stderr=subprocess.STDOUT, creationflags=flags, timeout=120)
         if create.returncode:
             raise RuntimeError('dedicated environment creation failed')
-        install = subprocess.run([str(python), '-m', 'pip', 'install', '--no-input',
-                                  '--disable-pip-version-check', '--only-binary=:all:',
-                                  '-r', str(root / 'code' / 'requirements-production.txt')],
-                                 stdout=output, stderr=subprocess.STDOUT, creationflags=flags, timeout=600)
-        if install.returncode:
-            raise RuntimeError('pinned dependencies installation failed')
+        if snapshot is None:
+            install = subprocess.run([str(python), '-m', 'pip', 'install', '--no-input',
+                                      '--disable-pip-version-check', '--only-binary=:all:',
+                                      '-r', str(root / 'code' / 'requirements-production.txt')],
+                                     stdout=output, stderr=subprocess.STDOUT, creationflags=flags, timeout=600)
+            if install.returncode:
+                raise RuntimeError('pinned dependencies installation failed')
+        else:
+            install_production(root, snapshot)
     if _marker(root).get('inversion_v2') is True:
         from .review_deploy_numeric import install as install_numeric
-        install_numeric(root)
+        install_numeric(root, **({} if snapshot is None else {'offline_wheels': snapshot / 'wheels'}))
+    if snapshot is not None:
+        finish_install(root, snapshot, inversion_v2=_marker(root).get('inversion_v2') is True)
 
 
 def _broker_passwords(root, credentials, profile='review', *, fixture=None):
@@ -117,7 +126,8 @@ def _preflight(target, source, ports):
     return target, source
 
 
-def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', fixture=None, inversion_v2=False):
+def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', fixture=None, inversion_v2=False,
+               offline_wheels=None):
     checked_profile(profile)
     checked_fixture(fixture)
     if inversion_v2 is not False and (inversion_v2 is not True or fixture is None):
@@ -128,6 +138,9 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', f
         if any(port in PROTECTED_PORTS or port == fixture['modbus_port'] for port in ports.values()):
             raise ValueError('fixture requires separate non-protected ports')
     target, source = _preflight(target, source, ports)
+    if offline_wheels is not None:
+        from .review_deploy_offline import preflight
+        preflight(offline_wheels, source, BASE_PYTHON)
     marker = claim_target(target, forbidden=(source, Path.home()))
     marker['ports'] = ports
     marker['profile'] = profile
@@ -137,7 +150,7 @@ def initialize(target, *, source=DEFAULT_SOURCE, ports=None, profile='review', f
     source_record = export_committed_source(source, target / 'code')
     marker['source'] = source_record
     _update(target, marker)
-    _venv(target)
+    _venv(target, offline_wheels=offline_wheels)
     extra = {} if fixture is None else {'fixture': fixture}
     credentials = _new_credentials(profile, **extra)
     write_json_private(target / 'private' / 'credentials.json', credentials)
@@ -367,13 +380,16 @@ def main(argv=None):
             command.add_argument('--backup', required=True, type=Path)
         else:
             command.add_argument('--profile', choices=('review', 'monitoring'), default='review')
+            command.add_argument('--offline-wheels', type=Path,
+                                 help='directory containing exactly the six approved wheels; no network fallback')
     for action in ('launch', 'stop', 'status', 'backup'):
         sub.add_parser(action).add_argument('--target', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command in {'init', 'restore'}:
             ports = _ports(args.http_port, args.postgres_port, args.mqtt_port)
-            result = (initialize(args.target, source=args.source, ports=ports, profile=args.profile) if args.command == 'init'
+            result = (initialize(args.target, source=args.source, ports=ports, profile=args.profile,
+                                 offline_wheels=args.offline_wheels) if args.command == 'init'
                       else restore(args.backup, target=args.target, source=args.source, ports=ports))
         else:
             result = {'launch': launch, 'stop': stop, 'status': status, 'backup': backup}[args.command](args.target)

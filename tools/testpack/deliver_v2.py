@@ -78,10 +78,13 @@ def generation_timeout(profile):
     raise ValueError('unknown validation profile')
 
 
-def deliver(root:Path,source:Path,*,profile:str):
+def deliver(root:Path,source:Path,*,profile:str,offline_wheels=None):
     if profile not in ('smoke','extended'):raise ValueError('unknown validation profile')
     root=validate_lab_target(Path(root));source=_clean(source)
     ports=validate_lab_ports(V2_PORTS)
+    if offline_wheels is not None:
+        from tools.review_deploy_offline import preflight
+        preflight(offline_wheels,source,deploy.BASE_PYTHON)
     root.mkdir();private_acl(root)
     release={'schema':'owp.testpack.v2-release/1','root':str(root),'profile':profile,
              'status':'preparing','approved_execution_status':'not_run','instances':{}}
@@ -96,7 +99,7 @@ def deliver(root:Path,source:Path,*,profile:str):
         check=True,capture_output=True,timeout=15).stdout.decode().splitlines()
     expected=closure({name:'' for name in tracked})
     if set(expected)!=set(closure(marker['source']['files'])):raise ValueError('generator source closure omitted')
-    deploy._venv(stage)
+    deploy._venv(stage,offline_wheels=offline_wheels)
     release.update(source=marker['source'],stage=str(stage));replace_json_private(root/'release.json',release)
     pack=root/('pack-v2-'+profile);offline=root/('offline-v2-'+profile+'.json')
     _child(stage,['generate','--config',stage/'code/config/testpack'/('inversion-v2-'+profile+'.json'),
@@ -105,7 +108,7 @@ def deliver(root:Path,source:Path,*,profile:str):
     from .inversion_run_v2 import positive_case_ids
     package=load_pack(pack)
     require_offline_proofs(strict_json(offline.read_bytes()),positive_case_ids(package))
-    lab=initialize_lab(root/('lab-v2-'+profile),pack=package,source=source,ports=ports)
+    lab=initialize_lab(root/('lab-v2-'+profile),pack=package,source=source,ports=ports,offline_wheels=offline_wheels)
     instances={p:verify_target(lab.root/p)['instance_id'] for p in ('monitoring','review')}
     release.update(instances=instances,lab=str(lab.root),pack=str(pack),offline=str(offline))
     replace_json_private(root/'release.json',release)
@@ -139,11 +142,14 @@ def main():
     parser.add_argument('--root',required=True,type=Path)
     parser.add_argument('--source',type=Path)
     parser.add_argument('--profile',choices=('smoke','extended'),default='smoke')
+    parser.add_argument('--offline-wheels',type=Path,help='strict six-wheel offline bundle; prepare only')
     args=parser.parse_args()
     if args.action=='prepare':
         if args.source is None:parser.error('--source required')
-        result=deliver(args.root,args.source,profile=args.profile)
-    else:result=rollback(args.root)
+        result=deliver(args.root,args.source,profile=args.profile,offline_wheels=args.offline_wheels)
+    else:
+        if args.offline_wheels is not None:parser.error('--offline-wheels is only valid for prepare')
+        result=rollback(args.root)
     print(json.dumps(result,ensure_ascii=False))
 
 

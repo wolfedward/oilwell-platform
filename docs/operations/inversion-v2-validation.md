@@ -127,3 +127,36 @@ if ($LASTEXITCODE -ne 0) { throw 'Extended native inventory failed' }
 缺少明确目录时该测试失败而非skip。实际检查重新读取44正例全部1025帧、四通道，共45100帧/180400原码，并核对四故障证明。原生格式本身没有scale/offset字段，所以额外读取并核对每个cycle的外部元数据，不能把解码器默认值当原始声明。
 
 检查入口仅用新导出树自己的Python/cwd重建输入绑定与校验摘要，避免工作树换行或代码身份混入已安装报告；重新核对release/export/pack、全部实际波形及离线证明的摘要。该过程不启动服务、不访问数据库、不重新运行物理轨迹，也不创建审批。它证明本轮实际生成、编码、离线独立校验记录的完整性和关联，不是第二次独立物理验证或现场精度证明。正式HTTP闭环17/57项仍单独执行和报告。
+
+## 2026-10-26 显式离线依赖安装
+
+当外部包索引不可用时，给新安装明确指定 `--offline-wheels <绝对目录>`。该目录必须只包含下列六个原始 wheel，不接受自行重新打包的已安装文件，不读取目录内自报的摘要清单：
+
+| 原始 wheel | SHA-256 |
+| --- | --- |
+| paho_mqtt-2.1.0-py3-none-any.whl | 6db9ba9b34ed5bc6b6e3812718c7e06e2fd7444540df2455d2c51bd58808feee |
+| pymodbus-3.15.0-py3-none-any.whl | 74d8dee961f23845f18a8481253183504dca05c4fcd102890cd28f4d7ce09267 |
+| psycopg-3.3.5-py3-none-any.whl | ce5aa5cdb4f9379f00f487590e5890bfa7df9a164648c969ffa628505e21af4e |
+| psycopg_binary-3.3.5-cp313-cp313-win_amd64.whl | ba466011569297114449df9d523438e1adeedf3e4f31ffb78e897ec3fef3076b |
+| tzdata-2026.5-py2.py3-none-any.whl | b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac |
+| python_flint-0.9.0-cp313-cp313-win_amd64.whl | 1f3a3672d589e376d47288dcebcb712997dc719880a4dbf1779bf0f2b20d0293 |
+
+上述版本的发布者摘要核对来源：[paho](https://pypi.org/pypi/paho-mqtt/2.1.0/json)、[pymodbus](https://pypi.org/pypi/pymodbus/3.15.0/json)、[psycopg](https://pypi.org/pypi/psycopg/3.3.5/json)、[psycopg-binary](https://pypi.org/pypi/psycopg-binary/3.3.5/json)、[tzdata](https://pypi.org/pypi/tzdata/2026.5/json)、[python-flint](https://pypi.org/pypi/python-flint/0.9.0/json)。tzdata 是 Windows 下 psycopg 的间接依赖，此入口将其明确锁定到既有安装使用的2026.5；不是升级其他依赖。仅支持 CPython3.13.2、Windows x64、GIL；ARM64、自由线程、其他版本均拒绝。
+
+```powershell
+# 两个入口均只创建新目录；原位恢复和 restore 不支持这个选项。
+& $taskPython -B -m tools.review_deploy init --target $taskNewInstance --source $taskRepo --offline-wheels $taskWheels
+& $taskPython -B -m tools.testpack.deliver_v2 prepare --root $taskNewRelease --source $taskRepo --profile smoke --offline-wheels $taskWheels
+```
+
+普通实例只安装前五项；v2实例另安装第六项并执行原有 RECORD、原生文件、许可及运行时清单校验。离线参数贯穿生成环境、monitoring和review三个新实例。每个实例在 `private/offline-dependencies` 独占保存原始包快照、完整哈希锁、`admitted.json` 和成功后才产生的 `installed.json`，绑定该实例ID、实际导出源码提交、requirements实际字节摘要、平台及安装版本。初始准入的requirements比较允许LF/CRLF，但不允许版本、extras、额外依赖或索引选项变化。
+
+离线 pip 禁用缓存和索引、禁用继承配置，使用完整哈希清单、binary-only和no-deps；缺包、错摘要、错平台、链接文件、安装或pip-check失败均停止，不联网回退。[pip配置机制](https://pip.pypa.io/en/stable/topics/configuration/)、[安装参数](https://pip.pypa.io/en/stable/cli/pip_install/)。外部包只复制已校验的字节，不在摘要检查后重新打开源文件用于安装。默认未指定离线选项时保留原在线流程。
+
+新入口的安全回归（只使用临时文件，不连接业务数据库）：
+
+```powershell
+& $taskPython -B -m unittest tests.test_review_deploy_offline tests.test_review_deploy tests.test_monitoring_deploy tests.test_inversion_v2_release tests.test_inversion_v1_seal -v
+```
+
+此测试加入后续相关最终白名单。测试内的人工wheel夹具只验证拒绝规则，不是发布者包证据。真实离线安装需另用上表原始包在新拥有目录执行；安装成功不等于反演57项闭环通过。旧失败目录和日志保持原状，新尝试必须重新取得源码/包/审批及运行证据。

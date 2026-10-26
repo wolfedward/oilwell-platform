@@ -51,11 +51,14 @@ def validate_lab_target(target):
     return target
 
 
-def initialize_lab(target, *, pack, source, ports):
+def initialize_lab(target, *, pack, source, ports, offline_wheels=None):
     pack = load_pack(pack.root)
     source = safe_path(Path(source))
     target = validate_lab_target(target)
     ports = validate_lab_ports(ports)
+    if offline_wheels is not None:
+        from tools.review_deploy_offline import preflight
+        preflight(offline_wheels, source, deploy.BASE_PYTHON)
     lab_id = str(uuid4())
     manifest_sha = sha256((pack.root / 'manifest.json').read_bytes()).hexdigest()
     marker = {'schema': 'owp.testpack.lab/1', 'lab_id': lab_id, 'root': str(target),
@@ -69,6 +72,7 @@ def initialize_lab(target, *, pack, source, ports):
                'device_ids': ['TESTPACK-PUMP-001', 'TESTPACK-PUMP-002'], 'modbus_port': ports['modbus']}
     for profile in ('monitoring', 'review'):
         extra={'inversion_v2':True} if pack.manifest['configuration'].get('schema')=='owp.testpack.config/2' else {}
+        if offline_wheels is not None:extra['offline_wheels']=offline_wheels
         result = deploy.initialize(target / profile, source=source, ports=ports[profile], profile=profile, fixture=fixture, **extra)
         marker['instances'][profile] = result['instance_id']
         replace_json_private(target / 'private/lab.json', marker)

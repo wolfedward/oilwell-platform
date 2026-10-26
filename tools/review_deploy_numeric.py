@@ -21,7 +21,7 @@ def compare_inventory(installed,actual):
     return {'installed_wheel_sha256':WHEEL_SHA256,'verified':True,'inventory':actual}
 
 
-def install(root):
+def install(root, *, offline_wheels=None):
     root=Path(root);marker=verify_target(root)
     if marker.get('inversion_v2') is not True or marker['state']!='claimed':
         raise ValueError('only a newly claimed v2 installation may install native dependencies')
@@ -30,17 +30,30 @@ def install(root):
     probe=probe_python(python)
     if probe!={'version':'3.13.2','implementation':'CPython','system':'Windows','bits':64,'gil':1}:
         raise ValueError('CPython 3.13.2 Windows x64 GIL required')
+    if offline_wheels is not None:
+        from .review_deploy_offline import read_bundle,run_pip,probe_target,check_source
+        probe_target(python)
+        check_source(root/'code')
+        payloads=read_bundle(offline_wheels)
     owned=root/'private/inversion-v2';owned.mkdir();private_acl(owned)
     wheels=owned/'wheels';wheels.mkdir()
     requirements=root/'code/requirements-inversion-v2.txt'
     common=[python,'-I','-B','-m','pip','--isolated','--disable-pip-version-check']
-    _run([*common,'download','--index-url','https://pypi.org/simple','--only-binary=:all:',
-        '--require-hashes','--no-deps','-r',requirements,'--dest',wheels],owned/'download.log')
+    if offline_wheels is None:
+        _run([*common,'download','--index-url','https://pypi.org/simple','--only-binary=:all:',
+            '--require-hashes','--no-deps','-r',requirements,'--dest',wheels],owned/'download.log')
+    else:
+        with (wheels/WHEEL_NAME).open('xb') as output:output.write(payloads[WHEEL_NAME])
     inventory=inspect_wheel(wheels/WHEEL_NAME)
     write_json_private(owned/'wheel-inventory.json',inventory)
-    _run([*common,'install','--no-index','--find-links',wheels,'--no-deps','--only-binary=:all:',
-        '--require-hashes','-r',requirements],owned/'install.log')
-    _run([*common,'check'],owned/'pip-check.log')
+    arguments=['install','--no-index','--find-links',wheels,'--no-deps','--only-binary=:all:',
+        '--require-hashes','-r',requirements]
+    if offline_wheels is None:
+        _run([*common,*arguments],owned/'install.log')
+        _run([*common,'check'],owned/'pip-check.log')
+    else:
+        run_pip(python,[*arguments,'--no-input','--no-compile'],owned/'install.log')
+        run_pip(python,['check'],owned/'pip-check.log')
     verify_installed(venv,inventory)
     actual=run_exported_backend(root,'numeric_inventory')
     manifest={'schema':'inversion.owned-numeric-installation/1','instance_id':marker['instance_id'],

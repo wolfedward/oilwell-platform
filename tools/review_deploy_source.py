@@ -19,7 +19,7 @@ PREFIXES = ('backend/', 'frontend/')
 TOOL_NAMES = {'review_deploy.py', 'review_deploy_paths.py', 'review_deploy_config.py',
               'review_deploy_source.py', 'review_deploy_pg.py', 'review_deploy_process.py',
               'review_deploy_backup.py', 'review_deploy_child.py', 'review_deploy_ready.py',
-              'review_deploy_worker.py', 'review_deploy_numeric.py', 'provision_inversion_v2.py'}
+              'review_deploy_worker.py', 'review_deploy_numeric.py', 'review_deploy_offline.py', 'provision_inversion_v2.py'}
 TESTPACK_NAMES = {'__init__.py', '__main__.py', 'contracts.py', 'storage.py', 'config.py',
                  'mechanics.py', 'cycles.py', 'currents.py', 'waveforms.py', 'history.py',
                  'study_inputs.py', 'build.py', 'validate.py', 'lab.py', 'lab_http.py',
