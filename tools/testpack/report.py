@@ -149,8 +149,8 @@ def write_report(pack,checks,run_root,*,run_metadata,inversion_outcomes=None):
             limitations=[s for s in LIMITS if s!='fixed_inversion_budget_not_approved']+['finite_synthetic_validation_not_field_accuracy'],
             private_evidence_sha256=sha256(canonical_bytes(evidence)).hexdigest())
     validate_public(result)
-    with path.open('xb') as stream:stream.write(canonical_bytes({'schema':'owp.testpack.private-report/1','public':result,'evidence':evidence}))
-    return path
+    from .report_evidence import write_private
+    return write_private(root,result,evidence)
 
 
 def validate_public(body):
@@ -197,22 +197,23 @@ def validate_public(body):
 
 
 def export_public_report(run_root,target):
-    root=safe_path(Path(run_root));path=safe_path(root/'report.json')
-    if path.stat().st_size>32*1024*1024:raise ValueError('private report too large')
-    record=strict_json(path.read_bytes())
-    if set(record)!={'schema','public','evidence'} or record['schema']!='owp.testpack.private-report/1':raise ValueError('private report fields')
+    from .report_evidence import read_private,iter_checks,evidence_digest
+    root=safe_path(Path(run_root));record=read_private(root)
     public=validate_public(record['public'])
-    if sha256(canonical_bytes(record['evidence'])).hexdigest()!=public['private_evidence_sha256']:raise ValueError('private evidence changed')
     evidence=record['evidence']
     v2=public['schema']=='owp.testpack.public-report/2'
     if set(evidence)!=({'checks','run_metadata','inversion_outcomes'} if v2 else {'checks','run_metadata'}) or evidence['run_metadata']!=public['run_metadata'] or len(evidence['checks'])!=len(public['checks']):
         raise ValueError('public evidence binding mismatch')
     if v2 and evidence['inversion_outcomes']!=public['inversion_outcomes']:raise ValueError('public inversion evidence binding mismatch')
-    for original,shown in zip(evidence['checks'],public['checks']):
-        expected={'check_id':original['check_id'],'layer':original['layer'],'status':original['status'],
-            'expected_sha256':sha256(canonical_bytes(original['expected'])).hexdigest(),
-            'actual_sha256':sha256(canonical_bytes(original['actual'])).hexdigest(),'actual':_safe_actual(original['actual'])}
-        if shown!=expected:raise ValueError('public check differs from retained evidence')
+    def checked():
+        for original,shown in zip(iter_checks(root,record),public['checks'],strict=True):
+            if type(original) is not dict or set(original)!={'check_id','layer','status','expected','actual','artifacts'}:raise ValueError('private check fields')
+            expected={'check_id':original['check_id'],'layer':original['layer'],'status':original['status'],
+                'expected_sha256':sha256(canonical_bytes(original['expected'])).hexdigest(),
+                'actual_sha256':sha256(canonical_bytes(original['actual'])).hexdigest(),'actual':_safe_actual(original['actual'])}
+            if shown!=expected:raise ValueError('public check differs from retained evidence')
+            yield original
+    if evidence_digest(checked(),evidence)!=public['private_evidence_sha256']:raise ValueError('private evidence changed')
     target=safe_path(Path(target),missing=True)
     if target.exists():raise ValueError('public target already exists')
     target.mkdir();output=target/'report.json'

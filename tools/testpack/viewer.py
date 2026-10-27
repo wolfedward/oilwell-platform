@@ -12,6 +12,7 @@ from .report import validate_public
 from .storage import canonical_bytes,load_pack,safe_path,strict_json
 from .waveforms import decode_channels
 from .viewer_details import capture_summary,quality_summary,reference_summary,scene_summary,inversion_detail
+from .viewer_results import load_retained_result
 
 
 def case_data(pack,case):
@@ -54,20 +55,28 @@ def case_data(pack,case):
     return result
 
 
-def serve_viewer(pack,public_report=None,*,port=0):
+def serve_viewer(pack,public_report=None,*,port=0,results_root=None):
     validate_listener_port(port)
     pack=load_pack(pack.root);repo=Path(__file__).resolve().parents[2]
     report=None
+    if results_root is not None:
+        if public_report is None:raise ValueError('retained results require an explicitly bound public report')
+        results_root=safe_path(Path(results_root))
+        if not results_root.is_dir():raise ValueError('retained result directory required')
     if public_report is not None:
         path=safe_path(Path(public_report))
         if path.stat().st_size>8*1024*1024:raise ValueError('public report too large')
         report=validate_public(strict_json(path.read_bytes()))
         if report['pack_id']!=pack.manifest['pack_id'] or report['pack_sha256']!=sha256((pack.root/'manifest.json').read_bytes()).hexdigest():
             raise ValueError('report belongs to another package')
+        identities=[row['case_id'] for row in report.get('inversion_outcomes',[])]
+        if len(identities)!=len(set(identities)):raise ValueError('duplicate retained case identity')
     assets={'/':('frontend/testpack/index.html','text/html; charset=utf-8'),
         '/frontend/testpack/viewer.js':('frontend/testpack/viewer.js','text/javascript; charset=utf-8'),
         '/styles.css':('frontend/testpack/styles.css','text/css; charset=utf-8'),
         '/frontend/inversion/charts.js':('frontend/inversion/charts.js','text/javascript; charset=utf-8'),
+        '/frontend/inversion/results.js':('frontend/inversion/results.js','text/javascript; charset=utf-8'),
+        '/frontend/inversion/client.js':('frontend/inversion/client.js','text/javascript; charset=utf-8'),
         '/frontend/inversion/forms.js':('frontend/inversion/forms.js','text/javascript; charset=utf-8')}
     cases={c['case_id']:c for c in pack.manifest['cases']};downloads={'/pack/'+a['path']:a for a in pack.manifest['artifacts']}
     class Handler(BaseHTTPRequestHandler):
@@ -91,6 +100,11 @@ def serve_viewer(pack,public_report=None,*,port=0):
                 elif path.startswith('/data/cases/') and path.endswith('.json') and path[12:-5] in cases:
                     value=case_data(pack,cases[path[12:-5]])
                     value['inversion_summary']=inversion_detail(pack,report,path[12:-5])
+                    if results_root is not None and value['inversion_summary'].get('assertion_status'):
+                        retained=load_retained_result(value['inversion_summary'],results_root,path[12:-5])
+                        if retained is not None:
+                            value.update(prediction=retained['prediction'],reference=retained['reference'],
+                                retained_result=retained,inversion_status='retained_approved_export')
                     raw=canonical_bytes(value);media='application/json'
                 elif path in downloads:
                     item=downloads[path];raw=safe_path(pack.root/item['path']).read_bytes()

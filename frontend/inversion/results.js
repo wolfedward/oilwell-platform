@@ -79,7 +79,7 @@ function proofNumber(value){
   return number===null?'未知':number!==0&&Math.abs(number)<.01?number.toExponential(6):String(value);
 }
 
-function renderProof(root,body,proof){
+export function renderProof(root,body,proof){
   if(body.schema!=='inversion.result/2')return;
   const section=element('section',undefined,'inversion-report');section.append(element('h2','有限输入逐点误差证明'));
   metadataList(section,[['原始输入证明状态',body.source_proof?.status],['证明拒绝原因',body.source_proof?.reason_codes],

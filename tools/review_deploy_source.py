@@ -25,11 +25,11 @@ TESTPACK_NAMES = {'__init__.py', '__main__.py', 'contracts.py', 'storage.py', 'c
                  'study_inputs.py', 'build.py', 'validate.py', 'lab.py', 'lab_http.py',
                  'modbus_device.py', 'gateway_adapter.py', 'telemetry_run.py', 'waveform_run.py',
                  'inversion_binding.py', 'software_budget.py', 'evidence_report.py', 'evidence_report.html',
-                 'render_evidence.cjs', 'study_run.py', 'report.py', 'viewer.py', 'viewer_details.py', 'delivery.py', 'verify_viewer.cjs',
+                 'render_evidence.cjs', 'study_run.py', 'report.py', 'report_evidence.py', 'viewer.py', 'viewer_details.py', 'delivery.py', 'verify_viewer.cjs',
                  'config_v2.py', 'build_v2.py', 'forward_v2.py', 'cycles_v2.py', 'budget_v2.py', 'validate_v2.py',
                  'inversion_binding_v2.py', 'inversion_http_v2.py', 'inversion_run_v2.py', 'inversion_guards_v2.py',
                  'owned_compute_fault_v2.py', 'owned_v2_verify.py', 'report_inversion_v2.py', 'deliver_v2.py',
-                 'resources_v2.py'}
+                 'resources_v2.py', 'viewer_results.py'}
 
 
 def _included(name):

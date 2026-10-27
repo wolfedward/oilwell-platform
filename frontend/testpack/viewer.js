@@ -1,4 +1,5 @@
 import {mountComparison,numeric,twoDecimals} from '../inversion/charts.js';
+import {renderProof} from '../inversion/results.js';
 
 const ns='http://www.w3.org/2000/svg';
 const statusNames={passed:'通过',failed:'未通过',blocked:'阻断',not_run:'未运行',incomplete:'未完成'};
@@ -95,8 +96,10 @@ export function renderCase(root,data){
   const meta=data.metadata,channels=data.channels,reference=data.reference,c=data.capture,s=data.reference_summary;
   captureDetails(root,data);
   metrics(root,[['原始采样点',c?.frame_count??meta.frame_count],['采样率',`${c?.sample_rate_hz??meta.sample_rate_hz} Hz`],['有效点载荷范围',s?.load_range_kn?`${twoDecimals(s.load_range_kn[0])}–${twoDecimals(s.load_range_kn[1])} kN`:'未知'],['完整参考冲程',s?.stroke_m==null?'未知':`${twoDecimals(s.stroke_m)} m`],['声明周期时长',c?.cycle_duration_s==null?'未知':`${twoDecimals(c.cycle_duration_s)} s`],['声明冲次',c?.strokes_per_min==null?'未知':`${twoDecimals(c.strokes_per_min)} 次/min`]]);
-  root.append(node('p',data.inversion_summary?.approved_execution_status==='passed'?
-   '本报告有已批准的软件反演结果；本页仅加载原始数据，完整反演双图请在实际结果页面查看。软件同源比较不代表现场精度。':
+  const retained=data.retained_result;
+  root.append(node('p',retained?
+   '历史导出：以下是导出当时获批的软件反演快照，未查询当前授权或后续撤销状态；本页仅供只读核验，不提供新的定量用途授权。同源合成比较不构成独立现场比较，也不认证现场精度。':data.inversion_summary?.approved_execution_status==='passed'?
+   '本报告有已批准的软件反演结果；尚未指定历史导出目录，请以 --results 绑定该报告的结果后查看双图。软件同源比较不代表现场精度。':
    '当前没有已批准的电功率反演曲线。下图仅显示仿真载荷位移参考；不得据此认定现场反演精度。','warning'));
   if(data.inversion_summary?.assertion_status)inversionOutcomes(root,[data.inversion_summary]);
   const comparison=node('div');root.append(comparison);
@@ -104,6 +107,11 @@ export function renderCase(root,data){
   if(!data.prediction?.length){mounted.setVisibility('prediction',false);comparison.querySelector('[data-trace-toggle="prediction"]').disabled=true;}
   comparison.querySelector('[data-trace-toggle="filled"]').closest('label').hidden=true;
   for(const kind of ['power','motion','torque'])comparison.querySelector(`[data-chart-kind="${kind}"]`).hidden=true;
+  if(retained){
+   metrics(root,[['历史预测点',retained.prediction.length],['原生证明点',retained.proof.length],['历史参考点',retained.reference.length],['当前授权','未查询']]);
+   detail(root,'历史导出身份与摘要（不代表当前授权）',retained.provenance);
+   renderProof(root,retained.body,retained.proof);
+  }
   const area=node('p',s?.area_kj==null?`参考功图面积：不可用 · ${areaReasons[s?.area_reason]||'未提供完整参考统计'}`:`参考功图面积（有向积分绝对值）：${twoDecimals(s.area_kj)} kJ · 有向积分 ${twoDecimals(s.signed_work_kj)} kJ`,'area-status');area.dataset.areaStatus='';root.append(area);
   root.append(node('p','仅对样本精确覆盖声明周期、全部载荷/位移点有效且首末点精确重合的轮廓积分；kN·m = kJ，不等于电能、反演误差或设备效率。','subtle'));
   const power=channels.active_power;

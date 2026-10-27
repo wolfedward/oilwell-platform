@@ -37,6 +37,7 @@ def main(argv=None):
     view=sub.add_parser('view')
     view.add_argument('--pack',required=True,type=Path)
     view.add_argument('--report',type=Path)
+    view.add_argument('--results',type=Path,help='Read captured approved exports bound to --report; no current authorization check')
     view.add_argument('--port',type=int,default=0)
     args=parser.parse_args(argv)
     try:
@@ -50,7 +51,7 @@ def main(argv=None):
             print(json.dumps({'report':str(output)},ensure_ascii=False));return 0
         if args.command=='view':
             from .viewer import serve_viewer
-            viewer=serve_viewer(load_pack(args.pack),args.report,port=args.port)
+            viewer=serve_viewer(load_pack(args.pack),args.report,port=args.port,results_root=args.results)
             print(json.dumps({'url':f'http://127.0.0.1:{viewer.server_port}/','read_only':True},ensure_ascii=False),flush=True)
             try:viewer.viewer_thread.join()
             except KeyboardInterrupt:pass

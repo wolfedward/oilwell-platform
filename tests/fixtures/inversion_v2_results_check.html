@@ -20,7 +20,34 @@ window.fetch=async path=>{const url=new URL(path,'http://fixture'),route=url.pat
  throw Error('Unexpected '+path);
 };
 try{
- if(mode==='v2-report'){
+ if(mode==='retained-reader'){
+  const style=document.querySelector('link');await new Promise((resolve,reject)=>{style.onload=resolve;style.onerror=reject;style.href=new URL('../testpack/styles.css',RESULTS_MODULE);});
+  const {renderCase}=await import(new URL('../testpack/viewer.js',RESULTS_MODULE)),root=document.querySelector('#root');
+  const points=kind=>rows.filter(row=>row.kind===kind).map(row=>Object.fromEntries(row.columns.map((key,i)=>[key,row.values[i]])));
+  const retained={body:detail.body,proof:points('proof'),prediction:points('prediction'),reference:points('comparison'),
+   provenance:{scope:'historical_export_only',current_authorization_checked:false,field_accuracy_certified:false,checked_at:'2026-10-01T00:00:00+00:00',result_sha256:digest}};
+  renderCase(root,{case_id:'cycle-base',kind:'cycle',metadata:{frame_count:1025,sample_rate_hz:128},capture:{frame_count:1025,sample_rate_hz:128},
+   reference_summary:{},reference:retained.reference,prediction:retained.prediction,retained_result:retained,inversion_status:'retained_approved_export',
+   channels:{active_power:{values:[1,2],quality:[0,0],unit:'W'}}});
+  const proof=root.querySelector('[data-native-proof-count="1025"]');check(proof,'retained reader shows all1025 native proofs');
+  check(root.textContent.includes('历史导出')&&root.textContent.includes('未查询当前授权'),'captured approval is not current authority');
+  check(root.textContent.includes('不构成独立现场比较'),'no field certification');
+  proof.open=true;const next=[...proof.querySelectorAll('button')].find(b=>b.textContent==='下一页');
+  for(let i=0;i<10;i++)next.click();
+  check(proof.querySelectorAll('article').length===25&&proof.textContent.includes('原始索引 1024'),'last25 proof points available');
+  check(next.disabled,'proof stops at1025');proof.open=false;
+  const chart=root.querySelector('[data-chart-kind="comparison"]'),pred=chart.querySelector('[data-series="prediction"]');
+  check(pred.querySelectorAll('path').length===2,'native invalid point leaves unjoined prediction segments');
+  check(chart.querySelector('[data-series="reference"] path'),'reference trace present');
+  check(chart.querySelector('circle').getAttribute('visibility')==='hidden','markers hidden before hover');
+  for(const trace of ['prediction','reference']){const input=root.querySelector(`[data-trace-toggle="${trace}"]`);check(!input.disabled,trace+' enabled');input.click();check(chart.querySelector(`[data-series="${trace}"]`).style.display==='none',trace+' hides independently');input.click();}
+  const hit=chart.querySelector('[data-chart-hit]');hit.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));
+  const marker=chart.querySelector('circle'),bounds=chart.querySelector('svg').getBoundingClientRect();
+  hit.dispatchEvent(new PointerEvent('pointermove',{clientX:bounds.left+Number(marker.getAttribute('cx'))/720*bounds.width,clientY:bounds.top+Number(marker.getAttribute('cy'))/300*bounds.height,bubbles:true}));
+  const tip=chart.querySelector('.inversion-tooltip').textContent;check(tip.includes('位移（m） 0.33')&&tip.includes('载荷（kN） 0.67'),'retained xy hover uses two decimals');
+  check(!calls.length,'retained view makes no production API calls');
+  check(document.documentElement.scrollWidth<=innerWidth+1,'retained reader responsive');
+ }else if(mode==='v2-report'){
   const style=document.querySelector('link');await new Promise((resolve,reject)=>{style.onload=resolve;style.onerror=reject;style.href=new URL('../testpack/styles.css',RESULTS_MODULE);});
   const {renderReport,renderCase}=await import(new URL('../testpack/viewer.js',RESULTS_MODULE));
   const root=document.querySelector('#root');renderReport(root,{schema:'owp.testpack.public-report/2',status:'incomplete',checks:[],layers:{},run_metadata:{},inversion_outcomes:rows});

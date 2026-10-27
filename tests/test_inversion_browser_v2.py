@@ -36,3 +36,6 @@ class InversionV2BrowserTests(BrowserFixtureCase):
         from tests.test_testpack_report_v2 import positive
         values=[project_inversion_outcome(positive()),project_inversion_outcome(InversionOutcome('guard-cancel','passed','refused','refused','worker','user_cancelled','refused',{}))]
         self.run_fixture('v2-report',760,encoded_rows=values)
+
+    def test_retained_reader_dual_traces_native_gaps_and_last_proof_page(self):
+        for width in (1120,760):self.run_fixture('retained-reader',width,encoded_rows=rows())

@@ -160,3 +160,41 @@ if ($LASTEXITCODE -ne 0) { throw 'Extended native inventory failed' }
 ```
 
 此测试加入后续相关最终白名单。测试内的人工wheel夹具只验证拒绝规则，不是发布者包证据。真实离线安装需另用上表原始包在新拥有目录执行；安装成功不等于反演57项闭环通过。旧失败目录和日志保持原状，新尝试必须重新取得源码/包/审批及运行证据。
+
+## 历史导出的只读双图查看
+
+查看器可以显式读取该包已绑定公开报告中的历史获批导出。`--results` 指向保留的运行目录，不能省略 `--report`；不自动查找相邻私有目录，不请求生产数据库或创建任何运行、审批与控制指令。
+
+```powershell
+& $taskPython -B -m tools.testpack view --pack $taskPack --report $taskPublicReport --results $taskRetainedRun --port 0
+```
+
+每次读取只打开当前场景的 `<case_id>-export.json`，核对文件上限、普通非链接文件、完整字节 SHA-256、报告中的导出/结果标识、导出时审批及适用性，以及完整1025点的原生索引和时间对齐。缺失、篡改、截断或不符合准入条件时明确失败，不重新计算或补绘替代曲线。未提供 `--results` 时仍是原始输入查看器，不能把报告摘要误当成已加载预测。
+
+页面显示预测与仿真参考两条独立可切换曲线、两位小数的悬停坐标，以及每页100点、最后一页25点的完整逐点证明。原始数值保留精确分数字符串；小误差界不按坐标格式舍入成零。
+
+“历史获批”只说明导出当时的快照，不证明当前授权仍有效，也不检查导出后撤销。该入口没有定量导出授权、写入或生产API代理功能，不能替代正式生产结果页的当前权限校验。合成参考不属于现场实测或独立现场准确率认证。
+
+本轮计算证据保留在冻结的 `df41391d4f308b698a06b0c58083b12f2e201be0` 生产者版本；查看器修复另行提交与导出，具有独立源码清单和验证。只允许只读传输、显示和导出白名单文件发生差异，其余生产者实现字节不变。不得把原390项回归和17/57项实际链路结果改标为新查看器提交重跑计算的证据；新查看器另跑完整相关白名单与实际页面检查。未来用新提交生成包，仍须重新取得该版本的来源和运行证明。
+# Large private reports and retained-run recovery
+
+Private report storage uses a backward-compatible small `private-report/1`
+envelope, or a `private-report/2` index plus complete per-check JSON files when
+the envelope would exceed 32 MiB. No points are truncated. Each file remains
+limited to 32 MiB, the index plus shards to 256 MiB, and the check count to
+10,000. Limits are checked before any report write. A failed write leaves
+`.report-incomplete`; export refuses it and the target must not be reused.
+
+Public export checks the exact shard inventory, regular nonlinked paths, byte
+lengths, SHA-256, every public check projection and the original complete
+canonical evidence digest. Public status, four unrelated `not_run` integration
+checks, synthetic origin, and field-validation limitations are not upgraded
+by successful report export.
+
+Historical runs that failed at report export remain failed. A separate
+postprocessing receipt may record retained-evidence verification and a new
+public export, with both producer and postprocessor source commits and the
+original failure explicitly recorded. Such a receipt is not
+`verified-live.json`, does not prove a complete new producer run, and must not
+be accepted by an existing full-live gate without an explicit separate
+composite-evidence contract.
